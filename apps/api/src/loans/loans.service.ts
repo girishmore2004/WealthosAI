@@ -4,7 +4,7 @@ import { IncomeService } from "../income/income.service";
 import { CreateLoanDto } from "./dto/create-loan.dto";
 import { UpdateLoanDto } from "./dto/update-loan.dto";
 
-interface AmortizationRow {
+export interface AmortizationRow {
   month: number;
   emi: number;
   interest: number;
