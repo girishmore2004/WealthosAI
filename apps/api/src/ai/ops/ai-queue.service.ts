@@ -57,12 +57,25 @@ export class AiQueueService implements OnModuleDestroy {
     // "call enqueue() twice with the same key" safe to do from a retried HTTP request
     // without relying on BullMQ's own (job-id-scoped, not query-friendly) dedup.
     if (options.idempotencyKey) {
-      const existing = await this.prisma.client.aiJob.findUnique({
-        where: { userId_idempotencyKey: { userId: options.userId ?? null, idempotencyKey: options.idempotencyKey } },
-      });
-      if (existing) {
-        this.logger.log(`Idempotent enqueue: returning existing job ${existing.id} for key ${options.idempotencyKey}`);
-        return existing;
+      if (options.userId) {
+        const existing = await this.prisma.client.aiJob.findUnique({
+          where: { userId_idempotencyKey: { userId: options.userId, idempotencyKey: options.idempotencyKey } },
+        });
+        if (existing) {
+          this.logger.log(`Idempotent enqueue: returning existing job ${existing.id} for key ${options.idempotencyKey}`);
+          return existing;
+        }
+      } else {
+        // No userId to scope the compound unique key against — fall back to a scan
+        // for an anonymous job with this idempotency key instead of querying the
+        // compound unique index (which requires a non-null userId).
+        const existing = await this.prisma.client.aiJob.findFirst({
+          where: { userId: null, idempotencyKey: options.idempotencyKey },
+        });
+        if (existing) {
+          this.logger.log(`Idempotent enqueue: returning existing job ${existing.id} for key ${options.idempotencyKey}`);
+          return existing;
+        }
       }
     }
 
