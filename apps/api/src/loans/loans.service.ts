@@ -122,7 +122,19 @@ export class LoansService {
       month += 1;
       const interest = balance * monthlyRate;
       let principalPaid = emi - interest;
-      if (principalPaid <= 0) break; // EMI doesn't even cover interest — schedule cannot converge
+      if (principalPaid <= 0) {
+        // EMI doesn't even cover interest — schedule cannot converge. Record this month
+        // (balance unchanged, the whole EMI is absorbed by interest) so callers always
+        // get a non-empty schedule reflecting the stuck state, then stop.
+        rows.push({
+          month,
+          emi: Number(emi.toFixed(2)),
+          interest: Number(interest.toFixed(2)),
+          principal: 0,
+          balance: Number(balance.toFixed(2)),
+        });
+        break;
+      }
       if (principalPaid > balance) principalPaid = balance;
       balance = Math.max(0, balance - principalPaid);
       rows.push({
