@@ -15,12 +15,27 @@ export type ClassificationResult =
 // is only ever consulted for questions the deterministic router doesn't recognize at
 // all. A known question about net worth, goals, tax, etc. always takes the
 // deterministic path, unchanged from before this phase existed.
+// Phrasings that signal the question needs cross-domain reasoning (weighing goals
+// against affordability, trading off risk, prioritizing across categories, comparing
+// periods) rather than a single-topic data lookup. These can still contain a
+// deterministic keyword (e.g. "afford all these goals" contains "goal"), so they must
+// be checked BEFORE matchIntent() to keep such questions on the advanced path.
+const ADVANCED_ONLY_PATTERNS: RegExp[] = [
+  /\bafford\b/i,
+  /overcommitted/i,
+  /\bconflict/i,
+  /trade-?off/i,
+  /prioriti[sz]e/i,
+  /compare.*(month|year|period|quarter)/i,
+];
+
 @Injectable()
 export class IntentClassifierService {
   constructor(private gateway: AiGatewayService) {}
 
   async classify(userId: string, question: string): Promise<ClassificationResult> {
-    const deterministic = matchIntent(question);
+    const needsAdvancedReasoning = ADVANCED_ONLY_PATTERNS.some((p) => p.test(question));
+    const deterministic = needsAdvancedReasoning ? null : matchIntent(question);
     if (deterministic) {
       return { path: "deterministic", intent: deterministic };
     }
