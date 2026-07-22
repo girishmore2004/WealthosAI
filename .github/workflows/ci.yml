@@ -27,6 +27,8 @@ jobs:
         run: npm run audit
       - name: Generate Prisma client
         run: npm run db:generate
+      - name: Build workspace packages
+        run: npm run build:packages
       - name: Backend test suite
         run: npm run --workspace=apps/api test
       - name: Build backend
