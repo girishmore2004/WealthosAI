@@ -119,7 +119,7 @@ export const api = {
   },
   income: {
     list: () => request<IncomeDTO[]>("/income"),
-    create: (data: Partial<IncomeDTO> & { source: string; label: string; amount: number; recurrence: string; receivedAt: string }) =>
+    create: (data: { source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes?: string }) =>
       request<IncomeDTO>("/income", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/income/${id}`, { method: "DELETE" }),
     update: (id: string, data: Partial<{ source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes: string }>) =>
