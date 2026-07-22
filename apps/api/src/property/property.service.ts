@@ -86,7 +86,7 @@ export class PropertyService {
     return {
       totalCurrentValue: totalCurrentValue.toFixed(2),
       totalEquity: totalEquity.toFixed(2),
-      properties: withMetrics as PropertyPortfolioSummaryDTO["properties"],
+      properties: withMetrics as unknown as PropertyPortfolioSummaryDTO["properties"],
     };
   }
 
