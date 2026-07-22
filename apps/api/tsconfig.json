@@ -5,10 +5,6 @@
     "baseUrl": "./",
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "incremental": true,
-    "paths": {
-      "@wealthos/db": ["../../packages/db/src"],
-      "@wealthos/types": ["../../packages/types/src"]
-    }
+    "incremental": true
   }
 }
