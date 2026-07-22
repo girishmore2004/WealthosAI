@@ -29,8 +29,8 @@ describe("HouseholdService.getHouseholdSummary", () => {
   const mockBusiness = { listBusinesses: jest.fn(), monthlySummary: jest.fn() };
   const mockAlerts = { list: jest.fn() };
 
-  const owner = { id: "owner-1", name: "Alex Owner", role: "OWNER" };
-  const member = { id: "member-1", name: "Sam Member", role: "MEMBER" };
+  const owner = { id: "owner-1", name: "Alex Owner", role: "OWNER", householdId: "hh-1" };
+  const member = { id: "member-1", name: "Sam Member", role: "MEMBER", householdId: "hh-1" };
   const household = { id: "hh-1", name: "The Household", members: [owner, member], dependents: [] };
 
   beforeEach(async () => {
