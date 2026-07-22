@@ -149,7 +149,7 @@ export class DashboardService {
       });
     }
 
-    if (inputs.savingsRate < 0.1 && inputs.monthlyIncome > 0) {
+    if (inputs.savingsRate <= 0.1 && inputs.monthlyIncome > 0) {
       insights.push({
         id: "low-savings-rate",
         title: "Savings rate is below 10%",
