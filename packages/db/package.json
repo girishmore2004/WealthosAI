@@ -5,6 +5,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "generate": "prisma generate",
+    "prebuild": "prisma generate",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "seed": "ts-node prisma/seed.ts",
