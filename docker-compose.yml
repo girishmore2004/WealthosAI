@@ -1,0 +1,26 @@
+# Free / self-hosted infra only — no paid services required for local dev or MVP pilot.
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wealthos
+      POSTGRES_PASSWORD: wealthos_dev_password
+      POSTGRES_DB: wealthos
+    ports:
+      - "5432:5432"
+    volumes:
+      - wealthos_pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - wealthos_redis_data:/data
+
+volumes:
+  wealthos_pg_data:
+  wealthos_redis_data:

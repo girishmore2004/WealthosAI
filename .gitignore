@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.next/
+.env
+.env.local
+*.log
+.DS_Store
+*.tsbuildinfo
+.swc/
+packages/db/prisma/dev.db
+apps/api/storage/documents/*
+!apps/api/storage/documents/.gitkeep

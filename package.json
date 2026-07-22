@@ -1,0 +1,27 @@
+{
+  "name": "wealthos-ai",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build:packages": "npm run build --workspace=packages/types && npm run build --workspace=packages/db",
+    "build:api": "npm run build:packages && npm run build --workspace=apps/api",
+    "build:web": "npm run build:packages && npm run build --workspace=apps/web",
+    "db:generate": "npm run generate --workspace=packages/db",
+    "db:migrate": "npm run migrate:dev --workspace=packages/db",
+    "db:migrate:deploy": "npm run migrate:deploy --workspace=packages/db",
+    "db:seed": "npm run seed --workspace=packages/db",
+    "lint": "npm run lint --workspaces --if-present",
+    "audit": "bash scripts/audit.sh",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  }
+}

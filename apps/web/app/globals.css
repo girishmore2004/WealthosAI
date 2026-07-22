@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background-color: #f6f4ee;
+  color: #151e2e;
+}
+
+@layer utilities {
+  /* Signature element: every rupee amount in the product renders in tabular mono,
+     right-aligned, like a printed bank ledger line — never proportional sans digits. */
+  .money {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  .ledger-rule {
+    border-bottom: 1px solid #e4e0d4;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid #d98f2b;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

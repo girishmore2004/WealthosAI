@@ -1,0 +1,978 @@
+// WealthOS AI — core data model (Phase 1 MVP slice: auth, household, income, expenses, dashboard).
+// Uses PostgreSQL only — no paid managed DB required; docker-compose.yml runs it locally for free.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MEMBER
+}
+
+enum TaxRegime {
+  OLD
+  NEW
+}
+
+enum RiskProfile {
+  CONSERVATIVE
+  MODERATE
+  AGGRESSIVE
+}
+
+enum CategoryType {
+  NEED
+  WANT
+  SAVINGS
+}
+
+enum IncomeSource {
+  SALARY
+  FREELANCE
+  BUSINESS
+  RENT
+  DIVIDEND
+  INTEREST
+  BONUS
+  PENSION
+  OTHER
+}
+
+enum Recurrence {
+  ONE_TIME
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  CARD
+  BANK_TRANSFER
+  WALLET
+  OTHER
+}
+
+enum InvestmentType {
+  MUTUAL_FUND
+  STOCK
+  ETF
+  EPF
+  PPF
+  NPS
+  FD
+  BOND
+  GOLD
+  SILVER
+  REAL_ESTATE
+  CRYPTO
+  BUSINESS_EQUITY
+  OTHER
+}
+
+enum RiskLevel {
+  LOW
+  MODERATE
+  HIGH
+}
+
+enum Liquidity {
+  LIQUID
+  SEMI_LIQUID
+  ILLIQUID
+}
+
+enum LoanType {
+  HOME
+  CAR
+  EDUCATION
+  PERSONAL
+  BUSINESS
+  CREDIT_CARD
+  FAMILY
+  OTHER
+}
+
+enum InsuranceType {
+  HEALTH
+  TERM
+  VEHICLE
+  HOME
+  PERSONAL_ACCIDENT
+  CRITICAL_ILLNESS
+  TRAVEL
+  BUSINESS
+}
+
+enum GoalType {
+  EMERGENCY_FUND
+  HOUSE
+  LAND
+  CAR
+  MARRIAGE
+  CHILD_EDUCATION
+  RETIREMENT
+  EARLY_RETIREMENT
+  BUSINESS_EXPANSION
+  VACATION
+  HEALTHCARE_RESERVE
+  PASSIVE_INCOME
+  FAMILY_SUPPORT
+  OTHER
+}
+
+model Household {
+  id         String      @id @default(cuid())
+  name       String
+  createdAt  DateTime    @default(now())
+  members    User[]
+  dependents Dependent[]
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  phone        String?     @unique
+  name         String?
+  dateOfBirth  DateTime?
+  role         Role        @default(OWNER)
+  taxRegime    TaxRegime   @default(NEW)
+  riskProfile  RiskProfile @default(MODERATE)
+  household    Household?  @relation(fields: [householdId], references: [id])
+  householdId  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  sessions  Session[]
+  otpCodes  OtpCode[]
+  incomes   Income[]
+  expenses  Expense[]
+  auditLogs AuditLog[]
+  goals              Goal[]
+  investments        Investment[]
+  loans              Loan[]
+  insurancePolicies  InsurancePolicy[]
+  taxDeductions      TaxDeduction[]
+  retirementProfile  RetirementProfile?
+  alerts             Alert[]
+  settings           UserSettings?
+  properties         Property[]
+  businesses         Business[]
+  documents          Document[]
+  coachInteractions  CoachInteraction[]
+  savedScenarios     SavedScenario[]
+  aiInteractionLogs  AiInteractionLog[]
+  aiJobs             AiJob[]
+  aiEmbeddingChunks  AiEmbeddingChunk[]
+  aiSearchLogs       AiSearchLog[]
+  agenticCoachRuns   AgenticCoachRun[]
+  scenarioStudioRuns ScenarioStudioRun[]
+  mlInsightRuns      MlInsightRun[]
+  ingestionBatches   IngestionBatch[]
+  ingestionReviewItems IngestionReviewItem[]
+
+  @@index([householdId])
+}
+
+model Dependent {
+  id           String     @id @default(cuid())
+  household    Household  @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  householdId  String
+  name         String
+  relation     String
+  dateOfBirth  DateTime?
+  createdAt    DateTime   @default(now())
+
+  @@index([householdId])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  userAgent  String?
+  ipAddress  String?
+  revoked    Boolean  @default(false)
+
+  @@index([userId])
+}
+
+// OTP codes are never stored in plaintext — only a hash — and always expire.
+model OtpCode {
+  id          String   @id @default(cuid())
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String?
+  identifier  String   // email used for this login attempt
+  codeHash    String
+  expiresAt   DateTime
+  consumed    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([identifier])
+}
+
+model Category {
+  id        String        @id @default(cuid())
+  name      String        @unique
+  type      CategoryType
+  icon      String?
+  isSystem  Boolean       @default(true)
+  expenses  Expense[]
+}
+
+model Income {
+  id          String        @id @default(cuid())
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  source      IncomeSource
+  label       String
+  amount      Decimal       @db.Decimal(14, 2)
+  currency    String        @default("INR")
+  recurrence  Recurrence    @default(MONTHLY)
+  receivedAt  DateTime
+  notes       String?
+  createdAt   DateTime      @default(now())
+
+  @@index([userId, receivedAt])
+}
+
+model Expense {
+  id             String        @id @default(cuid())
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  category       Category      @relation(fields: [categoryId], references: [id])
+  categoryId     String
+  merchant       String?
+  amount         Decimal       @db.Decimal(14, 2)
+  currency       String        @default("INR")
+  spentAt        DateTime
+  paymentMethod  PaymentMethod @default(UPI)
+  notes          String?
+  isRecurring    Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+
+  @@index([userId, spentAt])
+  @@index([categoryId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId     String?
+  action     String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Goal {
+  id                   String    @id @default(cuid())
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId               String
+  type                 GoalType
+  name                 String
+  targetAmount         Decimal   @db.Decimal(14, 2)
+  targetDate           DateTime
+  currentAmount        Decimal   @db.Decimal(14, 2) @default(0)
+  monthlyContribution  Decimal   @db.Decimal(14, 2) @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  investments Investment[]
+
+  @@index([userId])
+}
+
+model Investment {
+  id             String          @id @default(cuid())
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  type           InvestmentType
+  name           String
+  currentValue   Decimal         @db.Decimal(14, 2)
+  costBasis      Decimal         @db.Decimal(14, 2)
+  purchaseDate   DateTime
+  riskLevel      RiskLevel       @default(MODERATE)
+  liquidity      Liquidity       @default(SEMI_LIQUID)
+  goal           Goal?           @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  goalId         String?
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([userId])
+  @@index([goalId])
+}
+
+model Loan {
+  id                     String    @id @default(cuid())
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                 String
+  type                   LoanType
+  lender                 String
+  principal              Decimal   @db.Decimal(14, 2)
+  outstandingPrincipal   Decimal   @db.Decimal(14, 2)
+  interestRateAnnual     Decimal   @db.Decimal(5, 2)
+  tenureMonths           Int
+  emiAmount              Decimal   @db.Decimal(14, 2)
+  startDate              DateTime
+  notes                  String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  properties Property[]
+
+  @@index([userId])
+}
+
+model InsurancePolicy {
+  id                String          @id @default(cuid())
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  type              InsuranceType
+  provider          String
+  policyNumber      String?
+  premiumAmount     Decimal         @db.Decimal(14, 2)
+  premiumFrequency  Recurrence      @default(YEARLY)
+  coverageAmount    Decimal         @db.Decimal(14, 2)
+  renewalDate       DateTime
+  nomineeName       String?
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  properties Property[]
+
+  @@index([userId])
+}
+
+// --- Phase 3: Tax, Retirement, Alerts, Settings -----------------------------------
+
+enum TaxSection {
+  SECTION_80C
+  SECTION_80D
+  SECTION_80CCD_1B
+  HRA
+  HOME_LOAN_INTEREST
+  SECTION_80TTA
+  SECTION_80E
+  OTHER
+}
+
+enum AlertType {
+  EMI_DUE
+  INSURANCE_RENEWAL
+  BUDGET_OVERSPEND
+  GOAL_DELAY
+  SUBSCRIPTION_RENEWAL
+  DEBT_STRESS
+  DOCUMENT_EXPIRY
+  BUSINESS_OBLIGATION_DUE
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum DigestFrequency {
+  DAILY
+  WEEKLY
+  OFF
+}
+
+enum Theme {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+enum AppLanguage {
+  EN
+  HI
+  MR
+}
+
+model TaxDeduction {
+  id             String      @id @default(cuid())
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  section        TaxSection
+  description    String
+  amount         Decimal     @db.Decimal(12, 2)
+  financialYear  String      // e.g. "2026-27"
+  createdAt      DateTime    @default(now())
+
+  @@index([userId, financialYear])
+}
+
+model RetirementProfile {
+  id                                  String    @id @default(cuid())
+  user                                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                              String    @unique
+  targetRetirementAge                 Int       @default(60)
+  desiredMonthlyIncomeToday           Decimal   @db.Decimal(12, 2)
+  inflationRatePercent                Decimal   @db.Decimal(5, 2) @default(6)
+  expectedReturnPreRetirementPercent  Decimal   @db.Decimal(5, 2) @default(11)
+  expectedReturnPostRetirementPercent Decimal   @db.Decimal(5, 2) @default(7)
+  createdAt                           DateTime  @default(now())
+  updatedAt                           DateTime  @updatedAt
+}
+
+model Alert {
+  id          String         @id @default(cuid())
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  type        AlertType
+  severity    AlertSeverity  @default(INFO)
+  title       String
+  message     String
+  dedupeKey   String         // stable key so re-running the rules engine upserts instead of duplicating
+  dueDate     DateTime?
+  isRead      Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, isRead])
+}
+
+model UserSettings {
+  id                  String            @id @default(cuid())
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId              String            @unique
+  notifyEmail         Boolean           @default(true)
+  digestFrequency     DigestFrequency   @default(WEEKLY)
+  theme               Theme             @default(LIGHT)
+  language            AppLanguage       @default(EN)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+}
+
+// --- Phase 4: Property, Business Tracker, Document Vault, Reports --------------
+
+enum PropertyType {
+  HOUSE
+  APARTMENT
+  PLOT
+  LAND
+  COMMERCIAL
+  RENTAL
+}
+
+enum BusinessTransactionType {
+  REVENUE
+  EXPENSE
+  OWNER_DRAWING
+}
+
+enum BusinessEntityType {
+  SOLE_PROPRIETORSHIP
+  PARTNERSHIP
+  LLP
+  PRIVATE_LIMITED
+  OTHER
+}
+
+enum ObligationStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum DocumentCategory {
+  PAN
+  AADHAAR
+  SALARY_SLIP
+  FORM_16
+  INSURANCE_POLICY
+  LOAN_DOCUMENT
+  MF_STATEMENT
+  TAX_RETURN
+  PROPERTY_PAPER
+  BUSINESS_DOCUMENT
+  RECEIPT
+  BILL
+  OTHER
+}
+
+enum OcrStatus {
+  NOT_APPLICABLE
+  PENDING
+  DONE
+  FAILED
+}
+
+model Property {
+  id                     String        @id @default(cuid())
+  user                   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                 String
+  type                   PropertyType
+  name                   String
+  address                String?
+  currentValue           Decimal       @db.Decimal(14, 2)
+  purchasePrice          Decimal       @db.Decimal(14, 2)
+  purchaseDate           DateTime
+  isRented               Boolean       @default(false)
+  monthlyRentalIncome    Decimal?      @db.Decimal(12, 2)
+  annualMaintenanceCost  Decimal       @db.Decimal(12, 2) @default(0)
+  annualPropertyTax      Decimal       @db.Decimal(12, 2) @default(0)
+  // Soft links to an existing Loan/InsurancePolicy the property is financed/insured
+  // under — optional, and setting the loan/policy to null on delete (never cascades a
+  // property away just because its mortgage or policy record was removed).
+  loan                   Loan?             @relation(fields: [loanId], references: [id], onDelete: SetNull)
+  loanId                 String?
+  insurancePolicy        InsurancePolicy?  @relation(fields: [insurancePolicyId], references: [id], onDelete: SetNull)
+  insurancePolicyId      String?
+  notes                  String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([loanId])
+  @@index([insurancePolicyId])
+}
+
+model Business {
+  id                 String             @id @default(cuid())
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId             String
+  name               String
+  description        String?
+  entityType         BusinessEntityType @default(SOLE_PROPRIETORSHIP)
+  currency           String             @default("INR")
+  startedAt          DateTime?
+  ownershipPercent   Decimal?           @db.Decimal(5, 2)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  transactions  BusinessTransaction[]
+  obligations   BusinessObligation[]
+
+  @@index([userId])
+}
+
+model BusinessTransaction {
+  id           String                    @id @default(cuid())
+  business     Business                  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId   String
+  type         BusinessTransactionType
+  category     String?
+  amount       Decimal                   @db.Decimal(14, 2)
+  occurredAt   DateTime
+  description  String?
+  isRecurring  Boolean                   @default(false)
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  @@index([businessId, occurredAt])
+}
+
+model BusinessObligation {
+  id           String              @id @default(cuid())
+  business     Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId   String
+  title        String
+  dueDate      DateTime
+  amount       Decimal?            @db.Decimal(12, 2)
+  recurrence   Recurrence          @default(MONTHLY)
+  vendor       String?
+  status       ObligationStatus    @default(PENDING)
+  notes        String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([businessId, dueDate])
+}
+
+// File bytes live on local/self-hosted disk storage behind a DocumentStorageAdapter
+// (see apps/api/src/documents/adapters) — storageKey is an opaque pointer into that
+// adapter, never a raw filesystem path exposed to the client. OCR is a real,
+// implemented pipeline stage (status machine + text/summary fields) with a mock
+// adapter behind the same OcrAdapter interface used for the real thing later.
+model Document {
+  id           String            @id @default(cuid())
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  category     DocumentCategory
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String
+  tags         String[]
+  expiryDate   DateTime?
+  ocrStatus    OcrStatus         @default(NOT_APPLICABLE)
+  ocrText      String?
+  summary      String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([userId, category])
+  @@index([userId, expiryDate])
+}
+
+// --- Phase 10: AI Gateway ops (prompt registry, interaction log, background jobs) --
+//
+// These three models are infrastructure for the real AiGateway (apps/api/src/ai/),
+// not a product feature themselves. They exist so every model call is versioned,
+// logged, and — for long-running work — trackable as a job rather than blocking an
+// HTTP request. See README "Phase 10 — AI Gateway foundation" for the full design.
+
+enum AiInteractionStatus {
+  OK // model returned valid, schema-conformant output on the first or a retried attempt
+  MALFORMED_FALLBACK // every retry produced invalid output; a caller-supplied fallback was used
+  ERROR // the underlying model call itself failed (network/5xx/timeout), no output at all
+}
+
+// Every call an AiGatewayService method makes is logged here — this is what the
+// ops-layer health check, cache-hit-rate, and "what did the model actually see"
+// tracing all read from. `redactedInput`/`rawOutput` are best-effort truncated to keep
+// rows small; this is an audit/debug trail, not a full transcript store.
+model AiInteractionLog {
+  id             String               @id @default(cuid())
+  user           User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId         String?
+  feature        String // e.g. "coach.explain", "rag.search" — caller-supplied, free text by design
+  taskType       String // "classification" | "extraction" | "generation" | "summarization" | "ranking"
+  promptName     String
+  promptVersion  Int
+  model          String // actual Groq model id used for this call
+  status         AiInteractionStatus
+  confidence     Decimal?             @db.Decimal(4, 3) // 0.000–1.000, self-reported by the model — see AiGatewayService doc comment
+  retries        Int                  @default(0)
+  latencyMs      Int
+  cacheHit       Boolean              @default(false)
+  redactedInput  String // post-redaction input actually sent to the model, truncated to ~4kb by the logger
+  rawOutput      String? // truncated to ~4kb; null when status is ERROR
+  errorMessage   String?
+  createdAt      DateTime             @default(now())
+
+  @@index([userId, createdAt])
+  @@index([feature, createdAt])
+}
+
+// A named, versioned prompt template. New versions are inserted rather than mutated in
+// place (`isActive` flips) so `AiInteractionLog.promptVersion` always points at
+// immutable template text — required for the "what exactly did we ask the model"
+// auditability the ops layer promises.
+model AiPromptVersion {
+  id         String   @id @default(cuid())
+  name       String
+  version    Int
+  template   String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  @@unique([name, version])
+  @@index([name, isActive])
+}
+
+enum AiJobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+// Postgres is the source of truth for job status (same pattern as Session: Redis/BullMQ
+// is the fast transport, this table is what a client actually polls). `idempotencyKey`
+// is optional per job type — callers that want "don't enqueue this twice" set it and
+// AiQueueService upserts against the (userId, idempotencyKey) unique constraint instead
+// of creating a duplicate row.
+model AiJob {
+  id              String      @id @default(cuid())
+  user            User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId          String?
+  type            String // registered handler name, e.g. "ai.health.selfTest"
+  status          AiJobStatus @default(QUEUED)
+  idempotencyKey  String?
+  input           Json
+  result          Json?
+  error           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+// --- Phase 11: RAG engine ----------------------------------------------------------
+//
+// See README "Phase 11 — RAG engine" for the full design. Short version: each user's
+// own data (documents, reports, coach history, alerts, a current financial snapshot)
+// gets chunked and embedded into AiEmbeddingChunk; AiSearchLog records what a search
+// actually retrieved and answered, for the "why these sources were used" UI panel and
+// for audit — same spirit as AiInteractionLog, but search-specific (it needs to keep
+// the ordered list of cited chunk ids, which a generic interaction log row doesn't).
+
+enum AiSourceType {
+  DOCUMENT
+  REPORT
+  COACH_INTERACTION
+  ALERT
+  SNAPSHOT // a point-in-time dashboard snapshot indexed at reindex time — see the
+  // README limitation on why this is "current state as of last reindex", not a real
+  // historical time series (no periodic snapshots are stored anywhere in the app yet).
+}
+
+// One embedded chunk of some larger source document. `sourceId` is a loose reference
+// (the id of a Document/CoachInteraction/etc. row, or a synthetic id for a
+// report/snapshot) rather than a Prisma relation, because a single chunk table
+// spanning five very different source tables would need five nullable FK columns for
+// no real benefit — nothing joins back through this table relationally, retrieval
+// always reads sourceType+sourceId and re-fetches the origin row itself if it needs
+// more than what's already denormalized into `metadata`.
+model AiEmbeddingChunk {
+  id              String       @id @default(cuid())
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+  sourceType      AiSourceType
+  sourceId        String
+  chunkIndex      Int
+  text            String
+  // Denormalized display fields so retrieval results can render a citation card
+  // without a second query per source table: { title, category?, occurredAt? }
+  metadata        Json
+  embedding       Float[]
+  tokenCount      Int
+  sourcePriority  Int          @default(0) // static per-sourceType trust weight, see HybridRetrievalService
+  sourceCreatedAt DateTime // drives recency weighting — the origin record's own date, not this row's createdAt
+  createdAt       DateTime     @default(now())
+
+  @@index([userId, sourceType])
+  @@index([userId, sourceCreatedAt])
+}
+
+model AiSearchLog {
+  id                String   @id @default(cuid())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  query             String
+  rewrittenQueries  String[]
+  retrievedChunkIds String[]
+  citedChunkIds     String[]
+  hadEvidence       Boolean
+  retrievalConfidence Decimal @db.Decimal(4, 3)
+  answerConfidence  Decimal? @db.Decimal(4, 3)
+  answer            String
+  createdAt         DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// --- Phase 12: Agentic Coach --------------------------------------------------------
+//
+// See README "Phase 12 — Agentic Coach" for the full design. Short version: this is
+// an EXPLANATION LAYER over the existing deterministic CoachService/matchIntent
+// router (Phase 5), not a replacement for it — a known question still takes the
+// deterministic path unchanged; the model is only consulted for questions the
+// original router doesn't recognize, or to add explanation/context around an already-
+// grounded deterministic answer. AgenticCoachRun is a richer record than
+// CoachInteraction (Phase 5) specifically for that: it captures the plan, the raw
+// facts gathered, and whether the composed answer passed numeric-consistency
+// verification — CoachInteraction itself is untouched and keeps working exactly as
+// it did before this phase.
+
+enum CoachPath {
+  DETERMINISTIC
+  ADVANCED
+}
+
+model AgenticCoachRun {
+  id                String     @id @default(cuid())
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  question          String
+  path              CoachPath
+  matchedIntent     String? // the Phase 5 intent id, when path is DETERMINISTIC
+  advancedIntent    String? // one of coach2.constants.ts's AdvancedCoachIntent, when path is ADVANCED
+  plan              String[] // ordered, human-readable steps actually taken — the "show your work" record
+  facts             Json // structured evidence gathered, shown in the frontend's expandable evidence section
+  citedSources      String[] // AiEmbeddingChunk ids, when the general_search path was used
+  answer            String
+  confidence        Decimal    @db.Decimal(4, 3)
+  verificationPassed Boolean // did the composed answer pass NumericConsistencyVerifier
+  staleAdviceNote   String?
+  createdAt         DateTime   @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, matchedIntent])
+  @@index([userId, advancedIntent])
+}
+
+// --- Phase 13: Scenario Studio ------------------------------------------------------
+//
+// See README "Phase 13 — Scenario Studio" for the full design. Built entirely on top
+// of the existing deterministic SimulatorService/simulator.engine.ts (Phase 5) — every
+// variant's numbers come from that same engine, re-run with different (deterministically
+// derived) parameters. Nothing here invents a financial projection; the AI layer only
+// parses prompts into structured params and explains an already-computed ranking.
+
+model ScenarioStudioRun {
+  id              String   @id @default(cuid())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+  prompt          String
+  scenarioType    String
+  baseParams      Json
+  targetGoalIds   String[]
+  variants        Json // summarized per-variant results (label, params, key numbers, feasibility)
+  sensitivity     Json // SensitivityDimension[] output
+  rankedOrder     String[] // variant labels, best to worst
+  explanation     String
+  explanationConfidence Decimal @db.Decimal(4, 3)
+  verificationPassed Boolean
+  createdAt       DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// --- Phase 14: ML Insights ----------------------------------------------------------
+//
+// See README "Phase 14 — ML Insights" for the full design. Every model behind this log
+// is real, named, documented statistical computation (MAD-based anomaly detection,
+// least-squares regression, a hand-specified scorecard, a logistic function, a
+// two-window z-test, per-user z-score segmentation) over the app's own data — no
+// external model call, nothing routed through AiGatewayService. This table is an
+// evaluation/audit trail (headline numbers per run), not the full model output; the
+// full ModelOutput<T> shapes are computed fresh on each request, not read back from
+// here.
+
+model MlInsightRun {
+  id                  String   @id @default(cuid())
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId              String
+  anomalyCount        Int
+  cashflowStressRisk  Boolean
+  debtRiskScore       Int
+  debtRiskTier        String
+  driftDetected       Boolean
+  driftDirection      String
+  summary             Json // full MlInsightsSummary snapshot, for the history view
+  createdAt           DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// --- Phase 15: Copilot Ingestion -----------------------------------------------------
+//
+// See README "Phase 15 — Copilot Ingestion" for the full design. A staged review
+// queue, not a direct-write pipeline — nothing here creates an Expense row until a
+// human explicitly approves an IngestionReviewItem (see IngestionReviewService).
+// Conflict resolution against existing manual data happens at approval time via
+// `duplicateResolution`, not silently at parse time.
+
+enum IngestionItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model IngestionBatch {
+  id              String                 @id @default(cuid())
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+  sourceLabel     String // free text the user gave this import, e.g. "HDFC Feb statement"
+  rawTextExcerpt  String // truncated copy of the input, for audit — not the full statement text long-term
+  totalLines      Int
+  parsedCount     Int
+  unparsedCount   Int
+  items           IngestionReviewItem[]
+  createdAt       DateTime               @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model IngestionReviewItem {
+  id                        String              @id @default(cuid())
+  batch                     IngestionBatch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  batchId                   String
+  user                      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                    String
+  rawLine                   String
+  parsedDate                DateTime
+  parsedAmount              Decimal             @db.Decimal(14, 2)
+  merchantRaw               String
+  merchantNormalized        String
+  suggestedCategoryId       String?
+  suggestedCategoryName     String?
+  categorySuggestionConfidence Decimal          @db.Decimal(4, 3)
+  isDuplicateCandidate      Boolean
+  duplicateOfExpenseId      String?
+  duplicateConfidence       Decimal             @db.Decimal(4, 3)
+  isRecurringCandidate      Boolean
+  recurringMatchMerchant    String?
+  isAnomalyCandidate        Boolean
+  anomalyZScore             Decimal?            @db.Decimal(6, 2)
+  missingFields             String[]
+  overallConfidence         Decimal             @db.Decimal(4, 3)
+  rationale                 String
+  status                    IngestionItemStatus @default(PENDING)
+  resolvedExpenseId         String?
+  duplicateResolution       String? // "kept_both" | "skipped_duplicate" | "merged" — set only when isDuplicateCandidate was true
+  createdAt                 DateTime            @default(now())
+  resolvedAt                DateTime?
+
+  @@index([userId, status])
+  @@index([batchId])
+}
+
+// --- Phase 5: AI Coach, What-If Simulator ----------------------------------------
+
+enum ScenarioType {
+  SALARY_HIKE
+  SALARY_DROP
+  SIP_INCREASE
+  SIP_DECREASE
+  HOUSE_PURCHASE
+  LOAN_PREPAYMENT
+  RETIREMENT_AGE_SHIFT
+  EMERGENCY_EXPENSE
+  GOAL_DELAY
+}
+
+// Every AI Coach answer is logged with which grounded data sources it drew from and
+// whether the question was answerable at all — this is the audit trail that lets us
+// prove "grounded only in existing app data" rather than just asserting it.
+model CoachInteraction {
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  question      String
+  matchedIntent String?  // null when the question was refused/unsupported
+  answer        String
+  dataSources   String[] // e.g. ["dashboard", "goals"] — which services were queried
+  wasRefused    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// Stores a computed scenario result so the user can revisit/compare runs later. The
+// calculation itself (SimulatorEngine) is a pure function with no DB access — this
+// table only persists inputs + the already-computed output snapshot.
+model SavedScenario {
+  id             String        @id @default(cuid())
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  scenarioType   ScenarioType
+  label          String
+  params         Json
+  resultSnapshot Json
+  createdAt      DateTime      @default(now())
+
+  @@index([userId, createdAt])
+}
