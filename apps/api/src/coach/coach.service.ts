@@ -63,15 +63,24 @@ export class CoachService {
       },
     });
 
-    return interaction;
+    return { ...interaction, createdAt: this.toIsoString(interaction.createdAt) };
   }
 
   async history(userId: string, take = 20): Promise<CoachInteractionDTO[]> {
-    return this.prisma.client.coachInteraction.findMany({
+    const interactions = await this.prisma.client.coachInteraction.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
       take,
     });
+
+    return interactions.map((interaction) => ({
+      ...interaction,
+      createdAt: this.toIsoString(interaction.createdAt),
+    }));
+  }
+
+  private toIsoString(value: Date | string | undefined): string {
+    return value ? new Date(value).toISOString() : new Date().toISOString();
   }
 
   private async dispatch(userId: string, intentId: string): Promise<GroundedAnswer> {
