@@ -1,7 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { IncomeService } from "./income.service";
 import { CreateIncomeDto } from "./dto/create-income.dto";
 import { UpdateIncomeDto } from "./dto/update-income.dto";
+import { ListIncomeQueryDto } from "./dto/list-income-query.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
@@ -14,6 +15,23 @@ export class IncomeController {
   @Get()
   list(@CurrentUser() user: User) {
     return this.incomeService.list(user.id);
+  }
+
+  // Opt-in paginated + date-range-filterable listing. Existing GET /income above is left
+  // exactly as-is (unbounded array response) since the current income page consumes it
+  // directly as an array; this is additive for future UI/API consumers that need bounded
+  // result sets.
+  @Get("paged")
+  listPaged(@CurrentUser() user: User, @Query() query: ListIncomeQueryDto) {
+    return this.incomeService.listPaged(user.id, query);
+  }
+
+  // Surfaces the same figure as monthlyForecast() (used internally by 9+ other features)
+  // alongside a fuller breakdown — in particular, how much one-time income is currently
+  // excluded from that monthly figure, which was previously invisible anywhere in the UI.
+  @Get("breakdown")
+  breakdown(@CurrentUser() user: User) {
+    return this.incomeService.monthlyForecastBreakdown(user.id);
   }
 
   @Post()
