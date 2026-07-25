@@ -203,6 +203,12 @@ model Session {
   userAgent  String?
   ipAddress  String?
   revoked    Boolean  @default(false)
+  // SHA-256 hash of the opaque bearer token issued to the client (see
+  // auth/session.service.ts). NULL only for sessions created before this migration —
+  // those are served by a temporary, feature-flagged legacy fallback until they expire.
+  // Never store the raw token; this column exists purely for lookup, exactly like
+  // OtpCode.codeHash.
+  tokenHash  String?  @unique
 
   @@index([userId])
 }
