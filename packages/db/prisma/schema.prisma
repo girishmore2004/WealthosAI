@@ -217,6 +217,10 @@ model OtpCode {
   expiresAt   DateTime
   consumed    Boolean  @default(false)
   createdAt   DateTime @default(now())
+  // Failed-guess counter against this specific outstanding code (audit/durability
+  // signal). The primary brute-force lockout enforcement is the Redis-backed
+  // per-identifier counter in AuthService — see registerFailedAttempt().
+  attempts    Int      @default(0)
 
   @@index([identifier])
 }
