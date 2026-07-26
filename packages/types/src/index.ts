@@ -222,8 +222,18 @@ export interface RebalanceActionDTO {
   type: InvestmentType;
   currentValue: number;
   currentPercent: number;
+  // "What you asked for" — the target implied directly by the input percent against the
+  // full totalAfterCash. Unchanged meaning from before this change.
   targetPercent: number;
   targetValue: number;
+  // "What's actually achievable" — equal to targetPercent/targetValue when nothing in
+  // the plan is constrained. When one or more no-sell types can't reach their target,
+  // the shortfall is redistributed proportionally across the remaining types by their
+  // relative target weights, and BUY/SELL amounts are computed against these effective
+  // values instead of the raw target — see InvestmentsService.resolveConstrainedTargets().
+  // For a constrained type itself, these equal currentValue/currentPercent (it's locked).
+  effectiveTargetPercent: number;
+  effectiveTargetValue: number;
   action: RebalanceActionKind;
   amount: number;
   constrained: boolean;
