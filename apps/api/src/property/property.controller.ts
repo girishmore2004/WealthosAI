@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { PropertyService } from "./property.service";
 import { CreatePropertyDto } from "./dto/create-property.dto";
 import { UpdatePropertyDto } from "./dto/update-property.dto";
@@ -34,5 +34,18 @@ export class PropertyController {
   @Delete(":id")
   remove(@CurrentUser() user: User, @Param("id") id: string) {
     return this.propertyService.remove(user.id, id);
+  }
+
+  // NEW: closes the audit-flagged Tax-integration gap for this feature. Returns null
+  // (not an error) when the property isn't Section-24-eligible (no linked HOME loan, or
+  // not a residential property type) — that's a normal, expected outcome for most
+  // properties, not a failure.
+  @Get(":id/tax-deduction-estimate")
+  taxDeductionEstimate(
+    @CurrentUser() user: User,
+    @Param("id") id: string,
+    @Query("financialYear") financialYear?: string,
+  ) {
+    return this.propertyService.estimateHomeLoanInterestDeduction(user.id, id, financialYear);
   }
 }
