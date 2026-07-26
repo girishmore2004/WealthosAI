@@ -1,19 +1,29 @@
 import { Test } from "@nestjs/testing";
+import { NotFoundException } from "@nestjs/common";
 import { PropertyService } from "../src/property/property.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { LoansService } from "../src/loans/loans.service";
+import { currentFinancialYear } from "../src/common/utils/financial-year.util";
 
 describe("PropertyService.portfolioSummary metrics", () => {
   let service: PropertyService;
   const mockPrisma = {
     client: {
-      property: { findMany: jest.fn() },
+      property: { findMany: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
+      loan: { findUnique: jest.fn() },
+      insurancePolicy: { findUnique: jest.fn() },
     },
   };
+  const mockLoans = { amortizationSchedule: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     const moduleRef = await Test.createTestingModule({
-      providers: [PropertyService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        PropertyService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: LoansService, useValue: mockLoans },
+      ],
     }).compile();
     service = moduleRef.get(PropertyService);
   });
@@ -71,5 +81,205 @@ describe("PropertyService.portfolioSummary metrics", () => {
 
     expect(summary.totalCurrentValue).toBe("5000000.00");
     expect(summary.totalEquity).toBe("4000000.00"); // (3M-1M) + 2M
+  });
+});
+
+describe("PropertyService.estimateHomeLoanInterestDeduction (new)", () => {
+  let service: PropertyService;
+  const mockPrisma = {
+    client: {
+      property: { findMany: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
+      loan: { findUnique: jest.fn() },
+      insurancePolicy: { findUnique: jest.fn() },
+    },
+  };
+  const mockLoans = { amortizationSchedule: jest.fn() };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PropertyService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: LoansService, useValue: mockLoans },
+      ],
+    }).compile();
+    service = moduleRef.get(PropertyService);
+  });
+
+  function makeSchedule(months: number, interestPerRow: number) {
+    return Array.from({ length: months }, (_, i) => ({
+      month: i + 1,
+      emi: interestPerRow + 1000,
+      interest: interestPerRow,
+      principal: 1000,
+      balance: 100000 - i * 1000,
+    }));
+  }
+
+  it("returns null when the property has no linked loan", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({ id: "p1", userId: "user-1", type: "HOUSE", loan: null });
+
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1");
+
+    expect(result).toBeNull();
+    expect(mockLoans.amortizationSchedule).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the linked loan is not a HOME-type loan", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({
+      id: "p1", userId: "user-1", type: "HOUSE",
+      loan: { id: "l1", type: "PERSONAL" },
+    });
+
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null for a non-residential property type even with a linked HOME loan", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({
+      id: "p1", userId: "user-1", type: "PLOT",
+      loan: { id: "l1", type: "HOME" },
+    });
+
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1");
+
+    expect(result).toBeNull();
+  });
+
+  it("throws NotFoundException for a property owned by someone else", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({ id: "p1", userId: "someone-else" });
+    await expect(service.estimateHomeLoanInterestDeduction("user-1", "p1")).rejects.toThrow(NotFoundException);
+  });
+
+  it("sums interest only from schedule rows that fall within the target financial year", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({
+      id: "p1", userId: "user-1", type: "HOUSE",
+      loan: { id: "l1", type: "HOME" },
+    });
+    mockLoans.amortizationSchedule.mockResolvedValue(makeSchedule(24, 1000)); // 2 years, ₹1000 interest/month flat
+
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1", currentFinancialYear());
+
+    expect(result).not.toBeNull();
+    expect(result!.monthsIncluded).toBeGreaterThan(0);
+    expect(result!.monthsIncluded).toBeLessThanOrEqual(12);
+    // Every included row contributes exactly ₹1000 — the two figures must be
+    // internally consistent regardless of which calendar date the test happens to run on.
+    expect(Number(result!.estimatedInterestPayable)).toBeCloseTo(result!.monthsIncluded * 1000, 2);
+  });
+
+  it("returns zero months/interest for a financial year far outside the schedule's horizon", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({
+      id: "p1", userId: "user-1", type: "APARTMENT",
+      loan: { id: "l1", type: "HOME" },
+    });
+    mockLoans.amortizationSchedule.mockResolvedValue(makeSchedule(24, 1000));
+
+    // A financial year decades in the future can't overlap a 24-month schedule
+    // projected from today, regardless of what "today" actually is when this test runs.
+    const farFutureFy = currentFinancialYear(new Date(2099, 5, 1));
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1", farFutureFy);
+
+    expect(result!.monthsIncluded).toBe(0);
+    expect(result!.estimatedInterestPayable).toBe("0.00");
+  });
+
+  it("flags exceedsSelfOccupiedCap when estimated interest is above ₹2,00,000", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({
+      id: "p1", userId: "user-1", type: "HOUSE",
+      loan: { id: "l1", type: "HOME" },
+    });
+    // High monthly interest guarantees the FY total exceeds the ₹200,000 cap regardless
+    // of exactly how many months of the current FY the schedule happens to cover.
+    mockLoans.amortizationSchedule.mockResolvedValue(makeSchedule(24, 50000));
+
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1", currentFinancialYear());
+
+    expect(result!.exceedsSelfOccupiedCap).toBe(true);
+    expect(result!.selfOccupiedCap).toBe("200000.00");
+  });
+
+  it("includes a RENTAL property (let-out residential) as Section 24 eligible", async () => {
+    mockPrisma.client.property.findUnique.mockResolvedValue({
+      id: "p1", userId: "user-1", type: "RENTAL",
+      loan: { id: "l1", type: "HOME" },
+    });
+    mockLoans.amortizationSchedule.mockResolvedValue(makeSchedule(12, 1000));
+
+    const result = await service.estimateHomeLoanInterestDeduction("user-1", "p1", currentFinancialYear());
+
+    expect(result).not.toBeNull();
+  });
+});
+
+describe("PropertyService CRUD hardening", () => {
+  let service: PropertyService;
+  const mockPrisma = {
+    client: {
+      property: { findMany: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
+      loan: { findUnique: jest.fn() },
+      insurancePolicy: { findUnique: jest.fn() },
+    },
+  };
+  const mockLoans = { amortizationSchedule: jest.fn() };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PropertyService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: LoansService, useValue: mockLoans },
+      ],
+    }).compile();
+    service = moduleRef.get(PropertyService);
+  });
+
+  describe("update", () => {
+    it("verifies a linked loanId belongs to the caller before updating", async () => {
+      mockPrisma.client.loan.findUnique.mockResolvedValue({ id: "l1", userId: "someone-else" });
+
+      await expect(service.update("user-1", "p1", { loanId: "l1" } as any)).rejects.toThrow();
+      expect(mockPrisma.client.property.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("updates and returns the row when it exists and is owned by the caller", async () => {
+      mockPrisma.client.property.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.client.property.findUnique.mockResolvedValue({ id: "p1", name: "Updated" });
+
+      const result = await service.update("user-1", "p1", { name: "Updated" } as any);
+
+      expect(mockPrisma.client.property.updateMany).toHaveBeenCalledWith({
+        where: { id: "p1", userId: "user-1" },
+        data: { name: "Updated", purchaseDate: undefined },
+      });
+      expect(result).toEqual({ id: "p1", name: "Updated" });
+    });
+
+    it("throws NotFoundException without leaking whether the id exists for another user", async () => {
+      mockPrisma.client.property.updateMany.mockResolvedValue({ count: 0 });
+      await expect(service.update("user-1", "not-mine", {} as any)).rejects.toThrow(NotFoundException);
+      expect(mockPrisma.client.property.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("remove", () => {
+    it("deletes atomically scoped by owner and returns the id", async () => {
+      mockPrisma.client.property.deleteMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.remove("user-1", "p1");
+
+      expect(mockPrisma.client.property.deleteMany).toHaveBeenCalledWith({
+        where: { id: "p1", userId: "user-1" },
+      });
+      expect(result).toEqual({ id: "p1" });
+    });
+
+    it("throws NotFoundException when the id doesn't exist or isn't owned by the caller", async () => {
+      mockPrisma.client.property.deleteMany.mockResolvedValue({ count: 0 });
+      await expect(service.remove("user-1", "not-mine")).rejects.toThrow(NotFoundException);
+    });
   });
 });
