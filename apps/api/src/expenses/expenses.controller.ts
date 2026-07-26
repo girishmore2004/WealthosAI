@@ -3,6 +3,7 @@ import { ExpensesService } from "./expenses.service";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
 import { UpdateExpenseDto } from "./dto/update-expense.dto";
 import { CreateCategoryDto } from "./dto/create-category.dto";
+import { ListExpensesQueryDto } from "./dto/list-expenses-query.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
@@ -25,6 +26,15 @@ export class ExpensesController {
   @Get("expenses")
   list(@CurrentUser() user: User, @Query("month") month?: string) {
     return this.expensesService.list(user.id, month);
+  }
+
+  // Opt-in paginated + filterable listing. Existing GET /expenses above is left exactly
+  // as-is (unbounded array response) since the current expenses page consumes it
+  // directly as an array; this is additive for future UI/API consumers that need bounded
+  // result sets (e.g. a long-lived account's full expense history).
+  @Get("expenses/paged")
+  listPaged(@CurrentUser() user: User, @Query() query: ListExpensesQueryDto) {
+    return this.expensesService.listPaged(user.id, query);
   }
 
   @Post("expenses")
