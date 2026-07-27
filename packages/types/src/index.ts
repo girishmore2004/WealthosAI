@@ -347,13 +347,25 @@ export interface TaxEstimateDTO {
   financialYear: string;
   grossAnnualIncome: string;
   totalDeductions: string;
-  oldRegime: { taxableIncome: string; taxPayable: string };
-  newRegime: { taxableIncome: string; taxPayable: string };
+  // `surcharge` is new on both regime objects — the surcharge amount actually applied
+  // (in rupees, already included in taxPayable), so the UI can show it as its own line
+  // item. Zero for any income below the ₹50L threshold, matching every existing case.
+  oldRegime: { taxableIncome: string; taxPayable: string; surcharge: string };
+  newRegime: { taxableIncome: string; taxPayable: string; surcharge: string };
   recommendedRegime: "OLD" | "NEW";
   savingsFromRecommendedRegime: string;
   deductionsBySection: { section: TaxSection; used: string; limit: string; remainingRoom: string }[];
   yearEndChecklist: string[];
   isProjectionOnly: true;
+  // NEW: which financial year's slab configuration was actually used to compute this
+  // estimate, and whether it had to be approximated from the latest available year
+  // because the requested financialYear isn't in tax-slab-config.ts yet (e.g. a future
+  // Budget hasn't been added). Lets the frontend show "using FY2025-26 rates as an
+  // estimate" instead of silently presenting potentially-stale slabs with false
+  // precision — this is the actual transparency mechanism behind the versioned-config
+  // fix, not just an internal implementation detail.
+  slabsFinancialYear: string;
+  slabsAreEstimated: boolean;
 }
 
 export interface RetirementProfileDTO {
