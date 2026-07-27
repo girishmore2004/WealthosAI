@@ -83,6 +83,15 @@ export class BusinessController {
     return this.businessService.removeObligation(user.id, id);
   }
 
+  // NEW: closes the audit-flagged recurring-obligation gap. A dedicated action, not a
+  // side effect of the generic PATCH above — see BusinessService.markObligationPaid()'s
+  // doc comment for why. Response includes both the now-PAID row and the newly created
+  // next occurrence (or null for a one-time obligation, or an already-paid retry).
+  @Post("obligations/:id/mark-paid")
+  markObligationPaid(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.businessService.markObligationPaid(user.id, id);
+  }
+
   @Get(":businessId/summary")
   summary(@CurrentUser() user: User, @Param("businessId") businessId: string, @Query("month") month?: string) {
     return this.businessService.monthlySummary(user.id, businessId, month);
