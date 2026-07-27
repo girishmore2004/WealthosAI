@@ -4,57 +4,73 @@ import { IncomeService } from "../income/income.service";
 import { CreateDeductionDto } from "./dto/create-deduction.dto";
 import { financialYearRange } from "../common/utils/financial-year.util";
 import { TaxEstimateDTO, TaxSection } from "@wealthos/types";
+import { TaxSlabBracket, TaxYearConfig, resolveTaxYearConfig } from "./tax-slab-config";
 
-// Deduction limits are simplified, illustrative caps under the OLD regime (FY2025-26 rules).
-// The NEW regime disallows most of these — only the standard deduction applies there.
 // This engine is for education/decision-support only, not a substitute for a CA or the
-// official IT department calculator, and slabs/limits change with each Union Budget.
-const SECTION_LIMITS: Partial<Record<TaxSection, number>> = {
-  SECTION_80C: 150000,
-  SECTION_80D: 25000,
-  SECTION_80CCD_1B: 50000,
-  HOME_LOAN_INTEREST: 200000,
-  SECTION_80TTA: 10000,
-};
+// official IT department calculator. Slab rates, limits, and surcharge thresholds now
+// live in tax-slab-config.ts, keyed by financial year — see that file's doc comment for
+// why, and resolveTaxYearConfig() for what happens when a requested year isn't in it
+// yet.
 
-const STANDARD_DEDUCTION_OLD = 50000;
-const STANDARD_DEDUCTION_NEW = 75000;
-
-function oldRegimeTax(taxableIncome: number): number {
-  const slabs: [number, number, number][] = [
-    [0, 250000, 0],
-    [250000, 500000, 0.05],
-    [500000, 1000000, 0.2],
-    [1000000, Infinity, 0.3],
-  ];
-  return applySlabs(taxableIncome, slabs);
-}
-
-function newRegimeTax(taxableIncome: number): number {
-  // FY2025-26 new-regime slabs (Budget 2025), with Section 87A rebate making tax effectively
-  // nil up to ₹12L taxable income.
-  if (taxableIncome <= 1200000) return 0;
-  const slabs: [number, number, number][] = [
-    [0, 400000, 0],
-    [400000, 800000, 0.05],
-    [800000, 1200000, 0.1],
-    [1200000, 1600000, 0.15],
-    [1600000, 2000000, 0.2],
-    [2000000, 2400000, 0.25],
-    [2400000, Infinity, 0.3],
-  ];
-  return applySlabs(taxableIncome, slabs);
-}
-
-function applySlabs(income: number, slabs: [number, number, number][]): number {
+export function applySlabs(income: number, slabs: TaxSlabBracket[]): number {
   let tax = 0;
-  for (const [from, to, rate] of slabs) {
+  for (const { from, to, rate } of slabs) {
     if (income <= from) break;
     const taxableInSlab = Math.min(income, to) - from;
     tax += taxableInSlab * rate;
   }
-  // 4% health & education cess
-  return tax * 1.04;
+  return tax;
+}
+
+// Surcharge is NOT slab-wise like income tax itself: once total (taxable) income
+// crosses a threshold, the single matching rate applies to the ENTIRE base tax amount,
+// not just the portion above the threshold. Returns the surcharge RATE (e.g. 0.10 for
+// 10%), not an amount — callers multiply the base tax by (1 + rate). Exported for
+// direct, precise unit testing of the rate table in isolation (see
+// test/tax.service.spec.ts) rather than only indirectly through estimate()'s full
+// pipeline.
+export function findSurchargeRate(taxableIncome: number, slabs: TaxSlabBracket[]): number {
+  for (const { from, to, rate } of slabs) {
+    if (taxableIncome > from && taxableIncome <= to) return rate;
+  }
+  return 0;
+}
+
+// Computes { taxPayable, surcharge } for one regime: base slab tax -> surcharge (on the
+// base tax) -> cess (on tax + surcharge). Deliberately does NOT implement marginal
+// relief — the provision that caps how much surcharge can increase your total tax
+// versus someone just below the threshold, so that crossing a surcharge boundary by ₹1
+// doesn't cost you far more than ₹1 in extra tax. This is a genuinely fiddly,
+// easy-to-get-subtly-wrong calculation; rather than risk an incorrect implementation,
+// it's explicitly left unapplied and disclosed via isProjectionOnly and this comment —
+// figures for taxable income right at a surcharge threshold may overstate actual
+// liability slightly as a result. Everywhere else (well below/above any threshold),
+// this omission has no effect at all.
+function computeRegimeTax(
+  taxableIncome: number,
+  slabs: TaxSlabBracket[],
+  surchargeSlabs: TaxSlabBracket[],
+  cessRate: number,
+): { taxPayable: number; surcharge: number } {
+  const baseTax = applySlabs(taxableIncome, slabs);
+  const surchargeRate = findSurchargeRate(taxableIncome, surchargeSlabs);
+  const surcharge = baseTax * surchargeRate;
+  const taxPayable = (baseTax + surcharge) * (1 + cessRate);
+  return { taxPayable, surcharge };
+}
+
+function oldRegimeTax(taxableIncome: number, config: TaxYearConfig) {
+  return computeRegimeTax(taxableIncome, config.oldRegimeSlabs, config.oldRegimeSurchargeSlabs, config.cessRate);
+}
+
+function newRegimeTax(taxableIncome: number, config: TaxYearConfig) {
+  // Section 87A rebate: tax is effectively nil at/below the threshold, regardless of
+  // what the slab math alone would produce (and therefore surcharge/cess never apply
+  // either, since there's no base tax for them to act on).
+  if (taxableIncome <= config.newRegimeRebateThreshold) {
+    return { taxPayable: 0, surcharge: 0 };
+  }
+  return computeRegimeTax(taxableIncome, config.newRegimeSlabs, config.newRegimeSurchargeSlabs, config.cessRate);
 }
 
 @Injectable()
@@ -75,6 +91,9 @@ export class TaxService {
     return this.prisma.client.taxDeduction.create({ data: { ...dto, userId } });
   }
 
+  // Already correctly ownership-scoped in a single atomic call before this change —
+  // no hardening needed here (unlike most other money modules' remove() this session,
+  // this one was never a findUnique-then-delete pair to begin with).
   async removeDeduction(userId: string, id: string) {
     return this.prisma.client.taxDeduction.deleteMany({ where: { id, userId } });
   }
@@ -95,6 +114,8 @@ export class TaxService {
   }
 
   async estimate(userId: string, financialYear: string): Promise<TaxEstimateDTO> {
+    const { config, isEstimatedFromPriorYear } = resolveTaxYearConfig(financialYear);
+
     const [grossAnnualIncome, deductions] = await Promise.all([
       this.annualIncome(userId, financialYear),
       this.listDeductions(userId, financialYear),
@@ -108,7 +129,7 @@ export class TaxService {
 
     let totalOldRegimeDeductions = 0;
     const deductionsBySection = Array.from(bySection.entries()).map(([section, used]) => {
-      const limit = SECTION_LIMITS[section];
+      const limit = config.sectionLimits[section];
       const cappedUsed = limit ? Math.min(used, limit) : used;
       totalOldRegimeDeductions += cappedUsed;
       return {
@@ -121,34 +142,45 @@ export class TaxService {
 
     const oldTaxableIncome = Math.max(
       0,
-      grossAnnualIncome - STANDARD_DEDUCTION_OLD - totalOldRegimeDeductions,
+      grossAnnualIncome - config.standardDeductionOld - totalOldRegimeDeductions,
     );
-    const newTaxableIncome = Math.max(0, grossAnnualIncome - STANDARD_DEDUCTION_NEW);
+    const newTaxableIncome = Math.max(0, grossAnnualIncome - config.standardDeductionNew);
 
-    const oldTax = oldRegimeTax(oldTaxableIncome);
-    const newTax = newRegimeTax(newTaxableIncome);
-    const recommendedRegime = oldTax <= newTax ? "OLD" : "NEW";
+    const oldResult = oldRegimeTax(oldTaxableIncome, config);
+    const newResult = newRegimeTax(newTaxableIncome, config);
+    const recommendedRegime = oldResult.taxPayable <= newResult.taxPayable ? "OLD" : "NEW";
 
     return {
       financialYear,
       grossAnnualIncome: grossAnnualIncome.toFixed(2),
       totalDeductions: totalOldRegimeDeductions.toFixed(2),
-      oldRegime: { taxableIncome: oldTaxableIncome.toFixed(2), taxPayable: oldTax.toFixed(2) },
-      newRegime: { taxableIncome: newTaxableIncome.toFixed(2), taxPayable: newTax.toFixed(2) },
+      oldRegime: {
+        taxableIncome: oldTaxableIncome.toFixed(2),
+        taxPayable: oldResult.taxPayable.toFixed(2),
+        surcharge: oldResult.surcharge.toFixed(2),
+      },
+      newRegime: {
+        taxableIncome: newTaxableIncome.toFixed(2),
+        taxPayable: newResult.taxPayable.toFixed(2),
+        surcharge: newResult.surcharge.toFixed(2),
+      },
       recommendedRegime,
-      savingsFromRecommendedRegime: Math.abs(oldTax - newTax).toFixed(2),
+      savingsFromRecommendedRegime: Math.abs(oldResult.taxPayable - newResult.taxPayable).toFixed(2),
       deductionsBySection,
-      yearEndChecklist: this.yearEndChecklist(bySection),
+      yearEndChecklist: this.yearEndChecklist(bySection, config),
       isProjectionOnly: true,
+      slabsFinancialYear: config.financialYear,
+      slabsAreEstimated: isEstimatedFromPriorYear,
     };
   }
 
-  private yearEndChecklist(bySection: Map<TaxSection, number>): string[] {
+  private yearEndChecklist(bySection: Map<TaxSection, number>, config: TaxYearConfig): string[] {
     const checklist: string[] = [];
+    const section80CLimit = config.sectionLimits.SECTION_80C ?? 0;
     const used80C = bySection.get("SECTION_80C") ?? 0;
-    if (used80C < 150000) {
+    if (used80C < section80CLimit) {
       checklist.push(
-        `₹${(150000 - used80C).toLocaleString("en-IN")} of Section 80C room is still unused this year (ELSS, PPF, EPF, life insurance premium, etc.).`,
+        `₹${(section80CLimit - used80C).toLocaleString("en-IN")} of Section 80C room is still unused this year (ELSS, PPF, EPF, life insurance premium, etc.).`,
       );
     }
     if (!bySection.has("SECTION_80D")) {
