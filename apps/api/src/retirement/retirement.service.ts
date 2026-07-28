@@ -5,7 +5,11 @@ import { calculateAge } from "../common/utils/age.util";
 import { RetirementPlanDTO } from "@wealthos/types";
 
 const RETIREMENT_INVESTMENT_TYPES = ["EPF", "PPF", "NPS"];
-const POST_RETIREMENT_HORIZON_YEARS = 25; // assumed years of retirement drawdown
+// Fallback drawdown horizon, used whenever the profile hasn't set a life expectancy (or
+// has set one that isn't actually later than the target retirement age). This is the
+// exact figure the calculation always used before this change — every existing profile,
+// having never had a lifeExpectancyAge field to set, gets byte-identical output.
+const DEFAULT_POST_RETIREMENT_HORIZON_YEARS = 25;
 
 @Injectable()
 export class RetirementService {
@@ -29,7 +33,25 @@ export class RetirementService {
   }
 
   // Projections only — a rough educational estimate, not a certified retirement plan.
-  // Assumes a 25-year drawdown horizon and a constant real return during retirement.
+  //
+  // Two previously-flagged simplifications are now addressed, both strictly opt-in via
+  // new optional profile fields — a profile that hasn't set them gets EXACTLY the same
+  // output as before this change (verified by the two pre-existing tests, unmodified):
+  //
+  // 1. DRAWDOWN HORIZON: was a flat 25 years regardless of actual life expectancy or
+  //    retirement age. If the profile has a lifeExpectancyAge set AND it's actually
+  //    later than targetRetirementAge (otherwise the resulting "horizon" would be zero
+  //    or negative, which is meaningless — silently falls back to the 25-year default
+  //    in that case rather than producing a nonsensical near-zero corpus requirement),
+  //    the horizon becomes (lifeExpectancyAge - targetRetirementAge) instead.
+  //
+  // 2. PENSION/ANNUITY INCOME: previously assumed the ENTIRE desired monthly income at
+  //    retirement had to come from the self-funded corpus. If the profile has an
+  //    expectedMonthlyPensionAtRetirement set (e.g. an EPS or employer pension the user
+  //    expects to receive, already expressed in nominal rupees AT the retirement date —
+  //    the same "already future-valued" convention monthlyIncomeAtRetirement uses, not
+  //    today's rupees), that guaranteed income offsets how much the corpus itself needs
+  //    to fund, reducing corpusRequired accordingly.
   async computePlan(userId: string): Promise<RetirementPlanDTO> {
     const [profile, user, investments, retirementGoals] = await Promise.all([
       this.getOrCreateProfile(userId),
@@ -49,12 +71,30 @@ export class RetirementService {
     const monthlyIncomeAtRetirement =
       Number(profile.desiredMonthlyIncomeToday) * Math.pow(1 + inflation, yearsToRetirement);
 
+    // Pension/annuity offset (new). Unset or non-positive -> no offset, identical to
+    // the original behavior.
+    const monthlyPensionOffset = Math.max(
+      0,
+      Math.min(Number(profile.expectedMonthlyPensionAtRetirement ?? 0), monthlyIncomeAtRetirement),
+    );
+    const netMonthlyIncomeNeededFromCorpus = monthlyIncomeAtRetirement - monthlyPensionOffset;
+
+    // Life-expectancy-aware horizon (new). Falls back to the original flat default
+    // whenever lifeExpectancyAge is unset, or set to a value that wouldn't produce a
+    // sensible positive horizon.
+    const lifeExpectancyAge = profile.lifeExpectancyAge ?? null;
+    const isHorizonFromLifeExpectancy = lifeExpectancyAge !== null && lifeExpectancyAge > profile.targetRetirementAge;
+    const drawdownHorizonYears = isHorizonFromLifeExpectancy
+      ? lifeExpectancyAge! - profile.targetRetirementAge
+      : DEFAULT_POST_RETIREMENT_HORIZON_YEARS;
+
     const realReturnPostRetirement = postReturn - inflation;
-    const annualIncomeAtRetirement = monthlyIncomeAtRetirement * 12;
+    const annualIncomeNeededFromCorpus = netMonthlyIncomeNeededFromCorpus * 12;
     const corpusRequired =
       Math.abs(realReturnPostRetirement) < 0.001
-        ? annualIncomeAtRetirement * POST_RETIREMENT_HORIZON_YEARS
-        : (annualIncomeAtRetirement * (1 - Math.pow(1 + realReturnPostRetirement, -POST_RETIREMENT_HORIZON_YEARS))) /
+        ? annualIncomeNeededFromCorpus * drawdownHorizonYears
+        : (annualIncomeNeededFromCorpus *
+            (1 - Math.pow(1 + realReturnPostRetirement, -drawdownHorizonYears))) /
           realReturnPostRetirement;
 
     const retirementInvestmentValue = investments
@@ -86,6 +126,10 @@ export class RetirementService {
       requiredMonthlySip: requiredMonthlySip.toFixed(2),
       onTrack: corpusGap <= 0,
       isProjectionOnly: true,
+      drawdownHorizonYears,
+      isHorizonFromLifeExpectancy,
+      monthlyPensionOffset: monthlyPensionOffset.toFixed(2),
+      netMonthlyIncomeNeededFromCorpus: netMonthlyIncomeNeededFromCorpus.toFixed(2),
     };
   }
 }
