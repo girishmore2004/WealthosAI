@@ -305,6 +305,24 @@ export interface GoalDTO {
   requiredMonthlyContribution: number;
   progressPercent: number;
   probabilityOfSuccess: "ON_TRACK" | "AT_RISK" | "OFF_TRACK";
+  // NEW: the honest numeric signal behind probabilityOfSuccess — a real ratio
+  // (monthlyContribution / requiredMonthlyContribution), not a bucketed label. 1 means
+  // "no further contribution is actually needed." Uncapped above 1.
+  contributionPaceRatio: number;
+  // NEW: explicit, permanent, machine-readable disclosure that probabilityOfSuccess was
+  // never a modeled probability — closes the audit's flagged naming concern
+  // ("slightly misleading naming for what is a threshold-based rule, not a stochastic
+  // estimate") without a breaking rename of the field 4+ existing consumers already
+  // match against by exact string value.
+  isPaceHeuristic: true;
+  // NEW: the linked investment value projected forward to the target date at
+  // assumedAnnualReturnPercent (equal to today's linkedInvestmentValue when that's
+  // unset/0%) — the actual input requiredMonthlyContribution and probabilityOfSuccess
+  // are now computed against.
+  projectedInvestmentValueAtTarget: string;
+  // NEW: the assumed annual growth rate actually used above, as a percentage string
+  // ("0.00" when unset) — surfaces what assumption produced the projection.
+  assumedAnnualReturnPercent: string;
 }
 
 // --- Phase 3: Tax, Retirement, Alerts, Settings -----------------------------------
