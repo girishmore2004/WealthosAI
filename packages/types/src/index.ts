@@ -385,6 +385,23 @@ export interface RetirementPlanDTO {
   requiredMonthlySip: string;
   onTrack: boolean;
   isProjectionOnly: true;
+  // NEW: the actual post-retirement drawdown horizon used in corpusRequired's PV
+  // calculation — either derived from the profile's lifeExpectancyAge, or the
+  // long-standing 25-year default when that field is unset (or not later than
+  // targetRetirementAge). isHorizonFromLifeExpectancy tells the frontend which case
+  // applied, so it can label the figure accordingly ("based on your life expectancy"
+  // vs. "using a standard 25-year assumption").
+  drawdownHorizonYears: number;
+  isHorizonFromLifeExpectancy: boolean;
+  // NEW: how much of monthlyIncomeAtRetirement is expected to be covered by a
+  // guaranteed pension/annuity (expectedMonthlyPensionAtRetirement on the profile) —
+  // "0.00" when unset, matching the original all-corpus-funded assumption.
+  monthlyPensionOffset: string;
+  // NEW: monthlyIncomeAtRetirement minus monthlyPensionOffset — the portion that
+  // actually has to be funded from the investment corpus, and the true input to
+  // corpusRequired's calculation. Equal to monthlyIncomeAtRetirement whenever no
+  // pension is assumed.
+  netMonthlyIncomeNeededFromCorpus: string;
 }
 
 export interface AlertDTO {
