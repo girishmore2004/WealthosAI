@@ -296,6 +296,12 @@ model Goal {
   targetDate           DateTime
   currentAmount        Decimal   @db.Decimal(14, 2) @default(0)
   monthlyContribution  Decimal   @db.Decimal(14, 2) @default(0)
+  // Optional assumed annual growth rate for this goal's linked investment value,
+  // applied only when projecting forward to the target date (requiredMonthlyContribution
+  // / probabilityOfSuccess) — never to progressPercent, which describes today's actual
+  // state. Unset means "assume no growth," identical to the original calculation. See
+  // GoalsService.enrich()'s doc comment.
+  assumedAnnualReturnPercent Decimal? @db.Decimal(5, 2)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
