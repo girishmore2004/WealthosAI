@@ -437,10 +437,20 @@ model RetirementProfile {
   inflationRatePercent                Decimal   @db.Decimal(5, 2) @default(6)
   expectedReturnPreRetirementPercent  Decimal   @db.Decimal(5, 2) @default(11)
   expectedReturnPostRetirementPercent Decimal   @db.Decimal(5, 2) @default(7)
+  // Optional user-estimated life expectancy. When set (and greater than
+  // targetRetirementAge), RetirementService.computePlan() derives the post-retirement
+  // drawdown horizon as (lifeExpectancyAge - targetRetirementAge) instead of the flat
+  // 25-year assumption used when this is unset — see that method's doc comment.
+  lifeExpectancyAge                   Int?
+  // Optional expected guaranteed pension/annuity income (e.g. EPS, an employer
+  // pension) at retirement, in nominal rupees at the retirement date (not today's
+  // rupees — same "already future-valued" convention as monthlyIncomeAtRetirement).
+  // Reduces how much of the target monthly income needs to be self-funded from the
+  // investment corpus — see computePlan()'s doc comment.
+  expectedMonthlyPensionAtRetirement  Decimal?  @db.Decimal(12, 2)
   createdAt                           DateTime  @default(now())
   updatedAt                           DateTime  @updatedAt
 }
-
 model Alert {
   id          String         @id @default(cuid())
   user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
