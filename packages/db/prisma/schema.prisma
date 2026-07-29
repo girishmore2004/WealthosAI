@@ -130,11 +130,12 @@ enum GoalType {
 }
 
 model Household {
-  id         String      @id @default(cuid())
+  id         String            @id @default(cuid())
   name       String
-  createdAt  DateTime    @default(now())
+  createdAt  DateTime          @default(now())
   members    User[]
   dependents Dependent[]
+  invites    HouseholdInvite[]   // NEW
 }
 
 model User {
@@ -178,10 +179,36 @@ model User {
   mlInsightRuns      MlInsightRun[]
   ingestionBatches   IngestionBatch[]
   ingestionReviewItems IngestionReviewItem[]
+  sentHouseholdInvites HouseholdInvite[] @relation("HouseholdInviteSentBy")   // NEW
 
   @@index([householdId])
 }
+model HouseholdInvite {
+  id          String                @id @default(cuid())
+  household   Household             @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  householdId String
+  invitedBy   User                  @relation("HouseholdInviteSentBy", fields: [invitedById], references: [id], onDelete: Cascade)
+  invitedById String
+  email       String
+  status      HouseholdInviteStatus @default(PENDING)
+  // Never store the raw token — same discipline as OtpCode.codeHash / Session.tokenHash
+  // elsewhere in this schema. See HouseholdService's doc comments for the full flow.
+  tokenHash   String                @unique
+  createdAt   DateTime              @default(now())
+  expiresAt   DateTime
+  respondedAt DateTime?
 
+  @@index([householdId])
+  @@index([email])
+}
+
+enum HouseholdInviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  REVOKED
+}
 model Dependent {
   id           String     @id @default(cuid())
   household    Household  @relation(fields: [householdId], references: [id], onDelete: Cascade)
