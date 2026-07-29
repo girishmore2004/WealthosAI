@@ -1,6 +1,9 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { createHash, randomBytes } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateMemberDto } from "./dto/create-member.dto";
+import { CreateInviteDto } from "./dto/create-invite.dto";
+import { RespondToInviteDto } from "./dto/respond-to-invite.dto";
 import { IncomeService } from "../income/income.service";
 import { ExpensesService } from "../expenses/expenses.service";
 import { InvestmentsService } from "../investments/investments.service";
@@ -27,6 +30,13 @@ interface MemberFinancials {
   businessProfitThisMonth: number;
   unreadAlertCount: number;
   subscriptionMerchants: string[];
+}
+
+const INVITE_TTL_DAYS = 7;
+const INVITE_TOKEN_BYTES = 32; // matches the entropy already used for session tokens
+
+function hashInviteToken(rawToken: string): string {
+  return createHash("sha256").update(rawToken).digest("hex");
 }
 
 @Injectable()
@@ -79,6 +89,218 @@ export class HouseholdService {
       where: { id: dependentId, householdId: household!.id },
     });
   }
+
+  // ---------------------------------------------------------------------------------
+  // INVITE / ACCEPT / DECLINE / REVOKE / LEAVE (new) — closes the audit-flagged gap:
+  // "No invite/join flow was found... worth checking if adding members needs a proper
+  // invitation flow rather than just being pre-seeded." There genuinely was none —
+  // every user's household was either auto-created solo (above) or presumably seeded
+  // directly in the database; nothing in this file let one existing user actually bring
+  // another into their household.
+  //
+  // DESIGN, deliberately scoped to stay within this feature's own files:
+  //  - No email is sent by this app. POST /household/invites returns the raw token
+  //    (once) for the OWNER to share via whatever channel they choose (text, WhatsApp,
+  //    a copied link) — avoids needing to reuse Auth's OTP-shaped delivery adapter
+  //    (built for a 6-digit code, not an arbitrary invite link) or build new email
+  //    infrastructure, either of which would be out of scope for a Household-only
+  //    change. The invited person still authenticates entirely through the existing,
+  //    unmodified OTP login flow — this feature never touches auth itself.
+  //  - Only the token's HASH is ever persisted (createHash/sha256), matching the exact
+  //    discipline already used for OtpCode.codeHash and Session.tokenHash elsewhere in
+  //    this schema — the raw token is returned exactly once, at creation time.
+  //  - Accept is matched against the ACCEPTING user's own account email (case-
+  //    insensitive), not just a valid token — so a leaked/guessed token alone can't add
+  //    an arbitrary account to someone else's household; the account being added must
+  //    actually be the invited email address.
+  //  - Only an OWNER can create or revoke invites for their household — a MEMBER
+  //    cannot invite arbitrary people into a household structure they don't control.
+
+  async createInvite(inviterUserId: string, dto: CreateInviteDto) {
+    const inviter = await this.prisma.client.user.findUnique({ where: { id: inviterUserId } });
+    if (!inviter) throw new NotFoundException("User not found");
+    if (inviter.role !== "OWNER") {
+      throw new ForbiddenException("Only the household owner can send invites");
+    }
+
+    const household = await this.getOrCreateHouseholdForUser(inviterUserId);
+
+    const existingPending = await this.prisma.client.householdInvite.findFirst({
+      where: { householdId: household!.id, email: dto.email, status: "PENDING" },
+    });
+    if (existingPending) {
+      throw new BadRequestException("There's already a pending invite for this email");
+    }
+
+    const rawToken = randomBytes(INVITE_TOKEN_BYTES).toString("base64url");
+    const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
+
+    const invite = await this.prisma.client.householdInvite.create({
+      data: {
+        householdId: household!.id,
+        invitedById: inviterUserId,
+        email: dto.email,
+        tokenHash: hashInviteToken(rawToken),
+        expiresAt,
+      },
+    });
+
+    // rawToken is returned ONLY here, at creation time — it is never persisted and
+    // never retrievable again after this response (matching how a session's rawToken
+    // is handled in AuthController).
+    return { invite, token: rawToken };
+  }
+
+  async listInvites(userId: string) {
+    const requester = await this.prisma.client.user.findUnique({ where: { id: userId } });
+    if (!requester) throw new NotFoundException("User not found");
+    if (requester.role !== "OWNER") {
+      throw new ForbiddenException("Only the household owner can view invites");
+    }
+
+    const household = await this.getOrCreateHouseholdForUser(userId);
+    return this.prisma.client.householdInvite.findMany({
+      where: { householdId: household!.id },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async revokeInvite(userId: string, inviteId: string) {
+    const requester = await this.prisma.client.user.findUnique({ where: { id: userId } });
+    if (!requester) throw new NotFoundException("User not found");
+    if (requester.role !== "OWNER") {
+      throw new ForbiddenException("Only the household owner can revoke invites");
+    }
+
+    const household = await this.getOrCreateHouseholdForUser(userId);
+    const result = await this.prisma.client.householdInvite.updateMany({
+      where: { id: inviteId, householdId: household!.id, status: "PENDING" },
+      data: { status: "REVOKED", respondedAt: new Date() },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException("Pending invite not found");
+    }
+    return { id: inviteId };
+  }
+
+  async acceptInvite(userId: string, dto: RespondToInviteDto) {
+    const { invite, accepter } = await this.resolvePendingInviteForUser(userId, dto.token);
+
+    // Refuse to silently pull someone out of a household they're not the sole member
+    // of — that would orphan whoever they leave behind without their explicit action.
+    // A solo household (just the accepter themselves, the common case for a fresh
+    // account) is safe to leave automatically; anything larger requires them to
+    // explicitly leave first (see leaveHousehold() below) so the decision is
+    // deliberate, not a side effect of accepting an unrelated invite.
+    if (accepter.householdId) {
+      const currentHousehold = await this.prisma.client.household.findUnique({
+        where: { id: accepter.householdId },
+        include: { members: true },
+      });
+      if (currentHousehold && currentHousehold.members.length > 1) {
+        throw new BadRequestException(
+          "You're part of a household with other members — leave it first before accepting a different invite",
+        );
+      }
+    }
+
+    await this.prisma.client.$transaction([
+      this.prisma.client.user.update({
+        where: { id: userId },
+        data: { householdId: invite.householdId, role: "MEMBER" },
+      }),
+      this.prisma.client.householdInvite.update({
+        where: { id: invite.id },
+        data: { status: "ACCEPTED", respondedAt: new Date() },
+      }),
+    ]);
+
+    return this.getOrCreateHouseholdForUser(userId);
+  }
+
+  async declineInvite(userId: string, dto: RespondToInviteDto) {
+    const { invite } = await this.resolvePendingInviteForUser(userId, dto.token);
+
+    await this.prisma.client.householdInvite.update({
+      where: { id: invite.id },
+      data: { status: "DECLINED", respondedAt: new Date() },
+    });
+
+    return { id: invite.id };
+  }
+
+  // Shared lookup/validation for accept and decline: resolves the token to a PENDING,
+  // unexpired invite addressed to the CALLING user's own account email (case-
+  // insensitive) — the token alone is not sufficient, closing the "leaked/guessed
+  // token adds the wrong account" gap described above. Auto-marks a found-but-expired
+  // invite as EXPIRED (a lazy sweep — no separate cron/scheduled job needed) rather
+  // than leaving it PENDING forever.
+  private async resolvePendingInviteForUser(userId: string, rawToken: string) {
+    const accepter = await this.prisma.client.user.findUnique({ where: { id: userId } });
+    if (!accepter) throw new NotFoundException("User not found");
+
+    const invite = await this.prisma.client.householdInvite.findUnique({
+      where: { tokenHash: hashInviteToken(rawToken) },
+    });
+
+    if (!invite || invite.email.toLowerCase() !== accepter.email.toLowerCase()) {
+      // Deliberately the same generic error whether the token doesn't exist at all or
+      // exists but is addressed to a different email — no oracle for "this token is
+      // real but not yours."
+      throw new NotFoundException("Invite not found");
+    }
+
+    if (invite.status !== "PENDING") {
+      throw new BadRequestException(`This invite has already been ${invite.status.toLowerCase()}`);
+    }
+
+    if (invite.expiresAt < new Date()) {
+      await this.prisma.client.householdInvite.update({
+        where: { id: invite.id },
+        data: { status: "EXPIRED" },
+      });
+      throw new BadRequestException("This invite has expired");
+    }
+
+    return { invite, accepter };
+  }
+
+  // A MEMBER can always leave. An OWNER can only leave a household that's already just
+  // themselves (nothing to actually leave) — leaving a multi-member household would
+  // orphan it with no owner, and this feature deliberately does not implement
+  // ownership transfer (a bigger decision, out of scope here). Either way, the user
+  // ends up with a fresh solo household of their own immediately (never left with
+  // householdId: null), reusing the exact same creation path getOrCreateHouseholdForUser
+  // already uses.
+  async leaveHousehold(userId: string) {
+    const user = await this.prisma.client.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found");
+    if (!user.householdId) {
+      return this.getOrCreateHouseholdForUser(userId); // nothing to leave; already solo
+    }
+
+    const currentHousehold = await this.prisma.client.household.findUnique({
+      where: { id: user.householdId },
+      include: { members: true },
+    });
+
+    if (user.role === "OWNER" && currentHousehold && currentHousehold.members.length > 1) {
+      throw new BadRequestException(
+        "As the owner of a household with other members, you can't leave directly — remove other members first",
+      );
+    }
+
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { householdId: null, role: "OWNER" },
+    });
+
+    return this.getOrCreateHouseholdForUser(userId);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Everything below is UNCHANGED from before this update.
 
   // Gathers one member's own financials exactly once per call — this, plus the caller
   // never iterating the same userId twice (member lists come straight from the
