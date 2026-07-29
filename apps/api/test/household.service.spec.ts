@@ -1,4 +1,5 @@
 import { Test } from "@nestjs/testing";
+import { BadRequestException, ForbiddenException, NotFoundException } from "@nestjs/common";
 import { HouseholdService } from "../src/household/household.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { IncomeService } from "../src/income/income.service";
@@ -234,6 +235,260 @@ describe("HouseholdService dependent-management helpers", () => {
 
     expect(mockPrisma.client.dependent.deleteMany).toHaveBeenCalledWith({
       where: { id: "dep-1", householdId: "hh-1" },
+    });
+  });
+});
+
+describe("HouseholdService invite / accept / decline / revoke / leave (new)", () => {
+  let service: HouseholdService;
+  const mockPrisma = {
+    client: {
+      user: { findUnique: jest.fn(), update: jest.fn() },
+      household: { findUnique: jest.fn(), create: jest.fn() },
+      dependent: { create: jest.fn(), deleteMany: jest.fn() },
+      householdInvite: {
+        findFirst: jest.fn(),
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
+    },
+  };
+  const noop = {};
+
+  const owner = { id: "owner-1", email: "owner@example.com", name: "Alex Owner", role: "OWNER", householdId: "hh-1" };
+  const member = { id: "member-1", email: "member@example.com", name: "Sam Member", role: "MEMBER", householdId: "hh-1" };
+  const newUser = { id: "new-1", email: "new@example.com", name: "New Person", role: "OWNER", householdId: "hh-solo" };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        HouseholdService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: noop },
+        { provide: ExpensesService, useValue: noop },
+        { provide: InvestmentsService, useValue: noop },
+        { provide: LoansService, useValue: noop },
+        { provide: PropertyService, useValue: noop },
+        { provide: GoalsService, useValue: noop },
+        { provide: BusinessService, useValue: noop },
+        { provide: AlertsService, useValue: noop },
+      ],
+    }).compile();
+    service = moduleRef.get(HouseholdService);
+  });
+
+  describe("createInvite", () => {
+    it("lets an OWNER create an invite and returns the raw token exactly once", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(owner);
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner], dependents: [] });
+      mockPrisma.client.householdInvite.findFirst.mockResolvedValue(null); // no existing pending invite
+      mockPrisma.client.householdInvite.create.mockResolvedValue({ id: "inv-1", email: "friend@example.com" });
+
+      const result = await service.createInvite("owner-1", { email: "friend@example.com" });
+
+      expect(result.token).toBeDefined();
+      expect(typeof result.token).toBe("string");
+      expect(result.invite.id).toBe("inv-1");
+      // The raw token is never part of what's persisted — only its hash.
+      const createCall = mockPrisma.client.householdInvite.create.mock.calls[0][0];
+      expect(createCall.data).not.toHaveProperty("token");
+      expect(createCall.data.tokenHash).toBeDefined();
+      expect(createCall.data.tokenHash).not.toBe(result.token);
+    });
+
+    it("rejects invite creation from a MEMBER (not the household owner)", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(member);
+
+      await expect(service.createInvite("member-1", { email: "x@example.com" })).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockPrisma.client.householdInvite.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects creating a second pending invite for the same email", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(owner);
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner], dependents: [] });
+      mockPrisma.client.householdInvite.findFirst.mockResolvedValue({ id: "existing-inv", status: "PENDING" });
+
+      await expect(service.createInvite("owner-1", { email: "friend@example.com" })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.client.householdInvite.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("listInvites / revokeInvite", () => {
+    it("lets an OWNER list invites for their household", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(owner);
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner], dependents: [] });
+      mockPrisma.client.householdInvite.findMany.mockResolvedValue([{ id: "inv-1" }]);
+
+      const invites = await service.listInvites("owner-1");
+
+      expect(invites).toHaveLength(1);
+      expect(mockPrisma.client.householdInvite.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { householdId: "hh-1" } }),
+      );
+    });
+
+    it("rejects a MEMBER trying to list invites", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(member);
+      await expect(service.listInvites("member-1")).rejects.toThrow(ForbiddenException);
+    });
+
+    it("revokes a pending invite scoped to the owner's own household", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(owner);
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner], dependents: [] });
+      mockPrisma.client.householdInvite.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.revokeInvite("owner-1", "inv-1");
+
+      expect(mockPrisma.client.householdInvite.updateMany).toHaveBeenCalledWith({
+        where: { id: "inv-1", householdId: "hh-1", status: "PENDING" },
+        data: { status: "REVOKED", respondedAt: expect.any(Date) },
+      });
+      expect(result).toEqual({ id: "inv-1" });
+    });
+
+    it("throws NotFoundException revoking an invite that isn't pending or doesn't belong to this household", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(owner);
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner], dependents: [] });
+      mockPrisma.client.householdInvite.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.revokeInvite("owner-1", "not-mine")).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("acceptInvite", () => {
+    it("adds a solo user to the inviting household and marks the invite ACCEPTED", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(newUser); // accepter, solo household
+      mockPrisma.client.householdInvite.findUnique.mockResolvedValue({
+        id: "inv-1", householdId: "hh-1", email: "new@example.com",
+        status: "PENDING", expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+      });
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-solo", members: [newUser] }); // solo, safe to leave
+      mockPrisma.client.user.update.mockResolvedValue({});
+      mockPrisma.client.householdInvite.update.mockResolvedValue({});
+
+      await service.acceptInvite("new-1", { token: "any-raw-token" });
+
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith({
+        where: { id: "new-1" },
+        data: { householdId: "hh-1", role: "MEMBER" },
+      });
+      expect(mockPrisma.client.householdInvite.update).toHaveBeenCalledWith({
+        where: { id: "inv-1" },
+        data: { status: "ACCEPTED", respondedAt: expect.any(Date) },
+      });
+    });
+
+    it("rejects a token that doesn't match the accepting user's own email (no oracle for whose invite it is)", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(newUser); // new@example.com
+      mockPrisma.client.householdInvite.findUnique.mockResolvedValue({
+        id: "inv-1", householdId: "hh-1", email: "someone-else@example.com", // different email
+        status: "PENDING", expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+      });
+
+      await expect(service.acceptInvite("new-1", { token: "any-raw-token" })).rejects.toThrow(NotFoundException);
+    });
+
+    it("rejects and auto-expires an invite past its expiresAt", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(newUser);
+      mockPrisma.client.householdInvite.findUnique.mockResolvedValue({
+        id: "inv-1", householdId: "hh-1", email: "new@example.com",
+        status: "PENDING", expiresAt: new Date(Date.now() - 1000 * 60), // already expired
+      });
+
+      await expect(service.acceptInvite("new-1", { token: "any-raw-token" })).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.householdInvite.update).toHaveBeenCalledWith({
+        where: { id: "inv-1" },
+        data: { status: "EXPIRED" },
+      });
+    });
+
+    it("rejects an invite that's already been responded to", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(newUser);
+      mockPrisma.client.householdInvite.findUnique.mockResolvedValue({
+        id: "inv-1", householdId: "hh-1", email: "new@example.com",
+        status: "ACCEPTED", expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+      });
+
+      await expect(service.acceptInvite("new-1", { token: "any-raw-token" })).rejects.toThrow(BadRequestException);
+    });
+
+    it("blocks accepting while already part of a household with other members", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ ...newUser, householdId: "hh-existing" });
+      mockPrisma.client.householdInvite.findUnique.mockResolvedValue({
+        id: "inv-1", householdId: "hh-1", email: "new@example.com",
+        status: "PENDING", expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+      });
+      mockPrisma.client.household.findUnique.mockResolvedValue({
+        id: "hh-existing",
+        members: [{ id: "new-1" }, { id: "other-1" }], // 2 members -> not safe to silently leave
+      });
+
+      await expect(service.acceptInvite("new-1", { token: "any-raw-token" })).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("declineInvite", () => {
+    it("marks a pending invite addressed to the caller as DECLINED", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(newUser);
+      mockPrisma.client.householdInvite.findUnique.mockResolvedValue({
+        id: "inv-1", householdId: "hh-1", email: "new@example.com",
+        status: "PENDING", expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+      });
+      mockPrisma.client.householdInvite.update.mockResolvedValue({});
+
+      const result = await service.declineInvite("new-1", { token: "any-raw-token" });
+
+      expect(mockPrisma.client.householdInvite.update).toHaveBeenCalledWith({
+        where: { id: "inv-1" },
+        data: { status: "DECLINED", respondedAt: expect.any(Date) },
+      });
+      expect(result).toEqual({ id: "inv-1" });
+    });
+  });
+
+  describe("leaveHousehold", () => {
+    it("lets a MEMBER leave and immediately receive a fresh solo household", async () => {
+      mockPrisma.client.user.findUnique
+        .mockResolvedValueOnce(member) // initial lookup
+        .mockResolvedValueOnce({ ...member, householdId: null }); // re-fetch inside getOrCreateHouseholdForUser after leaving
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner, member] });
+      mockPrisma.client.user.update.mockResolvedValue({});
+      mockPrisma.client.household.create.mockResolvedValue({ id: "hh-new-solo", members: [member], dependents: [] });
+
+      await service.leaveHousehold("member-1");
+
+      expect(mockPrisma.client.user.update).toHaveBeenCalledWith({
+        where: { id: "member-1" },
+        data: { householdId: null, role: "OWNER" },
+      });
+      expect(mockPrisma.client.household.create).toHaveBeenCalled(); // fresh solo household created immediately
+    });
+
+    it("blocks an OWNER from leaving a household that still has other members", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(owner);
+      mockPrisma.client.household.findUnique.mockResolvedValue({ id: "hh-1", members: [owner, member] });
+
+      await expect(service.leaveHousehold("owner-1")).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
+    });
+
+    it("is a harmless no-op for a user who has no household at all", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "solo-1", householdId: null, name: "Solo" });
+      mockPrisma.client.household.create.mockResolvedValue({ id: "hh-x", members: [], dependents: [] });
+
+      await service.leaveHousehold("solo-1");
+
+      expect(mockPrisma.client.user.update).not.toHaveBeenCalled();
     });
   });
 });
