@@ -32,35 +32,14 @@ export default () => ({
     ? process.env.CROSS_SITE_COOKIES === "true"
     : process.env.NODE_ENV === "production",
   otpAdapter: process.env.OTP_ADAPTER ?? "mock",
+  // NEW: selects the OCR implementation Documents uses — see
+  // documents/adapters/ocr-adapter.factory.ts. "tesseract" (default) is the real,
+  // free/OSS OCR engine; "mock" keeps the deterministic zero-dependency placeholder
+  // (useful for tests/CI or an environment that wants to skip real OCR processing).
+  ocrAdapter: process.env.OCR_ADAPTER ?? "tesseract",
   resend: {
     apiKey: process.env.RESEND_API_KEY ?? "",
     fromEmail: process.env.OTP_FROM_EMAIL ?? "WealthOS AI <onboarding@resend.dev>",
-  },
-  // --- OTP brute-force / abuse controls (new) ----------------------------------------
-  // See apps/api/src/auth/auth.service.ts for exactly how each of these is used.
-  otp: {
-    // Consecutive wrong-code guesses against a single identifier before it's locked out
-    // of further verify attempts, independent of whether the underlying code expired.
-    verifyMaxAttempts: parseInt(process.env.OTP_VERIFY_MAX_ATTEMPTS ?? "5", 10),
-    // How long an identifier stays locked out after hitting verifyMaxAttempts.
-    verifyLockoutSeconds: parseInt(process.env.OTP_VERIFY_LOCKOUT_SECONDS ?? "900", 10),
-    // Minimum time between two otp/request calls for the same identifier — prevents
-    // several simultaneously-valid codes from being outstanding for one mailbox at once.
-    resendCooldownSeconds: parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? "45", 10),
-    // Per-source-IP hourly cap on otp/request, in addition to the existing per-identifier
-    // cap — stops one IP from spraying requests across many different target emails.
-    requestIpMax: parseInt(process.env.OTP_REQUEST_IP_MAX ?? "15", 10),
-    requestIpWindowSeconds: parseInt(process.env.OTP_REQUEST_IP_WINDOW_SECONDS ?? "3600", 10),
-  },
-  // --- Session token migration shim (new, temporary) ----------------------------------
-  // See apps/api/src/auth/session.service.ts's `resolveToken()` migration-shim comment
-  // and the audit doc's migration plan for exactly when this should be flipped to false
-  // and eventually removed. Defaults to true so existing logged-in users survive the
-  // opaque-session-token deploy without being forced to re-authenticate immediately.
-  session: {
-    legacyIdFallback: process.env.SESSION_LEGACY_ID_FALLBACK
-      ? process.env.SESSION_LEGACY_ID_FALLBACK === "true"
-      : true,
   },
   ai: {
     groqApiKey: process.env.GROQ_API_KEY ?? "",
