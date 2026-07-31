@@ -1,11 +1,10 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { UploadDocumentDto } from "./dto/upload-document.dto";
 import { UpdateDocumentDto } from "./dto/update-document.dto";
 import { DocumentStorageAdapter } from "./adapters/document-storage.adapter";
 import { LocalDiskStorageAdapter } from "./adapters/local-disk-storage.adapter";
-import { OcrAdapter } from "./adapters/ocr.adapter";
-import { MockOcrAdapter } from "./adapters/mock-ocr.adapter";
+import { AiQueueService } from "../ai/ops/ai-queue.service";
 
 export const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 export const ALLOWED_MIME_TYPES = [
@@ -22,9 +21,24 @@ export class DocumentsService {
   constructor(
     private prisma: PrismaService,
     @Inject(LocalDiskStorageAdapter) private storage: DocumentStorageAdapter,
-    @Inject(MockOcrAdapter) private ocr: OcrAdapter,
+    private aiQueue: AiQueueService,
   ) {}
 
+  // OCR now runs OFF the request path — closes the previously-flagged gap: running it
+  // inline was only viable because the mock adapter is instant; a real OCR engine
+  // (now wired in — see DocumentOcrHandler / TesseractOcrAdapter) genuinely takes real
+  // time and shouldn't hold the upload request open. This method now returns as soon
+  // as the file is stored and the Document row exists (ocrStatus starts, and stays,
+  // PENDING until the async job completes) — the client is expected to poll GET
+  // /documents (or re-fetch this specific document) to observe the transition to
+  // DONE/FAILED/NOT_APPLICABLE, exactly as the code's own prior comment already
+  // anticipated ("a real adapter with network latency would instead enqueue this and
+  // let the client poll ocrStatus").
+  //
+  // idempotencyKey: document.id — enqueue() itself already guards against creating a
+  // duplicate AiJob for the same key (see AiQueueService), so even if this specific
+  // enqueue call were somehow retried, only one OCR job is ever actually queued per
+  // uploaded document.
   async upload(userId: string, file: Express.Multer.File, dto: UploadDocumentDto) {
     if (!file) throw new BadRequestException("No file was uploaded");
     if (file.size > MAX_DOCUMENT_SIZE_BYTES) {
@@ -53,17 +67,13 @@ export class DocumentsService {
       },
     });
 
-    // Run OCR inline for the mock adapter (it's instant); a real adapter with network
-    // latency would instead enqueue this and let the client poll ocrStatus.
-    try {
-      const result = await this.ocr.process(file.buffer, file.mimetype, dto.category);
-      return this.prisma.client.document.update({
-        where: { id: document.id },
-        data: { ocrStatus: "DONE", ocrText: result.text, summary: result.summary },
-      });
-    } catch {
-      return this.prisma.client.document.update({ where: { id: document.id }, data: { ocrStatus: "FAILED" } });
-    }
+    await this.aiQueue.enqueue(
+      "document.ocr",
+      { documentId: document.id, userId, category: dto.category },
+      { userId, idempotencyKey: document.id },
+    );
+
+    return document;
   }
 
   list(userId: string, category?: string) {
@@ -112,10 +122,19 @@ export class DocumentsService {
     return this.prisma.client.document.delete({ where: { id: doc.id } });
   }
 
+  // Unified to a single NotFoundException for both "doesn't exist" and "belongs to
+  // someone else" — was previously NotFoundException/ForbiddenException, the same
+  // existence-oracle leak already closed for every other feature hardened this
+  // session. Left as a single ownership-check-then-act call (not converted to the
+  // atomic updateMany/deleteMany pattern used elsewhere): update()/remove() both need
+  // the fetched row's storageKey before their own next step (writing new fields;
+  // deleting the on-disk file before the DB row), so a single preliminary read is the
+  // natural shape here regardless.
   private async assertOwnership(userId: string, id: string) {
     const doc = await this.prisma.client.document.findUnique({ where: { id } });
-    if (!doc) throw new NotFoundException("Document not found");
-    if (doc.userId !== userId) throw new ForbiddenException();
+    if (!doc || doc.userId !== userId) {
+      throw new NotFoundException("Document not found");
+    }
     return doc;
   }
 }
