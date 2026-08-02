@@ -56,14 +56,29 @@ export const AGE_SENSITIVITY_DELTAS = [-5, -2, 0, 2, 5] as const;
 
 // Assumed annual investment return rates used for the "return-rate sensitivity" sweep
 // that stands in for the roadmap's requested "inflation changes" dimension. The
-// deterministic engine (simulator.engine.ts) does not model expense inflation at all —
-// see README "Phase 13" for why this is the honest substitute rather than a fabricated
-// inflation calculation with no real backing in the engine.
+// deterministic engine (simulator.engine.ts) models expense inflation as a fixed
+// assumption (DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT), not something callers can vary
+// per-run — so a genuine "inflation sensitivity" sweep still isn't meaningful to offer;
+// this return-rate sweep remains the honest, closest-available substitute (see README
+// "Phase 13").
 export const RETURN_RATE_SENSITIVITY_PERCENTS = [6, 8, 10, 12, 14] as const;
 
+// Mirrors simulator.engine.ts's DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT exactly, kept
+// as its own small constant here (rather than importing it) since sensitivity-analysis
+// .service.ts calls the engine's exported projectNetWorth() directly rather than going
+// through runScenario()/SimulatorService, so it must supply the same inflation
+// assumption itself to keep its baseline point consistent with every other number
+// Scenario Studio surfaces (which flow through the loans+inflation-aware engine path).
+// If the Simulator's default ever changes, update this constant to match.
+export const SENSITIVITY_EXPENSE_INFLATION_PERCENT = 6;
+
 // LOAN_PREPAYMENT's "constrained" variant caps the lump sum against this fraction of
-// the user's current investment value — a documented, deliberately simple guardrail
-// ("don't suggest liquidating most of your portfolio to prepay a loan"), not a real
-// liquidity/cash-availability calculation (this app doesn't model which specific
-// assets are liquid).
-export const MAX_PREPAYMENT_FRACTION_OF_INVESTMENTS = 0.1;
+// the user's actual LIQUID investment value (Investment.liquidity === "LIQUID" —
+// excludes SEMI_LIQUID/ILLIQUID holdings like PPF/EPF/NPS that can't realistically be
+// withdrawn to fund a lump-sum prepayment). Still a deliberately simple guardrail
+// ("don't suggest liquidating most of your liquid portfolio to prepay a loan"), not a
+// full cash-availability model (doesn't account for emergency-fund reservations, tax
+// implications of liquidating, or exit loads/lock-in periods within the LIQUID bucket
+// itself) — but it now uses real per-asset liquidity data the schema already tracks,
+// rather than approximating against total investment value including locked-in assets.
+export const MAX_PREPAYMENT_FRACTION_OF_LIQUID_INVESTMENTS = 0.1;
