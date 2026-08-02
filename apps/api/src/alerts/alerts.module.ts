@@ -7,9 +7,10 @@ import { GoalsModule } from "../goals/goals.module";
 import { ExpensesModule } from "../expenses/expenses.module";
 import { BusinessModule } from "../business/business.module";
 import { DocumentsModule } from "../documents/documents.module";
+import { IncomeModule } from "../income/income.module";
 
 @Module({
-  imports: [LoansModule, InsuranceModule, GoalsModule, ExpensesModule, BusinessModule, DocumentsModule],
+  imports: [LoansModule, InsuranceModule, GoalsModule, ExpensesModule, BusinessModule, DocumentsModule, IncomeModule],
   controllers: [AlertsController],
   providers: [AlertsService],
   exports: [AlertsService],
