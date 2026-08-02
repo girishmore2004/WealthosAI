@@ -12,6 +12,7 @@ import {
   RunScenarioResponseDTO,
   SavedScenarioDTO,
   ScenarioBaselineDTO,
+  ScenarioLoanSnapshotDTO,
   ScenarioParamsByType,
   ScenarioType,
 } from "@wealthos/types";
@@ -58,7 +59,7 @@ export class SimulatorService {
 
   private async buildBaseline(userId: string): Promise<ScenarioBaselineDTO> {
     const currentMonth = new Date().toISOString().slice(0, 7);
-    const [monthlyIncome, monthExpenses, allIncomes, allExpenses, investmentsValue, totalDebt, user, retirementProfile] =
+    const [monthlyIncome, monthExpenses, allIncomes, allExpenses, investmentsValue, totalDebt, loans, user, retirementProfile] =
       await Promise.all([
         this.incomeService.monthlyForecast(userId),
         this.expensesService.list(userId, currentMonth),
@@ -66,12 +67,28 @@ export class SimulatorService {
         this.expensesService.list(userId),
         this.investmentsService.totalCurrentValue(userId),
         this.loansService.totalOutstanding(userId),
+        // Per-loan detail (real rate + EMI, not just the aggregate outstanding figure
+        // `totalOutstanding` above already provides) — this is what lets
+        // simulator.engine.ts's projectNetWorth() amortize debt month-by-month instead
+        // of holding it flat over the projection window (previously the single
+        // most-referenced "documented but not implemented" gap in the audit).
+        // `totalOutstanding` is kept as a separate call rather than derived from this
+        // list so existing behavior/tests around it are untouched.
+        this.loansService.list(userId),
         this.prisma.client.user.findUnique({ where: { id: userId } }),
         this.retirementService.getOrCreateProfile(userId),
       ]);
 
     const monthlyExpenses = monthExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
     const cash = allIncomes.reduce((s, i) => s + Number(i.amount), 0) - allExpenses.reduce((s, e) => s + Number(e.amount), 0);
+
+    const scenarioLoans: ScenarioLoanSnapshotDTO[] = loans.map((l) => ({
+      id: l.id,
+      principal: Number(l.outstandingPrincipal),
+      annualRatePercent: Number(l.interestRateAnnual),
+      emi: Number(l.emiAmount),
+    }));
+    const totalMonthlyEmi = scenarioLoans.reduce((sum, l) => sum + l.emi, 0);
 
     return {
       monthlyIncome,
@@ -81,6 +98,8 @@ export class SimulatorService {
       totalDebt,
       currentAge: user?.dateOfBirth ? calculateAge(user.dateOfBirth) : null,
       targetRetirementAge: retirementProfile.targetRetirementAge,
+      loans: scenarioLoans,
+      totalMonthlyEmi,
     };
   }
 
