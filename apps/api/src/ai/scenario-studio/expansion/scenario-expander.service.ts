@@ -1,11 +1,12 @@
 import { Injectable } from "@nestjs/common";
 import { SimulatorService } from "../../../simulator/simulator.service";
 import { LoansService } from "../../../loans/loans.service";
+import { InvestmentsService } from "../../../investments/investments.service";
 import { calculateEmi } from "../../../simulator/simulator.engine";
 import { RunScenarioResponseDTO, ScenarioType } from "@wealthos/types";
 import {
   AGE_SENSITIVITY_DELTAS,
-  MAX_PREPAYMENT_FRACTION_OF_INVESTMENTS,
+  MAX_PREPAYMENT_FRACTION_OF_LIQUID_INVESTMENTS,
   SCENARIO_FIELD_CONFIG,
   VARIANT_LABELS,
   VARIANT_MULTIPLIERS,
@@ -26,6 +27,7 @@ export class ScenarioExpanderService {
   constructor(
     private simulator: SimulatorService,
     private loans: LoansService,
+    private investments: InvestmentsService,
   ) {}
 
   async expand(userId: string, scenarioType: ScenarioType, baseParams: Record<string, unknown>): Promise<ScenarioVariant[]> {
@@ -33,15 +35,18 @@ export class ScenarioExpanderService {
     // the user's literal input — every variant reuses this same baseline rather than
     // each variant re-deriving it, so all four are directly comparable against the
     // same starting point.
-    const baseRun = await this.simulator.run(userId, scenarioType, baseParams);
-    const debtSummary = await this.loans.debtSummary(userId);
+    const [baseRun, debtSummary, liquidInvestmentsValue] = await Promise.all([
+      this.simulator.run(userId, scenarioType, baseParams),
+      this.loans.debtSummary(userId),
+      this.getLiquidInvestmentsValue(userId),
+    ]);
     const surplus = computeMonthlySurplus(baseRun.baseline.monthlyIncome, baseRun.baseline.monthlyExpenses, Number(debtSummary.totalMonthlyEmi));
 
     const config = SCENARIO_FIELD_CONFIG[scenarioType];
 
     const variantValues = config.isAge
       ? this.buildAgeVariantValues(baseParams, config.field, baseRun.baseline.targetRetirementAge, baseRun.baseline.currentAge)
-      : this.buildMagnitudeVariantValues(baseParams, config, baseRun, surplus);
+      : this.buildMagnitudeVariantValues(baseParams, config, surplus, liquidInvestmentsValue);
 
     const variants: ScenarioVariant[] = [];
     for (const label of VARIANT_LABELS) {
@@ -50,7 +55,7 @@ export class ScenarioExpanderService {
       // "base" is exactly the already-computed baseRun — no need to re-run the engine
       // for a value that's identical to what was just computed.
       const run = label === "base" ? baseRun : await this.simulator.run(userId, scenarioType, params);
-      const feasibility = this.assessFeasibility(scenarioType, value, surplus, baseRun, baseParams);
+      const feasibility = this.assessFeasibility(scenarioType, value, surplus, baseRun, baseParams, liquidInvestmentsValue);
 
       variants.push({ label, params, run, feasible: feasibility.feasible, feasibilityNote: feasibility.note });
     }
@@ -58,11 +63,24 @@ export class ScenarioExpanderService {
     return variants;
   }
 
+  // Real liquid-only investment value (Investment.liquidity === "LIQUID"), used as the
+  // basis for LOAN_PREPAYMENT's affordability cap instead of total investment value —
+  // see scenario-studio.constants.ts for why this is a meaningfully more accurate
+  // guardrail than approximating against everything the user owns, including locked-in
+  // instruments like PPF/EPF/NPS (SEMI_LIQUID/ILLIQUID) that can't realistically fund a
+  // lump-sum prepayment.
+  private async getLiquidInvestmentsValue(userId: string): Promise<number> {
+    const holdings = await this.investments.list(userId);
+    return holdings
+      .filter((h) => h.liquidity === "LIQUID")
+      .reduce((sum, h) => sum + Number(h.currentValue), 0);
+  }
+
   private buildMagnitudeVariantValues(
     baseParams: Record<string, unknown>,
     config: (typeof SCENARIO_FIELD_CONFIG)[ScenarioType],
-    baseRun: RunScenarioResponseDTO,
     surplus: number,
+    liquidInvestmentsValue: number,
   ): Record<VariantLabel, number> {
     const literal = Number(baseParams[config.field]);
     const optimisticMultiplier = config.direction === "optimistic" ? VARIANT_MULTIPLIERS.best : VARIANT_MULTIPLIERS.worst;
@@ -72,7 +90,7 @@ export class ScenarioExpanderService {
     const worst = literal * pessimisticMultiplier;
     const base = literal;
     const constrained = config.isDiscretionarySpend
-      ? this.applyAffordabilityCap(config.field, best, baseParams, surplus, baseRun)
+      ? this.applyAffordabilityCap(config.field, best, baseParams, surplus, liquidInvestmentsValue)
       : base; // no discretionary spend to cap — documented in scenario-studio.constants.ts
 
     return { best, base, worst, constrained };
@@ -83,7 +101,7 @@ export class ScenarioExpanderService {
     proposedValue: number,
     baseParams: Record<string, unknown>,
     surplus: number,
-    baseRun: RunScenarioResponseDTO,
+    liquidInvestmentsValue: number,
   ): number {
     if (field === "additionalMonthlyAmount") {
       // SIP_INCREASE: cap the extra monthly commitment at what the user can actually
@@ -91,9 +109,9 @@ export class ScenarioExpanderService {
       return Math.max(0, Math.min(proposedValue, surplus));
     }
     if (field === "lumpSum") {
-      // LOAN_PREPAYMENT: cap at a fraction of current investment value — see
-      // scenario-studio.constants.ts for why this (not a real liquidity check).
-      return Math.max(0, Math.min(proposedValue, baseRun.baseline.investmentsValue * MAX_PREPAYMENT_FRACTION_OF_INVESTMENTS));
+      // LOAN_PREPAYMENT: cap at a fraction of real liquid investment value — see
+      // scenario-studio.constants.ts for why liquid-only, not total, investment value.
+      return Math.max(0, Math.min(proposedValue, liquidInvestmentsValue * MAX_PREPAYMENT_FRACTION_OF_LIQUID_INVESTMENTS));
     }
     if (field === "propertyValue") {
       // HOUSE_PURCHASE: cap the property value at what the user can actually afford
@@ -132,6 +150,7 @@ export class ScenarioExpanderService {
     surplus: number,
     baseRun: RunScenarioResponseDTO,
     baseParams: Record<string, unknown>,
+    liquidInvestmentsValue: number,
   ): { feasible: boolean; note: string } {
     if (scenarioType === "SIP_INCREASE") {
       return value <= surplus
@@ -139,10 +158,10 @@ export class ScenarioExpanderService {
         : { feasible: false, note: `Exceeds your current monthly surplus of ₹${surplus.toFixed(0)} — would require cutting expenses or increasing income first.` };
     }
     if (scenarioType === "LOAN_PREPAYMENT") {
-      const cap = baseRun.baseline.investmentsValue * MAX_PREPAYMENT_FRACTION_OF_INVESTMENTS;
+      const cap = liquidInvestmentsValue * MAX_PREPAYMENT_FRACTION_OF_LIQUID_INVESTMENTS;
       return value <= cap
-        ? { feasible: true, note: "Within a conservative share of your current investment value." }
-        : { feasible: false, note: `Would mean liquidating more than ${(MAX_PREPAYMENT_FRACTION_OF_INVESTMENTS * 100).toFixed(0)}% of your current investment value to fund it.` };
+        ? { feasible: true, note: "Within a conservative share of your actual liquid investment value." }
+        : { feasible: false, note: `Would mean liquidating more than ${(MAX_PREPAYMENT_FRACTION_OF_LIQUID_INVESTMENTS * 100).toFixed(0)}% of your liquid investment value (₹${liquidInvestmentsValue.toFixed(0)}) to fund it — locked-in holdings like PPF/EPF/NPS aren't counted as available.` };
     }
     if (scenarioType === "EMERGENCY_EXPENSE") {
       return value <= baseRun.baseline.netWorth
