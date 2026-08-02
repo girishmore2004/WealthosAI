@@ -112,28 +112,82 @@ describe("DebtRiskModel", () => {
 describe("GoalSuccessModel", () => {
   const model = new GoalSuccessModel();
 
-  function makeGoal(monthlyContribution: number, requiredMonthlyContribution: number) {
-    return { id: "g1", userId: "u1", type: "OTHER" as const, name: "Test goal", targetAmount: "0", targetDate: "2030-01", currentAmount: "0", monthlyContribution: String(monthlyContribution), linkedInvestmentValue: "0", requiredMonthlyContribution, progressPercent: 0, probabilityOfSuccess: "ON_TRACK" as const };
+  // The model now reads contributionPaceRatio/progressPercent/probabilityOfSuccess
+  // directly from GoalDTO — the exact fields GoalsService.enrich() already computes —
+  // rather than recomputing a ratio from raw monthlyContribution/requiredMonthlyContribution
+  // itself. makeGoal mirrors a full GoalDTO so these tests exercise the model the same
+  // way the real GoalsService output would.
+  function makeGoal(overrides: {
+    contributionPaceRatio: number;
+    progressPercent?: number;
+    probabilityOfSuccess?: "ON_TRACK" | "AT_RISK" | "OFF_TRACK";
+    name?: string;
+  }) {
+    return {
+      id: "g1",
+      userId: "u1",
+      type: "OTHER" as const,
+      name: overrides.name ?? "Test goal",
+      targetAmount: "0",
+      targetDate: "2030-01",
+      currentAmount: "0",
+      monthlyContribution: "0",
+      linkedInvestmentValue: "0",
+      requiredMonthlyContribution: 0,
+      progressPercent: overrides.progressPercent ?? 0,
+      probabilityOfSuccess: overrides.probabilityOfSuccess ?? "ON_TRACK",
+      contributionPaceRatio: overrides.contributionPaceRatio,
+      isPaceHeuristic: true as const,
+      projectedInvestmentValueAtTarget: "0",
+      assumedAnnualReturnPercent: "0",
+    };
   }
 
-  it("gives exactly 50% probability when committed contribution exactly matches what's required", () => {
-    const result = model.score([makeGoal(5000, 5000)]);
+  it("gives exactly 50% probability when the pace ratio is exactly 1 (on pace exactly)", () => {
+    const result = model.score([makeGoal({ contributionPaceRatio: 1, progressPercent: 40, probabilityOfSuccess: "ON_TRACK" })]);
     expect(result.prediction[0].successProbability).toBeCloseTo(0.5, 2);
   });
 
-  it("gives a high probability when contributing well above what's required", () => {
-    const result = model.score([makeGoal(10000, 5000)]);
+  it("gives a high probability when the pace ratio is well above 1", () => {
+    const result = model.score([makeGoal({ contributionPaceRatio: 2, progressPercent: 40, probabilityOfSuccess: "ON_TRACK" })]);
     expect(result.prediction[0].successProbability).toBeGreaterThan(0.8);
   });
 
-  it("gives a low probability when contributing well below what's required", () => {
-    const result = model.score([makeGoal(1000, 5000)]);
+  it("gives a low probability when the pace ratio is well below 1", () => {
+    const result = model.score([makeGoal({ contributionPaceRatio: 0.2, progressPercent: 10, probabilityOfSuccess: "OFF_TRACK" })]);
     expect(result.prediction[0].successProbability).toBeLessThan(0.2);
   });
 
-  it("treats an already-fully-funded goal (required <= 0) as certain success", () => {
-    const result = model.score([makeGoal(0, 0)]);
-    expect(result.prediction[0].successProbability).toBeGreaterThan(0.9);
+  it("treats a goal already fully funded today (progressPercent >= 100) as certain success regardless of pace ratio", () => {
+    const result = model.score([makeGoal({ contributionPaceRatio: 1, progressPercent: 100, probabilityOfSuccess: "ON_TRACK" })]);
+    expect(result.prediction[0].successProbability).toBe(1);
+  });
+
+  it("carries GoalsService's ruleBasedTier through unchanged", () => {
+    const result = model.score([makeGoal({ contributionPaceRatio: 0.7, progressPercent: 50, probabilityOfSuccess: "AT_RISK" })]);
+    expect(result.prediction[0].ruleBasedTier).toBe("AT_RISK");
+  });
+
+  it("flags agreement when the statistical read and the rule-based tier point the same direction", () => {
+    // ratio 1.5 -> well above 50% statistically; AT_RISK reads as "on pace" (only
+    // OFF_TRACK reads as not-on-pace) -> both say "on pace" -> agree.
+    const result = model.score([makeGoal({ contributionPaceRatio: 1.5, progressPercent: 60, probabilityOfSuccess: "AT_RISK" })]);
+    expect(result.prediction[0].agreesWithRuleBasedTier).toBe(true);
+  });
+
+  it("flags disagreement when the statistical read and the rule-based tier point different directions", () => {
+    // ratio 1.5 -> well above 50% statistically ("on pace"), but GoalsService says
+    // OFF_TRACK ("not on pace") -> disagreement, and it should be called out in the
+    // explanation text so it's not a silent inconsistency.
+    const result = model.score([makeGoal({ contributionPaceRatio: 1.5, progressPercent: 60, probabilityOfSuccess: "OFF_TRACK", name: "Disagreeing Goal" })]);
+    expect(result.prediction[0].agreesWithRuleBasedTier).toBe(false);
+    expect(result.explanation).toContain("Disagreeing Goal");
+  });
+
+  it("reports no goals set yet when given an empty list", () => {
+    const result = model.score([]);
+    expect(result.explanation).toBe("No goals set yet.");
+    expect(result.confidence).toBe(0);
   });
 });
 
