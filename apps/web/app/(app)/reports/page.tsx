@@ -6,10 +6,6 @@ import { api, ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
 import { formatINR, formatPercent } from "@/lib/format";
 
-function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
-}
-
 export default function ReportsPage() {
   const [view, setView] = useState<"monthly" | "yearly">("monthly");
   const [monthly, setMonthly] = useState<MonthlyReportDTO | null>(null);
@@ -83,7 +79,10 @@ export default function ReportsPage() {
             )}
           </Card>
 
-          <a href={api.reports.monthlyCsvUrl(currentMonth())} className="inline-block text-sm text-marigold-600 hover:underline">
+          {/* Uses the loaded report's own `month`, not a locally-recomputed "current
+              month" — guarantees the download always matches what's on screen, even
+              right at a month boundary. */}
+          <a href={api.reports.monthlyCsvUrl(monthly.month)} className="inline-block text-sm text-marigold-600 hover:underline">
             Download this report as CSV
           </a>
         </>
@@ -134,6 +133,12 @@ export default function ReportsPage() {
               ))}
             </ul>
           </Card>
+
+          {/* Previously missing entirely — yearly data could be viewed but not
+              downloaded. */}
+          <a href={api.reports.yearlyCsvUrl(yearly.financialYear)} className="inline-block text-sm text-marigold-600 hover:underline">
+            Download this report as CSV
+          </a>
         </>
       )}
 
