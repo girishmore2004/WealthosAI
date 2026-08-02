@@ -24,8 +24,28 @@ export function MlInsightsPanel() {
 
   if (error || !summary) return null;
 
-  const { anomalies, cashflowForecast, debtRisk, drift } = summary;
-  const hasAnySignal = anomalies.prediction.length > 0 || cashflowForecast.prediction.stressRisk || debtRisk.prediction.tier !== "low" || drift.prediction.drifted;
+  const { anomalies, cashflowForecast, debtRisk, drift, goalSuccess, habitSegmentation } = summary;
+
+  // All 6 models are computed on every request (see MlInsightsService.summary) — this
+  // panel previously only ever rendered 4 of them. goalSuccess and habitSegmentation
+  // were fetched and paid for on every dashboard load but never shown to the user.
+  // The two lines below are the only change needed to actually surface them: an
+  // at-risk goal is "notable" the same way a debt-risk tier above "low" is, and a
+  // month whose habit z-score has moved a full standard deviation off the user's own
+  // baseline (state !== "balanced") is "notable" the same way a drift flag is —
+  // "balanced" is business-as-usual and stays quiet, matching the existing pattern of
+  // only surfacing signals worth a second look.
+  const atRiskGoals = goalSuccess.prediction.filter((g) => g.successProbability < 0.5);
+  const mostRecentSegment = habitSegmentation.prediction[habitSegmentation.prediction.length - 1];
+  const habitSegmentationNotable = mostRecentSegment != null && mostRecentSegment.state !== "balanced";
+
+  const hasAnySignal =
+    anomalies.prediction.length > 0 ||
+    cashflowForecast.prediction.stressRisk ||
+    debtRisk.prediction.tier !== "low" ||
+    drift.prediction.drifted ||
+    atRiskGoals.length > 0 ||
+    habitSegmentationNotable;
 
   return (
     <Card eyebrow="Statistical signals (not rule-based)" title="What the numbers suggest">
@@ -59,6 +79,20 @@ export function MlInsightsPanel() {
           {drift.prediction.drifted && (
             <SignalRow label="Trend change detected" detail={drift.explanation} confidence={drift.confidence} />
           )}
+          {atRiskGoals.length > 0 && (
+            <SignalRow
+              label={`Goal success risk (${atRiskGoals.length} of ${goalSuccess.prediction.length})`}
+              detail={goalSuccess.explanation}
+              confidence={goalSuccess.confidence}
+            />
+          )}
+          {habitSegmentationNotable && mostRecentSegment && (
+            <SignalRow
+              label={`Spending pattern: ${capitalizeWords(mostRecentSegment.state.replace("_", " "))}`}
+              detail={habitSegmentation.explanation}
+              confidence={habitSegmentation.confidence}
+            />
+          )}
         </div>
       )}
     </Card>
@@ -75,4 +109,8 @@ function SignalRow({ label, detail, confidence }: { label: string; detail: strin
       <p className="mt-1 text-xs text-ink-soft">{detail}</p>
     </div>
   );
+}
+
+function capitalizeWords(text: string): string {
+  return text.replace(/\b\w/g, (c) => c.toUpperCase());
 }
