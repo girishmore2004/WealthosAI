@@ -180,6 +180,7 @@ model User {
   ingestionBatches   IngestionBatch[]
   ingestionReviewItems IngestionReviewItem[]
   sentHouseholdInvites HouseholdInvite[] @relation("HouseholdInviteSentBy")   // NEW
+  budgets Budget[]   // NEW
 
   @@index([householdId])
 }
@@ -258,6 +259,19 @@ model OtpCode {
   @@index([identifier])
 }
 
+model Budget {
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  category      Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId    String
+  monthlyAmount Decimal  @db.Decimal(12, 2)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, categoryId])
+}
+
 model Category {
   id        String        @id @default(cuid())
   name      String        @unique
@@ -265,6 +279,7 @@ model Category {
   icon      String?
   isSystem  Boolean       @default(true)
   expenses  Expense[]
+  budgets   Budget[]        // NEW
 }
 
 model Income {
