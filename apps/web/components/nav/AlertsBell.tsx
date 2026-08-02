@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AlertDTO } from "@wealthos/types";
-import { api } from "@/lib/api-client";
+import { api, ApiError } from "@/lib/api-client";
 
 const SEVERITY_DOT: Record<AlertDTO["severity"], string> = {
   INFO: "bg-ink-faint",
@@ -13,10 +13,29 @@ const SEVERITY_DOT: Record<AlertDTO["severity"], string> = {
 export function AlertsBell() {
   const [alerts, setAlerts] = useState<AlertDTO[]>([]);
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  const load = () => {
-    api.alerts.refresh().then(setAlerts).catch(() => api.alerts.list().then(setAlerts).catch(() => {}));
+  // Previously swallowed every failure silently, so a total load failure rendered
+  // identically to "you have zero alerts" — misleading. Now distinguishes the two via
+  // the `error` state, matching the pattern already used on the Reports page.
+  const load = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const result = await api.alerts.refresh();
+      setAlerts(result);
+    } catch (refreshErr) {
+      try {
+        const result = await api.alerts.list();
+        setAlerts(result);
+      } catch (listErr) {
+        setError(listErr instanceof ApiError ? listErr.message : "Could not load alerts.");
+      }
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   useEffect(() => {
@@ -26,6 +45,7 @@ export function AlertsBell() {
     };
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const unreadCount = alerts.filter((a) => !a.isRead).length;
@@ -62,12 +82,14 @@ export function AlertsBell() {
         <div className="absolute right-0 z-10 mt-2 w-[calc(100vw-2rem)] max-w-80 rounded-sm border border-line bg-surface shadow-lg">
           <div className="ledger-rule flex items-center justify-between px-4 py-2">
             <p className="text-xs uppercase tracking-wide text-ink-faint">Alerts</p>
-            <button onClick={load} className="text-xs text-ink-faint hover:text-ink">
-              Refresh
+            <button onClick={load} disabled={refreshing} className="text-xs text-ink-faint hover:text-ink disabled:opacity-50">
+              {refreshing ? "Refreshing…" : "Refresh"}
             </button>
           </div>
           <div className="max-h-80 overflow-y-auto">
-            {alerts.length === 0 ? (
+            {error ? (
+              <p className="px-4 py-6 text-center text-sm text-loss">{error}</p>
+            ) : alerts.length === 0 ? (
               <p className="px-4 py-6 text-center text-sm text-ink-faint">No alerts right now.</p>
             ) : (
               alerts.map((alert) => (
