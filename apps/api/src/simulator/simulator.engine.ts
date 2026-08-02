@@ -1,4 +1,10 @@
-import { ScenarioBaselineDTO, ScenarioParamsByType, ScenarioResultDTO, ScenarioType } from "@wealthos/types";
+import {
+  ScenarioBaselineDTO,
+  ScenarioLoanSnapshotDTO,
+  ScenarioParamsByType,
+  ScenarioResultDTO,
+  ScenarioType,
+} from "@wealthos/types";
 
 // PURE MODULE — no Prisma, no service calls, no I/O of any kind. Every function here
 // takes plain data in and returns plain data out, so the same inputs always produce the
@@ -7,6 +13,12 @@ import { ScenarioBaselineDTO, ScenarioParamsByType, ScenarioResultDTO, ScenarioT
 
 const PROJECTION_YEARS = 5;
 const DEFAULT_ANNUAL_INVESTMENT_RETURN_PERCENT = 10;
+// India-typical CPI proxy, used to grow monthly expenses over the projection window.
+// This is a single aggregate rate, not a category-level model (rent vs. groceries vs.
+// fuel inflate differently in reality) — documented explicitly in BASE_ASSUMPTIONS
+// rather than left implicit, same "state the model so it can be surfaced in the UI"
+// philosophy as the rest of this file.
+const DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT = 6;
 
 function compound(principal: number, monthlyRate: number, months: number): number {
   return principal * Math.pow(1 + monthlyRate, months);
@@ -27,37 +39,116 @@ export function calculateEmi(principal: number, annualRatePercent: number, tenur
   return (principal * monthlyRate * factor) / (factor - 1);
 }
 
+// A loan as the engine needs it: enough to amortize it one month at a time. Shares its
+// field semantics with ScenarioLoanSnapshotDTO (id/principal/annualRatePercent/emi) —
+// re-exported under this name at the engine boundary so downstream engine code reads
+// naturally, without introducing a second, divergent shape.
+export type LoanAmortizationInput = ScenarioLoanSnapshotDTO;
+
+// Advances every loan's balance by exactly one month using the same EMI-constant,
+// reducing-balance math as LoansService's private computeSchedule() (interest =
+// balance × monthlyRate; principalPaid = emi − interest; a loan whose EMI doesn't even
+// cover interest is held flat rather than diverging into negative-amortization, mirroring
+// that method's "stuck schedule" safety branch). Intentionally duplicated here — this
+// pure, I/O-free engine cannot import LoansService (a Nest-injectable with its own DB
+// dependency) — following the same "small, localized duplication over exposing
+// internals" precedent already used for goal-delay math in SimulatorService.buildContext().
+//
+// Mutates `balances` in place (parallel array to `loans`) and returns the total cash
+// actually paid out across all loans this month: exactly each loan's EMI in every month
+// before payoff, and interest + remaining-principal (less than the nominal EMI) in the
+// single final month a loan is paid off. A loan already at/below zero balance is skipped
+// entirely — it contributes no further cash outflow, which is what lets its freed-up EMI
+// show up as extra idle cash surplus automatically from that month on.
+function stepLoansOneMonth(balances: number[], loans: LoanAmortizationInput[]): number {
+  let totalOutflow = 0;
+  for (let i = 0; i < loans.length; i++) {
+    const balance = balances[i];
+    if (balance <= 0) continue;
+
+    const monthlyRate = loans[i].annualRatePercent / 12 / 100;
+    const interest = balance * monthlyRate;
+    let principalPaid = loans[i].emi - interest;
+
+    if (principalPaid <= 0) {
+      // EMI doesn't cover interest — stuck, same safety branch as computeSchedule().
+      // The borrower still pays the EMI in cash; the balance just doesn't shrink.
+      totalOutflow += loans[i].emi;
+      continue;
+    }
+
+    if (principalPaid > balance) principalPaid = balance; // final, partial month
+    balances[i] = balance - principalPaid;
+    totalOutflow += principalPaid + interest;
+  }
+  return totalOutflow;
+}
+
 interface ProjectionInputs {
   monthlyIncome: number;
   monthlyExpenses: number;
   monthlyInvestmentContribution: number; // SIP-style, compounds at annualReturnPercent
   investmentsValue: number;
-  debt: number;
+  debt: number; // any flat, non-loan-level debt not covered by `loans` below
   months: number;
   annualReturnPercent?: number;
+  // When omitted (or empty), the engine falls back to the original closed-form
+  // calculation with `debt` held flat — this is what guarantees zero behavioral drift
+  // for every existing caller that doesn't opt into loan-level detail (Scenario
+  // Studio's sensitivity sweep, and this file's own low-level unit tests).
+  loans?: LoanAmortizationInput[];
+  // Annual %, applied to `monthlyExpenses` as a monthly-compounding growth rate. Only
+  // takes effect on the month-by-month path (i.e. when `loans` is supplied) — the
+  // closed-form fallback path never modeled inflation and continues not to, so it stays
+  // byte-for-byte identical to its original behavior when `loans` isn't provided.
+  expenseInflationPercent?: number;
 }
 
 // Model (stated explicitly so it can be surfaced in the UI, not hidden):
 // - Existing + new monthly investment contributions compound at annualReturnPercent.
-// - Leftover monthly cash surplus (income − expenses − investment contribution)
-//   accumulates linearly with NO return — it's modeled as idle cash, not auto-invested.
-// - Debt is held constant over the horizon unless a scenario explicitly changes it
-//   (loan amortization during the projection window isn't modeled — see assumptions).
+// - Leftover monthly cash surplus (income − expenses − investment contribution − loan
+//   EMI outflow) accumulates linearly with NO return — it's modeled as idle cash, not
+//   auto-invested.
+// - When `loans` is supplied, every loan amortizes month-by-month (EMI-constant,
+//   reducing-balance — identical math to Loans → Amortization) and monthly expenses
+//   grow at `expenseInflationPercent`/year; when it isn't, `debt` is held flat and
+//   expenses don't inflate, preserving the original simpler model for callers that
+//   don't have loan-level detail available.
 export function projectNetWorth(input: ProjectionInputs): number {
   const monthlyRate = (input.annualReturnPercent ?? DEFAULT_ANNUAL_INVESTMENT_RETURN_PERCENT) / 12 / 100;
-  const projectedInvestments =
-    compound(input.investmentsValue, monthlyRate, input.months) +
-    futureValueSeries(input.monthlyInvestmentContribution, monthlyRate, input.months);
-  const monthlyCashSurplus = input.monthlyIncome - input.monthlyExpenses - input.monthlyInvestmentContribution;
-  const accumulatedCash = monthlyCashSurplus * input.months;
-  return accumulatedCash + projectedInvestments - input.debt;
+
+  if (!input.loans || input.loans.length === 0) {
+    const projectedInvestments =
+      compound(input.investmentsValue, monthlyRate, input.months) +
+      futureValueSeries(input.monthlyInvestmentContribution, monthlyRate, input.months);
+    const monthlyCashSurplus = input.monthlyIncome - input.monthlyExpenses - input.monthlyInvestmentContribution;
+    const accumulatedCash = monthlyCashSurplus * input.months;
+    return accumulatedCash + projectedInvestments - input.debt;
+  }
+
+  const monthlyInflationRate = (input.expenseInflationPercent ?? 0) / 12 / 100;
+  const balances = input.loans.map((l) => l.principal);
+  let investmentBalance = input.investmentsValue;
+  let idleCash = 0;
+
+  for (let m = 1; m <= input.months; m++) {
+    const inflatedExpenses = input.monthlyExpenses * Math.pow(1 + monthlyInflationRate, m - 1);
+    const emiOutflow = stepLoansOneMonth(balances, input.loans);
+    const cashSurplus = input.monthlyIncome - inflatedExpenses - input.monthlyInvestmentContribution - emiOutflow;
+    idleCash += cashSurplus;
+    investmentBalance = investmentBalance * (1 + monthlyRate) + input.monthlyInvestmentContribution;
+  }
+
+  const remainingLoanDebt = balances.reduce((sum, b) => sum + Math.max(0, b), 0);
+  return idleCash + investmentBalance - remainingLoanDebt - input.debt;
 }
 
 const BASE_ASSUMPTIONS = [
   `${PROJECTION_YEARS}-year projection horizon`,
   `Investments assumed to grow at ${DEFAULT_ANNUAL_INVESTMENT_RETURN_PERCENT}%/year`,
   "Idle monthly cash surplus is not auto-invested in this model — only explicit SIP/investment contributions compound",
-  "Outstanding debt is held constant over the horizon unless the scenario itself changes it",
+  "Existing loans are amortized month-by-month using each loan's real rate and EMI (the same reducing-balance amortization schedule as Loans → Amortization) — debt is no longer held flat over the horizon",
+  `Monthly expenses are assumed to grow at ${DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT}%/year (an aggregate, India-typical CPI proxy) — the engine still doesn't model category-level inflation differences, just one blended rate`,
 ];
 
 function buildResult(
@@ -69,7 +160,15 @@ function buildResult(
     monthlyExpenses?: number;
     monthlyInvestmentContribution?: number;
     immediateNetWorthDelta?: number;
-    debtDelta?: number;
+    // Overrides the loan portfolio used for the SCENARIO side of the projection only
+    // (e.g. a new home loan added, or an existing loan's principal reduced by a
+    // prepayment). The baseline side always uses the user's real, unmodified loans.
+    loans?: LoanAmortizationInput[];
+    // Extra recurring EMI cash outflow to reflect in the *displayed* monthlyCashflowDelta
+    // headline figure. The deep 5-year projection itself derives EMI outflow directly
+    // from `loans`/`effect.loans` above — this only affects the summary number shown to
+    // the user, not the compounding math.
+    monthlyEmiDelta?: number;
   },
   narrative: string,
   goalImpact: string,
@@ -79,12 +178,16 @@ function buildResult(
   // compares against the plain baseline (0 extra contribution).
   baselineEffect: { monthlyInvestmentContribution?: number } = {},
 ): ScenarioResultDTO {
+  const baselineLoans: LoanAmortizationInput[] = baseline.loans ?? [];
+
   const baselineProjection = projectNetWorth({
     monthlyIncome: baseline.monthlyIncome,
     monthlyExpenses: baseline.monthlyExpenses,
     monthlyInvestmentContribution: baselineEffect.monthlyInvestmentContribution ?? 0,
     investmentsValue: baseline.investmentsValue,
-    debt: baseline.totalDebt,
+    debt: 0,
+    loans: baselineLoans,
+    expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
     months: scenarioMonths,
   });
 
@@ -94,7 +197,9 @@ function buildResult(
       monthlyExpenses: effect.monthlyExpenses ?? baseline.monthlyExpenses,
       monthlyInvestmentContribution: effect.monthlyInvestmentContribution ?? 0,
       investmentsValue: baseline.investmentsValue,
-      debt: baseline.totalDebt + (effect.debtDelta ?? 0),
+      debt: 0,
+      loans: effect.loans ?? baselineLoans,
+      expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
       months: scenarioMonths,
     }) + (effect.immediateNetWorthDelta ?? 0);
 
@@ -102,6 +207,7 @@ function buildResult(
     (effect.monthlyIncome ?? baseline.monthlyIncome) -
     (effect.monthlyExpenses ?? baseline.monthlyExpenses) -
     (effect.monthlyInvestmentContribution ?? 0) -
+    (effect.monthlyEmiDelta ?? 0) -
     (baseline.monthlyIncome - baseline.monthlyExpenses - (baselineEffect.monthlyInvestmentContribution ?? 0));
 
   return {
@@ -133,6 +239,7 @@ export function runScenario<T extends ScenarioType>(
   context: ScenarioContext = {},
 ): ScenarioResultDTO {
   const months = PROJECTION_YEARS * 12;
+  const loans: LoanAmortizationInput[] = baseline.loans ?? [];
 
   switch (scenarioType) {
     case "SALARY_HIKE": {
@@ -198,23 +305,29 @@ export function runScenario<T extends ScenarioType>(
       const downPayment = p.propertyValue * (p.downPaymentPercent / 100);
       const loanPrincipal = p.propertyValue - downPayment;
       const emi = calculateEmi(loanPrincipal, p.loanInterestRateAnnual, p.loanTenureMonths);
+      const newLoan: LoanAmortizationInput = {
+        id: "__house_purchase_new_loan__",
+        principal: loanPrincipal,
+        annualRatePercent: p.loanInterestRateAnnual,
+        emi,
+      };
       return buildResult(
         scenarioType,
         baseline,
         months,
         {
-          monthlyExpenses: baseline.monthlyExpenses + emi,
+          loans: [...loans, newLoan],
+          monthlyEmiDelta: emi,
           immediateNetWorthDelta: p.propertyValue - downPayment - loanPrincipal, // = 0, but explicit for clarity
-          debtDelta: loanPrincipal,
         },
-        `Buying a ₹${p.propertyValue.toFixed(0)} property with ${p.downPaymentPercent}% down adds a ₹${emi.toFixed(0)}/month EMI.`,
+        `Buying a ₹${p.propertyValue.toFixed(0)} property with ${p.downPaymentPercent}% down adds a ₹${emi.toFixed(0)}/month EMI on a new ₹${loanPrincipal.toFixed(0)} loan.`,
         emi > baseline.monthlyIncome - baseline.monthlyExpenses
           ? "The new EMI alone would exceed current monthly surplus — other goals would likely need to pause."
           : "Other goal contributions may need to shrink to accommodate the new EMI.",
         [
           `New loan: ₹${loanPrincipal.toFixed(0)} at ${p.loanInterestRateAnnual}%/year over ${p.loanTenureMonths} months`,
-          "Loan principal is treated as constant over the 5-year horizon (amortization paydown isn't modeled here — see Loans → Amortization for the real schedule)",
-          "Property value appreciation isn't modeled in this scenario",
+          "The new loan is included alongside your existing loans in the month-by-month amortization, so the projection reflects its principal actually being paid down, not a static balance",
+          "Property value appreciation isn't modeled in this scenario — the home itself isn't counted as an asset, so buying it is net-zero at the moment of purchase (down payment spent, loan taken) and only the ongoing financing cost shows up afterward",
         ],
       );
     }
@@ -223,14 +336,24 @@ export function runScenario<T extends ScenarioType>(
       const p = params as ScenarioParamsByType["LOAN_PREPAYMENT"];
       const interestSaved = context.loanPrepayment?.interestSaved ?? 0;
       const monthsSaved = context.loanPrepayment?.monthsSaved ?? 0;
+      // Reduces this specific loan's principal for the scenario side only; every other
+      // loan (and, for the baseline side, this loan too) amortizes unchanged. If the
+      // loan isn't found in `loans` (e.g. stale/invalid id), scenarioLoans is identical
+      // to baseline and only the immediate cash outflow below reflects the prepayment.
+      const scenarioLoans = loans.map((l) =>
+        l.id === p.loanId ? { ...l, principal: Math.max(0, l.principal - p.lumpSum) } : l,
+      );
       return buildResult(
         scenarioType,
         baseline,
         months,
-        { immediateNetWorthDelta: -p.lumpSum + interestSaved, debtDelta: -p.lumpSum },
-        `Prepaying ₹${p.lumpSum.toFixed(0)} on this loan saves an estimated ₹${interestSaved.toFixed(0)} in interest and shortens the tenure by about ${monthsSaved} month(s).`,
+        { immediateNetWorthDelta: -p.lumpSum, loans: scenarioLoans },
+        `Prepaying ₹${p.lumpSum.toFixed(0)} on this loan saves an estimated ₹${interestSaved.toFixed(0)} in interest and shortens the tenure by about ${monthsSaved} month(s) over its full remaining life.`,
         "Reduces long-term debt burden and frees up the EMI sooner, which can be redirected to other goals once the loan closes early.",
-        ["Interest/tenure savings come from the real amortization schedule for this loan, not an approximation"],
+        [
+          "Interest/tenure savings quoted in the narrative come from the real amortization schedule for this loan (LoansService.prepaymentImpact) over its full remaining tenure, which may extend beyond this 5-year window",
+          "Within the 5-year projection, this loan (and every other loan) is amortized month-by-month, so the net-worth figure reflects the loan's balance actually shrinking faster after prepayment, not a one-time flat adjustment",
+        ],
       );
     }
 
@@ -250,7 +373,9 @@ export function runScenario<T extends ScenarioType>(
         monthlyExpenses: baseline.monthlyExpenses,
         monthlyInvestmentContribution: 0,
         investmentsValue: baseline.investmentsValue,
-        debt: baseline.totalDebt,
+        debt: 0,
+        loans,
+        expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
         months: oldYears * 12,
       });
       const corpusAtNewAge = projectNetWorth({
@@ -258,7 +383,9 @@ export function runScenario<T extends ScenarioType>(
         monthlyExpenses: baseline.monthlyExpenses,
         monthlyInvestmentContribution: 0,
         investmentsValue: baseline.investmentsValue,
-        debt: baseline.totalDebt,
+        debt: 0,
+        loans,
+        expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
         months: newYears * 12,
       });
 
