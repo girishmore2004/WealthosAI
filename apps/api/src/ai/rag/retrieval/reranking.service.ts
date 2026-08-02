@@ -44,12 +44,23 @@ export class RerankingService {
       });
 
       const validIndices = result.data.orderedIndices.filter((i) => i >= 0 && i < candidates.length);
-      // The model might omit or duplicate indices — fall back to hybrid retrieval's
-      // own ordering for anything it didn't cleanly rank, rather than dropping
-      // candidates it forgot to mention.
-      const seen = new Set(validIndices);
+      // The model might omit indices it didn't mention, OR duplicate one it mentioned
+      // more than once — both are handled here. Omitted indices fall back to hybrid
+      // retrieval's own ordering (via `remainder`, below). Duplicates are collapsed to
+      // their first occurrence: without this, a repeated index would occupy multiple
+      // slots in `finalOrder`, wasting a `TOP_K_RERANKED` slot on the same chunk twice
+      // and silently pushing a genuinely distinct, already-retrieved candidate out of
+      // the context handed to answer synthesis.
+      const seen = new Set<number>();
+      const dedupedValidIndices: number[] = [];
+      for (const i of validIndices) {
+        if (!seen.has(i)) {
+          seen.add(i);
+          dedupedValidIndices.push(i);
+        }
+      }
       const remainder = candidates.map((_, i) => i).filter((i) => !seen.has(i));
-      const finalOrder = [...validIndices, ...remainder];
+      const finalOrder = [...dedupedValidIndices, ...remainder];
 
       const chunks = finalOrder
         .slice(0, TOP_K_RERANKED)
