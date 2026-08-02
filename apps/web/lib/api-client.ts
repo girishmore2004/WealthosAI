@@ -164,70 +164,36 @@ export const api = {
   },
   loans: {
     list: () => request<LoanDTO[]>("/loans"),
-    summary: () => request<DebtSummaryDTO>("/loans/summary"),
-    create: (data: {
-      type: string;
-      lender: string;
-      principal: number;
-      outstandingPrincipal: number;
-      interestRateAnnual: number;
-      tenureMonths: number;
-      emiAmount: number;
-      startDate: string;
-    }) => request<LoanDTO>("/loans", { method: "POST", body: JSON.stringify(data) }),
+    debtSummary: () => request<DebtSummaryDTO>("/loans/debt-summary"),
+    create: (data: { type: string; lender: string; principal: number; interestRate: number; tenureMonths: number; startDate: string; emiAmount?: number }) =>
+      request<LoanDTO>("/loans", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/loans/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ type: string; lender: string; principal: number; outstandingPrincipal: number; interestRateAnnual: number; tenureMonths: number; emiAmount: number; startDate: string; notes: string }>) =>
+    update: (id: string, data: Partial<{ type: string; lender: string; principal: number; interestRate: number; tenureMonths: number; startDate: string; emiAmount: number }>) =>
       request<LoanDTO>(`/loans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-    prepaymentImpact: (id: string, lumpSum: number) =>
-      request<{ monthsSaved: number; interestSaved: number; originalTenureMonths: number; newTenureMonths: number }>(
-        `/loans/${id}/prepayment-impact?lumpSum=${lumpSum}`,
-      ),
   },
   insurance: {
     list: () => request<InsurancePolicyDTO[]>("/insurance"),
-    gapAnalysis: () => request<CoverageGapDTO[]>("/insurance/gap-analysis"),
-    renewals: (withinDays?: number) =>
-      request<InsurancePolicyDTO[]>(`/insurance/renewals${withinDays ? `?withinDays=${withinDays}` : ""}`),
-    nomineeSummary: () =>
-      request<{ policyId: string; type: string; provider: string; nomineeName: string | null }[]>(
-        "/insurance/nominee-summary",
-      ),
-    create: (data: {
-      type: string;
-      provider: string;
-      policyNumber?: string;
-      premiumAmount: number;
-      premiumFrequency: string;
-      coverageAmount: number;
-      renewalDate: string;
-      nomineeName?: string;
-    }) => request<InsurancePolicyDTO>("/insurance", { method: "POST", body: JSON.stringify(data) }),
+    coverageGaps: () => request<CoverageGapDTO[]>("/insurance/coverage-gaps"),
+    create: (data: { type: string; provider: string; policyNumber?: string; sumAssured: number; premiumAmount: number; premiumFrequency: string; renewalDate: string; notes?: string }) =>
+      request<InsurancePolicyDTO>("/insurance", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/insurance/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ type: string; provider: string; policyNumber: string; premiumAmount: number; premiumFrequency: string; coverageAmount: number; renewalDate: string; nomineeName: string; notes: string }>) =>
+    update: (id: string, data: Partial<{ type: string; provider: string; policyNumber: string; sumAssured: number; premiumAmount: number; premiumFrequency: string; renewalDate: string; notes: string }>) =>
       request<InsurancePolicyDTO>(`/insurance/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   goals: {
     list: () => request<GoalDTO[]>("/goals"),
-    create: (data: {
-      type: string;
-      name: string;
-      targetAmount: number;
-      targetDate: string;
-      currentAmount?: number;
-      monthlyContribution?: number;
-    }) => request<GoalDTO>("/goals", { method: "POST", body: JSON.stringify(data) }),
+    create: (data: { name: string; targetAmount: number; targetDate: string; currentAmount?: number; priority?: string }) =>
+      request<GoalDTO>("/goals", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/goals/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ type: string; name: string; targetAmount: number; targetDate: string; currentAmount: number; monthlyContribution: number }>) =>
+    update: (id: string, data: Partial<{ name: string; targetAmount: number; targetDate: string; currentAmount: number; priority: string }>) =>
       request<GoalDTO>(`/goals/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   tax: {
-    deductions: (financialYear?: string) =>
-      request<TaxDeductionDTO[]>(`/tax/deductions${financialYear ? `?financialYear=${financialYear}` : ""}`),
-    addDeduction: (data: { section: string; description: string; amount: number; financialYear: string }) =>
+    deductions: () => request<TaxDeductionDTO[]>("/tax/deductions"),
+    estimate: (financialYear?: string) => request<TaxEstimateDTO>(`/tax/estimate${financialYear ? `?financialYear=${financialYear}` : ""}`),
+    createDeduction: (data: { section: string; description: string; amount: number; financialYear: string }) =>
       request<TaxDeductionDTO>("/tax/deductions", { method: "POST", body: JSON.stringify(data) }),
     removeDeduction: (id: string) => request<void>(`/tax/deductions/${id}`, { method: "DELETE" }),
-    estimate: (financialYear?: string) =>
-      request<TaxEstimateDTO>(`/tax/estimate${financialYear ? `?financialYear=${financialYear}` : ""}`),
   },
   retirement: {
     profile: () => request<RetirementProfileDTO>("/retirement/profile"),
@@ -339,6 +305,8 @@ export const api = {
     yearly: (financialYear?: string) =>
       request<YearlyReportDTO>(`/reports/yearly${financialYear ? `?financialYear=${financialYear}` : ""}`),
     monthlyCsvUrl: (month?: string) => `${API_URL}/reports/monthly/export.csv${month ? `?month=${month}` : ""}`,
+    yearlyCsvUrl: (financialYear?: string) =>
+      `${API_URL}/reports/yearly/export.csv${financialYear ? `?financialYear=${financialYear}` : ""}`,
   },
   coach: {
     ask: (question: string) => request<CoachInteractionDTO>("/coach/ask", { method: "POST", body: JSON.stringify({ question }) }),
