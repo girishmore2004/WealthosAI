@@ -65,6 +65,7 @@ export class AgenticCoachService {
       answer: result.answer,
       confidence: result.confidence,
       verificationPassed: result.verificationPassed,
+      staleAdviceNote,
     });
 
     return { ...result, staleAdviceNote };
