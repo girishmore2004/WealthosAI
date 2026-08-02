@@ -947,6 +947,14 @@ export interface GoalSuccessPredictionDTO {
   goalId: string;
   goalName: string;
   successProbability: number;
+  // NEW: GoalsService's own threshold-based tier, carried through unchanged so a
+  // consumer can display both the statistical read and the rule-based read together
+  // instead of the two disagreeing silently across different screens.
+  ruleBasedTier: "ON_TRACK" | "AT_RISK" | "OFF_TRACK";
+  // NEW: explicit, precomputed agreement flag between successProbability (>=50%) and
+  // ruleBasedTier (ON_TRACK/AT_RISK read as "on pace", OFF_TRACK as "not") — lets the
+  // UI flag a disagreement without re-deriving the comparison itself.
+  agreesWithRuleBasedTier: boolean;
 }
 
 export interface DriftPredictionDTO {
