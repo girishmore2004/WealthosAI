@@ -18,6 +18,29 @@ const MAX_RAW_TEXT_EXCERPT_CHARS = 4000;
 // A statement longer than this is expected to be split into smaller imports.
 const MAX_LINES_PER_BATCH = 200;
 
+/** Determines which of the deterministic parser's leftover lines are actually sent to
+ * the AI statement-understanding fallback (`StatementUnderstandingService`).
+ *
+ * MAX_LINES_PER_BATCH must be a real pre-call guardrail on AI cost/latency exposure —
+ * not just a post-hoc truncation of the final result. A statement where most lines
+ * fail the deterministic parser (e.g. an unusual export format) would otherwise send
+ * its entire, potentially far-larger-than-200-line unparsed set to a single AI
+ * `extract` call before any cap was applied — exactly the unbounded-cost scenario
+ * MAX_LINES_PER_BATCH exists to prevent. Lines beyond the remaining capacity are
+ * simply never offered to the model — they surface to the user as unparsed, the same
+ * outcome as an AI call that fails on them, just without paying for the call. */
+export function capLinesForAiFallback(
+  deterministicallyParsedCount: number,
+  unparsedLines: string[],
+  maxLinesPerBatch: number,
+): { linesForAiFallback: string[]; overflowLines: string[] } {
+  const remainingCapacity = Math.max(0, maxLinesPerBatch - deterministicallyParsedCount);
+  return {
+    linesForAiFallback: unparsedLines.slice(0, remainingCapacity),
+    overflowLines: unparsedLines.slice(remainingCapacity),
+  };
+}
+
 export interface IngestReviewItemData {
   rawLine: string;
   parsedDate: Date;
@@ -55,7 +78,15 @@ export class CopilotIngestionService {
 
   async ingest(userId: string, sourceLabel: string, rawText: string, defaultPaymentMethod: PaymentMethod) {
     const { parsed: deterministicallyParsed, unparsedLines } = parseStatementText(rawText);
-    const aiRecovered = await this.understanding.parseLeftoverLines(userId, unparsedLines);
+
+    // Cap how many leftover lines are actually offered to the AI fallback BEFORE
+    // calling it — see capLinesForAiFallback() for why this must happen pre-call.
+    const { linesForAiFallback } = capLinesForAiFallback(deterministicallyParsed.length, unparsedLines, MAX_LINES_PER_BATCH);
+
+    const aiRecovered = await this.understanding.parseLeftoverLines(userId, linesForAiFallback);
+    // Lines that were never offered to the AI fallback (because remaining capacity
+    // was already exhausted) are still part of unparsedLines and not of aiRecovered,
+    // so this subtraction correctly counts them as unparsed — same as before.
     const stillUnparsedCount = unparsedLines.length - aiRecovered.length;
 
     const allParsed = [...deterministicallyParsed, ...aiRecovered].slice(0, MAX_LINES_PER_BATCH);
