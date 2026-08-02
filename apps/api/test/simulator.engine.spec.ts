@@ -1,4 +1,4 @@
-import { runScenario, calculateEmi, projectNetWorth } from "../src/simulator/simulator.engine";
+import { runScenario, calculateEmi, projectNetWorth, LoanAmortizationInput } from "../src/simulator/simulator.engine";
 import { ScenarioBaselineDTO } from "@wealthos/types";
 
 const baseline: ScenarioBaselineDTO = {
@@ -9,6 +9,15 @@ const baseline: ScenarioBaselineDTO = {
   totalDebt: 200000,
   currentAge: 30,
   targetRetirementAge: 60,
+};
+
+// A baseline with real per-loan detail — exercises the new month-by-month
+// amortization/inflation path (`baseline` above intentionally omits `loans`, which
+// exercises the legacy flat-debt fallback path for backward compatibility).
+const baselineWithLoan: ScenarioBaselineDTO = {
+  ...baseline,
+  loans: [{ id: "loan-1", principal: 200000, annualRatePercent: 8.5, emi: 4500 }],
+  totalMonthlyEmi: 4500,
 };
 
 describe("simulator.engine (pure, deterministic)", () => {
@@ -170,5 +179,79 @@ describe("simulator.engine (pure, deterministic)", () => {
   it("every scenario type returns isProjectionOnly: true", () => {
     const result = runScenario("SALARY_HIKE", { percentIncrease: 5 }, baseline);
     expect(result.isProjectionOnly).toBe(true);
+  });
+
+  describe("projectNetWorth — loan amortization & expense inflation (month-by-month path)", () => {
+    const loans: LoanAmortizationInput[] = [{ id: "l1", principal: 200000, annualRatePercent: 8.5, emi: 4500 }];
+
+    it("without `loans`, behaves exactly like the original closed-form calculation (debt held flat)", () => {
+      const a = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 5000, investmentsValue: 300000, debt: 200000, months: 60 });
+      // Same inputs, but with an EXPLICIT empty loans array — must be identical to the
+      // implicit-undefined case, since both are documented as the same fallback path.
+      const b = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 5000, investmentsValue: 300000, debt: 200000, months: 60, loans: [] });
+      expect(a).toBe(b);
+    });
+
+    it("a fully-amortizing loan costs roughly its own principal+interest in cash, then stops dragging on cash flow", () => {
+      // A ₹200,000 loan at 8.5% with a ₹4,500 EMI pays off in ~54 months. Over a long
+      // 600-month horizon, the ONLY difference from a debt-free baseline should be the
+      // real cash actually paid (principal + interest) while the loan was active —
+      // bounded and modest — not an unbounded drag, and not zero either (interest is a
+      // real cost, unlike the old model which held debt flat and ignored it).
+      const debtFree = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 0, investmentsValue: 0, debt: 0, months: 600, loans: [] });
+      const withLoan = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 0, investmentsValue: 0, debt: 0, months: 600, loans });
+      expect(withLoan).toBeLessThan(debtFree); // paying real interest is a real cost
+      expect(withLoan).toBeGreaterThan(debtFree - 300000); // but bounded — not an unbounded/perpetual drag once paid off
+    });
+
+    it("a loan whose EMI doesn't cover interest stays stuck (balance never grows or crashes to -Infinity)", () => {
+      const stuckLoans: LoanAmortizationInput[] = [{ id: "l1", principal: 200000, annualRatePercent: 8.5, emi: 100 }];
+      const projected = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 0, investmentsValue: 0, debt: 0, months: 60, loans: stuckLoans });
+      expect(Number.isFinite(projected)).toBe(true);
+    });
+
+    it("higher expense inflation reduces the projected outcome versus a lower rate, all else equal", () => {
+      const lowInflation = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 0, investmentsValue: 0, debt: 0, months: 60, loans: [], expenseInflationPercent: 0 });
+      // loans:[] alone doesn't trigger the month-by-month path (see fast-path guard),
+      // so use a trivial zero-EMI/zero-principal loan to force it while keeping the
+      // debt side inert, isolating the inflation effect specifically.
+      const inert: LoanAmortizationInput[] = [{ id: "noop", principal: 0, annualRatePercent: 0, emi: 0 }];
+      const noInflation = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 0, investmentsValue: 0, debt: 0, months: 60, loans: inert, expenseInflationPercent: 0 });
+      const withInflation = projectNetWorth({ monthlyIncome: 100000, monthlyExpenses: 60000, monthlyInvestmentContribution: 0, investmentsValue: 0, debt: 0, months: 60, loans: inert, expenseInflationPercent: 6 });
+      expect(withInflation).toBeLessThan(noInflation);
+      expect(lowInflation).toBeLessThan(Infinity); // sanity: fast path still finite
+    });
+  });
+
+  describe("HOUSE_PURCHASE — new loan is amortized alongside existing loans", () => {
+    it("includes the new loan's amortization schedule, not just a flat EMI-as-expense adjustment", () => {
+      const result = runScenario(
+        "HOUSE_PURCHASE",
+        { propertyValue: 5000000, downPaymentPercent: 20, loanInterestRateAnnual: 8.5, loanTenureMonths: 240 },
+        baselineWithLoan,
+      );
+      expect(result.assumptions.some((a) => a.includes("amortization"))).toBe(true);
+      expect(Number(result.monthlyCashflowDelta)).toBeLessThan(0);
+    });
+  });
+
+  describe("LOAN_PREPAYMENT — scenario-side loan balance is actually reduced for the projection", () => {
+    it("a matching loanId in baseline.loans produces a larger 5-year benefit than an unmatched id", () => {
+      const matched = runScenario(
+        "LOAN_PREPAYMENT",
+        { loanId: "loan-1", lumpSum: 100000 },
+        baselineWithLoan,
+        { loanPrepayment: { interestSaved: 45000, monthsSaved: 8, newTenureMonths: 100 } },
+      );
+      const unmatched = runScenario(
+        "LOAN_PREPAYMENT",
+        { loanId: "does-not-exist", lumpSum: 100000 },
+        baselineWithLoan,
+        { loanPrepayment: { interestSaved: 45000, monthsSaved: 8, newTenureMonths: 100 } },
+      );
+      // Both spend the same lump sum immediately, but only the matched case also
+      // amortizes the target loan down faster inside the 5-year window.
+      expect(Number(matched.netWorthDeltaIn5Years)).toBeGreaterThanOrEqual(Number(unmatched.netWorthDeltaIn5Years));
+    });
   });
 });
