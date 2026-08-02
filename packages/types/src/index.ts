@@ -626,6 +626,17 @@ export interface ScenarioParamsByType {
   GOAL_DELAY: { goalId: string; delayMonths: number };
 }
 
+// Per-loan snapshot (real rate + EMI, not just the aggregate outstanding figure) so the
+// Simulator's projection engine can amortize each loan month-by-month during the
+// projection window instead of holding total debt flat. Numeric (not string/Decimal)
+// since this feeds directly into the pure engine's arithmetic, not display formatting.
+export interface ScenarioLoanSnapshotDTO {
+  id: string;
+  principal: number; // current outstanding principal
+  annualRatePercent: number;
+  emi: number;
+}
+
 export interface ScenarioBaselineDTO {
   monthlyIncome: number;
   monthlyExpenses: number;
@@ -634,6 +645,12 @@ export interface ScenarioBaselineDTO {
   totalDebt: number;
   currentAge: number | null;
   targetRetirementAge: number;
+  // Optional so existing/legacy baseline literals (tests, other in-repo constructors)
+  // remain valid without updating every call site — the engine treats a missing/empty
+  // array as "no loan-level detail available" and falls back to holding `totalDebt`
+  // flat, exactly as before this field existed.
+  loans?: ScenarioLoanSnapshotDTO[];
+  totalMonthlyEmi?: number;
 }
 
 export interface ScenarioResultDTO {
