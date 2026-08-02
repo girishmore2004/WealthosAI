@@ -1,3 +1,4 @@
+import { BadRequestException } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { ReportsService } from "../src/reports/reports.service";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -64,6 +65,24 @@ describe("ReportsService", () => {
       expect(report.savingsRate).toBe(0);
       expect(report.income).toBe("0.00");
     });
+
+    it("rejects a malformed month instead of silently returning a zeroed report", async () => {
+      await expect(service.monthlyReport("user-1", "2026-13")).rejects.toThrow(BadRequestException);
+      await expect(service.monthlyReport("user-1", "july-2026")).rejects.toThrow(BadRequestException);
+      expect(mockIncomeService.list).not.toHaveBeenCalled();
+    });
+
+    it("excludes income exactly at the exclusive end-of-month UTC boundary", async () => {
+      mockIncomeService.list.mockResolvedValue([
+        { amount: 5000, receivedAt: new Date("2026-07-31T23:59:59.999Z") }, // in July
+        { amount: 7000, receivedAt: new Date("2026-08-01T00:00:00.000Z") }, // in August, must be excluded
+      ]);
+      mockExpensesService.list.mockResolvedValue([]);
+
+      const report = await service.monthlyReport("user-1", "2026-07");
+
+      expect(report.income).toBe("5000.00");
+    });
   });
 
   describe("yearlyReport", () => {
@@ -83,6 +102,66 @@ describe("ReportsService", () => {
 
       expect(report.totalIncome).toBe("150000.00");
       expect(report.businessProfit).toBeNull();
+    });
+
+    it("rejects a malformed financial year instead of silently mis-ranging", async () => {
+      await expect(service.yearlyReport("user-1", "2026")).rejects.toThrow(BadRequestException);
+      await expect(service.yearlyReport("user-1", "FY26-27")).rejects.toThrow(BadRequestException);
+      expect(mockIncomeService.list).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("monthlyReportCsv", () => {
+    it("escapes category names containing commas so columns don't shift", async () => {
+      mockIncomeService.list.mockResolvedValue([]);
+      mockExpensesService.list.mockResolvedValue([{ amount: 1000, category: { name: "Food, Dining" } }]);
+
+      const csv = await service.monthlyReportCsv("user-1", "2026-07");
+
+      expect(csv).toContain('"Food, Dining",1000.00,100');
+    });
+
+    it("neutralizes a category name that looks like a spreadsheet formula", async () => {
+      mockIncomeService.list.mockResolvedValue([]);
+      mockExpensesService.list.mockResolvedValue([{ amount: 500, category: { name: "=cmd|'/c calc'!A1" } }]);
+
+      const csv = await service.monthlyReportCsv("user-1", "2026-07");
+
+      // Neither a raw `=` at the start of a cell nor an un-neutralized formula should
+      // reach the output.
+      expect(csv).not.toMatch(/,=cmd/);
+      expect(csv).toContain("'=cmd|'/c calc'!A1");
+    });
+
+    it("does not mistake a negative net cashflow for a formula-injection risk", async () => {
+      mockIncomeService.list.mockResolvedValue([{ amount: 1000, receivedAt: new Date("2026-07-05") }]);
+      mockExpensesService.list.mockResolvedValue([{ amount: 5000, category: { name: "Rent" } }]);
+
+      const csv = await service.monthlyReportCsv("user-1", "2026-07");
+
+      expect(csv).toContain("Net Cashflow,-4000.00");
+      expect(csv).not.toContain("'-4000.00");
+    });
+  });
+
+  describe("yearlyReportCsv", () => {
+    it("produces a full metric/value + category block for the financial year", async () => {
+      mockIncomeService.list.mockResolvedValue([{ amount: 100000, receivedAt: new Date("2026-04-01") }]);
+      mockPrisma.client.expense.findMany.mockResolvedValue([{ amount: 20000, category: { name: "Rent" } }]);
+      mockInvestmentsService.summary.mockResolvedValue({ totalCurrentValue: "500000.00" });
+      mockLoansService.debtSummary.mockResolvedValue({ totalOutstanding: "100000.00" });
+      mockBusinessService.annualProfitForUser.mockResolvedValue(null);
+
+      const csv = await service.yearlyReportCsv("user-1", "2026-27");
+
+      expect(csv).toContain("Financial Year,2026-27");
+      expect(csv).toContain("Total Income,100000.00");
+      expect(csv).toContain("Business Profit,N/A");
+      expect(csv).toContain("Rent,20000.00,100");
+    });
+
+    it("rejects a malformed financial year", async () => {
+      await expect(service.yearlyReportCsv("user-1", "not-a-year")).rejects.toThrow(BadRequestException);
     });
   });
 });
