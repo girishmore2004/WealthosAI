@@ -15,6 +15,12 @@ export interface RecordRunInput {
   answer: string;
   confidence: number;
   verificationPassed: boolean;
+  /** The note computed by checkForStaleOrRepeatedAdvice for THIS run (or null) — passed
+   * in explicitly rather than recomputed here so the persisted row always matches
+   * exactly what the user was shown, and so history() (which just reads this column
+   * back) doesn't silently return null for every past run regardless of what was
+   * actually said at the time. */
+  staleAdviceNote: string | null;
 }
 
 @Injectable()
@@ -36,6 +42,21 @@ export class CoachMemoryService {
     intentKey: { matchedIntent: string | null; advancedIntent: string | null },
     currentFacts: Record<string, unknown>,
   ): Promise<string | null> {
+    // general_search's gathered `facts` are just { hasEvidence, citedSourceCount } —
+    // they don't identify WHAT was asked, only whether RAG found something. Every
+    // general-search question the user has ever asked shares that same shallow shape,
+    // so comparing against "the most recent prior run with advancedIntent =
+    // general_search" would compare today's question against whatever unrelated
+    // question was last asked, not against a prior instance of THIS question. That
+    // produces a misleading "this matches/differs from last time" note attached to a
+    // completely different topic. There's no cheap way to identify "the same question
+    // asked before" here (that would need semantic matching, not a facts-hash compare),
+    // so the honest choice is to skip the check entirely for this intent rather than
+    // show a continuity claim that isn't actually about the same thing.
+    if (intentKey.advancedIntent === "general_search") {
+      return null;
+    }
+
     const previous = await this.prisma.client.agenticCoachRun.findFirst({
       where: {
         userId,
@@ -71,6 +92,7 @@ export class CoachMemoryService {
         answer: input.answer,
         confidence: input.confidence,
         verificationPassed: input.verificationPassed,
+        staleAdviceNote: input.staleAdviceNote,
       },
     });
   }
