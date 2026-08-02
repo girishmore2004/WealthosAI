@@ -102,15 +102,27 @@ export interface DetectedSubscriptionDTO {
 }
 
 export interface FinancialHealthScoreDTO {
-  score: number; // 0-100
+  score: number;
   breakdown: {
     savingsRate: number;
     debtToIncome: number;
     emergencyFundMonths: number;
+    // Previously always 100 (a hardcoded placeholder — see the audit's flagged gap).
+    // Now a real, budget-amount-weighted score computed from the user's own
+    // per-category budgets whenever budgetAdherenceIsReal is true. When it's false
+    // (no budgets configured), this still reports 100 for calculation continuity, but
+    // is NOT weighted into `score` above and should not be displayed as a meaningful
+    // figure on its own — see budgetAdherenceIsReal.
     budgetAdherence: number;
   };
-  band: "AT_RISK" | "NEEDS_ATTENTION" | "STABLE" | "STRONG";
+  band: "STRONG" | "STABLE" | "NEEDS_ATTENTION" | "AT_RISK";
   generatedAt: string;
+  // NEW: whether budgetAdherence above reflects real user-defined budgets. false means
+  // the user hasn't set any budgets yet — the frontend should show something like "Set
+  // a budget to include this in your score" rather than the placeholder number, and
+  // `score` itself was computed by redistributing that 15% weight across the other
+  // three real dimensions rather than trusting a fabricated value.
+  budgetAdherenceIsReal: boolean;
 }
 
 export interface DashboardSummaryDTO {
