@@ -3,6 +3,7 @@ import { AiModule } from "../ai.module";
 import { SimulatorModule } from "../../simulator/simulator.module";
 import { LoansModule } from "../../loans/loans.module";
 import { GoalsModule } from "../../goals/goals.module";
+import { InvestmentsModule } from "../../investments/investments.module";
 import { NumericConsistencyVerifier } from "../coach/verification/numeric-consistency.verifier";
 import { ScenarioPromptParserService } from "./parsing/scenario-prompt-parser.service";
 import { ScenarioExpanderService } from "./expansion/scenario-expander.service";
@@ -17,7 +18,7 @@ import { ScenarioStudioController } from "./scenario-studio.controller";
 // stateless verifier), so it's cheaper and less coupling to register it as its own
 // provider here too than to pull in the entire Coach module graph for one helper.
 @Module({
-  imports: [AiModule, SimulatorModule, LoansModule, GoalsModule],
+  imports: [AiModule, SimulatorModule, LoansModule, GoalsModule, InvestmentsModule],
   controllers: [ScenarioStudioController],
   providers: [
     ScenarioPromptParserService,
