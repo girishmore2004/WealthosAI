@@ -1,4 +1,5 @@
 import { Test } from "@nestjs/testing";
+import { NotFoundException } from "@nestjs/common";
 import { DashboardService } from "../src/dashboard/dashboard.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { IncomeService } from "../src/income/income.service";
@@ -31,7 +32,12 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
   const mockPropertyService = {
     totalCurrentValue: jest.fn().mockResolvedValue(0),
   };
-  const mockPrisma = {};
+  // Was a bare `{}` — getSummary() now also reads budgets via
+  // this.prisma.client.budget.findMany(). Defaulted to "no budgets configured" so all
+  // 4 pre-existing tests below (none of which ever mention budgets) keep computing the
+  // health score via the redistributed-weight path, exactly matching what should
+  // happen for an account that hasn't set any budgets up.
+  const mockPrisma = { client: { budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() } } };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -40,6 +46,7 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
     mockLoansService.debtSummary.mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] });
     mockAlertsService.refresh.mockResolvedValue([]);
     mockPropertyService.totalCurrentValue.mockResolvedValue(0);
+    mockPrisma.client.budget.findMany.mockResolvedValue([]);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -72,6 +79,10 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
 
     expect(summary.savingsRate).toBeGreaterThan(20);
     expect(["STABLE", "STRONG"]).toContain(summary.healthScore.band);
+    // New field: no budgets configured in this test, so the score was computed with
+    // the budget dimension's weight redistributed across the other three, not from a
+    // fabricated number.
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(false);
   });
 
   it("flags a low-savings month with a WARNING insight", async () => {
@@ -120,5 +131,157 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
     // netWorth = cashBalance + investments + property - debt
     expect(summary.propertyValue).toBe("4500000.00");
     expect(Number(summary.netWorth)).toBeCloseTo(50000 + 200000 + 4500000 - 1000000);
+  });
+});
+
+describe("DashboardService budget-aware health score (new)", () => {
+  let service: DashboardService;
+
+  const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
+  const mockExpensesService = { list: jest.fn() };
+  const mockInvestmentsService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
+  const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockPrisma = { client: { budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() } } };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockInvestmentsService.totalCurrentValue.mockResolvedValue(0);
+    mockLoansService.totalOutstanding.mockResolvedValue(0);
+    mockLoansService.debtSummary.mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] });
+    mockAlertsService.refresh.mockResolvedValue([]);
+    mockPropertyService.totalCurrentValue.mockResolvedValue(0);
+    mockIncomeService.monthlyForecast.mockResolvedValue(100000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+      ],
+    }).compile();
+    service = moduleRef.get(DashboardService);
+  });
+
+  it("gives full budget credit (score 100, isReal true) when spending is at or under every budget", async () => {
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 15000, categoryId: "c1", category: { name: "Groceries", type: "NEED" } },
+    ]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([{ categoryId: "c1", monthlyAmount: 20000 }]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(true);
+    expect(summary.healthScore.breakdown.budgetAdherence).toBe(100);
+  });
+
+  it("degrades the budget score proportionally to overspend, and it's included in the overall score", async () => {
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 30000, categoryId: "c1", category: { name: "Dining Out", type: "WANT" } }, // 50% over a 20000 budget
+    ]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([{ categoryId: "c1", monthlyAmount: 20000 }]);
+
+    const summary = await service.getSummary("user-1");
+
+    // adherence = 1 - (30000-20000)/20000 = 0.5 -> budgetScore = 50
+    expect(summary.healthScore.breakdown.budgetAdherence).toBe(50);
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(true);
+  });
+
+  it("weights multiple budgets' adherence by their amount, not a simple average", async () => {
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 30000, categoryId: "rent", category: { name: "Rent", type: "NEED" } }, // exactly at a 30000 rent budget -> 100
+      { amount: 1000, categoryId: "coffee", category: { name: "Coffee", type: "WANT" } }, // 900% over a tiny 100 budget -> floored at 0
+    ]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([
+      { categoryId: "rent", monthlyAmount: 30000 }, // large weight
+      { categoryId: "coffee", monthlyAmount: 100 }, // tiny weight
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    // Weighted heavily toward the large, fully-met rent budget rather than being
+    // dragged down evenly by the small, badly-blown coffee budget.
+    expect(summary.healthScore.breakdown.budgetAdherence).toBeGreaterThan(90);
+  });
+
+  it("does not weight the budget dimension into the overall score at all when no budgets exist", async () => {
+    mockExpensesService.list.mockResolvedValue([{ amount: 20000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(false);
+  });
+});
+
+describe("DashboardService budget CRUD (new)", () => {
+  let service: DashboardService;
+  const mockPrisma = { client: { budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() } } };
+  const noop = {};
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: noop },
+        { provide: ExpensesService, useValue: noop },
+        { provide: InvestmentsService, useValue: noop },
+        { provide: LoansService, useValue: noop },
+        { provide: AlertsService, useValue: noop },
+        { provide: PropertyService, useValue: noop },
+      ],
+    }).compile();
+    service = moduleRef.get(DashboardService);
+  });
+
+  it("lists a user's budgets", async () => {
+    mockPrisma.client.budget.findMany.mockResolvedValue([{ id: "b1", categoryId: "c1", monthlyAmount: 20000 }]);
+
+    const budgets = await service.listBudgets("user-1");
+
+    expect(budgets).toHaveLength(1);
+    expect(mockPrisma.client.budget.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "user-1" } }),
+    );
+  });
+
+  it("upserts a budget keyed by (userId, categoryId)", async () => {
+    mockPrisma.client.budget.upsert.mockResolvedValue({ id: "b1", categoryId: "c1", monthlyAmount: 25000 });
+
+    await service.upsertBudget("user-1", { categoryId: "c1", monthlyAmount: 25000 });
+
+    expect(mockPrisma.client.budget.upsert).toHaveBeenCalledWith({
+      where: { userId_categoryId: { userId: "user-1", categoryId: "c1" } },
+      create: { userId: "user-1", categoryId: "c1", monthlyAmount: 25000 },
+      update: { monthlyAmount: 25000 },
+      include: { category: true },
+    });
+  });
+
+  it("removes a budget scoped to the owner", async () => {
+    mockPrisma.client.budget.deleteMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.removeBudget("user-1", "b1");
+
+    expect(mockPrisma.client.budget.deleteMany).toHaveBeenCalledWith({ where: { id: "b1", userId: "user-1" } });
+    expect(result).toEqual({ id: "b1" });
+  });
+
+  it("throws NotFoundException removing a budget that doesn't exist or isn't owned by the caller", async () => {
+    mockPrisma.client.budget.deleteMany.mockResolvedValue({ count: 0 });
+    await expect(service.removeBudget("user-1", "not-mine")).rejects.toThrow(NotFoundException);
   });
 });
