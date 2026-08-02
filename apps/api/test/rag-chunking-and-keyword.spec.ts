@@ -32,6 +32,28 @@ describe("ChunkerService", () => {
     const firstChunkTail = chunks[0].text.split(/\s+/).slice(-5).join(" ");
     expect(chunks[1].text).toContain(firstChunkTail.split(" ")[0]);
   });
+
+  // Regression test: the sentence-splitting regex used for oversized paragraphs
+  // previously only matched text ending in . ! or ? — any trailing fragment without
+  // terminal punctuation (very common in OCR'd statement text, or any paragraph that's
+  // simply cut off) was silently dropped and never made it into any chunk, meaning it
+  // was never embedded or searchable even though it existed in the source document.
+  it("preserves a trailing sentence fragment that has no terminal punctuation, inside an oversized paragraph", () => {
+    const filler = Array(200).fill("word").join(" ");
+    const longParagraph = `First sentence here. ${filler} this trailing fragment has no period at the end`;
+    const chunks = service.chunk(longParagraph, { targetWords: 100, overlapWords: 10 });
+    const rejoined = chunks.map((c) => c.text).join(" ");
+    expect(rejoined).toContain("this trailing fragment has no period at the end");
+  });
+
+  // Regression test: a paragraph made ENTIRELY of one long fragment with no terminal
+  // punctuation anywhere at all must still survive chunking rather than being dropped.
+  it("preserves an oversized paragraph that has no terminal punctuation anywhere", () => {
+    const noPunctuation = Array(200).fill("word").join(" ") + " with absolutely no punctuation to be found here at all";
+    const chunks = service.chunk(noPunctuation, { targetWords: 100, overlapWords: 10 });
+    const rejoined = chunks.map((c) => c.text).join(" ");
+    expect(rejoined).toContain("with absolutely no punctuation to be found here at all");
+  });
 });
 
 describe("KeywordScorerService (BM25)", () => {
