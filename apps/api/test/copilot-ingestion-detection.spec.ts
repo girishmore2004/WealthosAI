@@ -1,7 +1,43 @@
 import { DuplicateDetectionService } from "../src/ai/copilot-ingestion/detection/duplicate-detection.service";
 import { RecurringDetectionService } from "../src/ai/copilot-ingestion/detection/recurring-detection.service";
 import { SuggestionScoringService } from "../src/ai/copilot-ingestion/scoring/suggestion-scoring.service";
+import { capLinesForAiFallback } from "../src/ai/copilot-ingestion/copilot-ingestion.service";
+describe("capLinesForAiFallback", () => {
+  it("sends all unparsed lines to the AI fallback when total stays under the batch cap", () => {
+    const unparsed = ["line1", "line2", "line3"];
+    const result = capLinesForAiFallback(10, unparsed, 200);
+    expect(result.linesForAiFallback).toEqual(unparsed);
+    expect(result.overflowLines).toEqual([]);
+  });
 
+  it("caps the lines sent to the AI fallback to only the remaining batch capacity", () => {
+    const unparsed = Array.from({ length: 10 }, (_, i) => `line${i}`);
+    const result = capLinesForAiFallback(195, unparsed, 200);
+    expect(result.linesForAiFallback).toHaveLength(5);
+    expect(result.linesForAiFallback).toEqual(unparsed.slice(0, 5));
+    expect(result.overflowLines).toEqual(unparsed.slice(5));
+  });
+
+  it("sends nothing to the AI fallback once the deterministic parser alone already fills the batch", () => {
+    const unparsed = ["a", "b", "c"];
+    const result = capLinesForAiFallback(200, unparsed, 200);
+    expect(result.linesForAiFallback).toEqual([]);
+    expect(result.overflowLines).toEqual(unparsed);
+  });
+
+  it("never sends a negative-capacity slice when deterministic parsing exceeds the cap", () => {
+    const unparsed = ["a", "b"];
+    const result = capLinesForAiFallback(250, unparsed, 200);
+    expect(result.linesForAiFallback).toEqual([]);
+    expect(result.overflowLines).toEqual(unparsed);
+  });
+
+  it("handles an empty unparsed-lines list", () => {
+    const result = capLinesForAiFallback(50, [], 200);
+    expect(result.linesForAiFallback).toEqual([]);
+    expect(result.overflowLines).toEqual([]);
+  });
+});
 describe("DuplicateDetectionService", () => {
   const service = new DuplicateDetectionService();
 
