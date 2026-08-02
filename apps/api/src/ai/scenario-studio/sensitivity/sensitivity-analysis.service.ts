@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { SimulatorService } from "../../../simulator/simulator.service";
 import { projectNetWorth } from "../../../simulator/simulator.engine";
 import { RunScenarioResponseDTO, ScenarioType } from "@wealthos/types";
-import { AGE_SENSITIVITY_DELTAS, RETURN_RATE_SENSITIVITY_PERCENTS, SCENARIO_FIELD_CONFIG, SENSITIVITY_MULTIPLIERS } from "../scenario-studio.constants";
+import { AGE_SENSITIVITY_DELTAS, RETURN_RATE_SENSITIVITY_PERCENTS, SCENARIO_FIELD_CONFIG, SENSITIVITY_EXPENSE_INFLATION_PERCENT, SENSITIVITY_MULTIPLIERS } from "../scenario-studio.constants";
 
 export interface SensitivityPoint {
   paramValue: number;
@@ -54,13 +54,17 @@ export class SensitivityAnalysisService {
   }
 
   // Substitutes for the roadmap's "inflation changes" sensitivity — see
-  // scenario-studio.constants.ts for why (the deterministic engine models an assumed
-  // investment return rate, not expense inflation, and this reuses that exact lever
-  // rather than fabricating an inflation model with no real backing). Computed
-  // directly against the baseline via the engine's own exported projectNetWorth
-  // function (no new investment contribution assumed — this is "how would my current
-  // baseline look under different long-run return assumptions", independent of
-  // whichever specific scenario is being explored).
+  // scenario-studio.constants.ts for why (the deterministic engine models a fixed
+  // expense-inflation assumption, not something callers can vary per-run, so this
+  // reuses the investment-return lever instead of fabricating a second, redundant
+  // inflation model). Computed directly against the baseline via the engine's own
+  // exported projectNetWorth function (no new investment contribution assumed — this
+  // is "how would my current baseline look under different long-run return
+  // assumptions", independent of whichever specific scenario is being explored). Passes
+  // the baseline's real per-loan detail and the same expense-inflation assumption the
+  // rest of the engine uses, so this point is directly comparable to every other number
+  // Scenario Studio surfaces rather than silently reverting to the old flat-debt,
+  // no-inflation model for this one sweep.
   private sweepReturnRate(baseRun: RunScenarioResponseDTO): SensitivityDimension {
     const months = 60; // 5-year horizon, matching PROJECTION_YEARS in simulator.engine.ts
     const points: SensitivityPoint[] = RETURN_RATE_SENSITIVITY_PERCENTS.map((ratePercent) => {
@@ -69,7 +73,9 @@ export class SensitivityAnalysisService {
         monthlyExpenses: baseRun.baseline.monthlyExpenses,
         monthlyInvestmentContribution: 0,
         investmentsValue: baseRun.baseline.investmentsValue,
-        debt: baseRun.baseline.totalDebt,
+        debt: 0,
+        loans: baseRun.baseline.loans,
+        expenseInflationPercent: SENSITIVITY_EXPENSE_INFLATION_PERCENT,
         months,
         annualReturnPercent: ratePercent,
       });
@@ -80,7 +86,7 @@ export class SensitivityAnalysisService {
       };
     });
 
-    return { dimension: "Assumed investment return rate (baseline, no new contribution) — closest available proxy for inflation/growth-rate sensitivity", field: "annualReturnPercent", points };
+    return { dimension: "Assumed investment return rate (baseline, no new contribution) — closest available proxy for return-rate/growth sensitivity", field: "annualReturnPercent", points };
   }
 }
 
