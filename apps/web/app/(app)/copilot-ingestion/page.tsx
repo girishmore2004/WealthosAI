@@ -164,9 +164,12 @@ function ReviewItemRow({
 
   const reject = async () => {
     setBusy(true);
+    setLocalError(null);
     try {
       const updated = await api.copilotIngestion.reject(item.id);
       onResolved(updated);
+    } catch (err) {
+      setLocalError(err instanceof ApiError ? err.message : "Couldn't reject this item.");
     } finally {
       setBusy(false);
     }
