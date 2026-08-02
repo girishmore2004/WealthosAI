@@ -37,6 +37,21 @@ const MAX_OUTPUT_TOKENS = 1024;
 // instruction (up to config.ai.maxRetries times) -> log the interaction -> write cache
 // on success -> return.
 //
+// Two resilience properties this pipeline guarantees, both load-bearing for callers'
+// documented `catch (e) { if (e instanceof AiUnavailableException) ...fallback... }`
+// pattern (see ai.exceptions.ts and every feature under ai/*):
+//   1. A transport-level failure (GroqClient throwing AiUnavailableException after
+//      exhausting its own retries) is always logged with status "ERROR" before it is
+//      rethrown — AiInteractionLog/recentStats() must never under-report failures just
+//      because the model never actually answered. This call is NOT itself retried here
+//      (GroqClient already exhausted its own transport retry budget); the gateway's
+//      retry loop below is reserved for *validation* failures on responses that did
+//      come back.
+//   2. AiCacheService being unavailable (e.g. a Redis blip) must never fail an AI call
+//      outright — same fail-open philosophy AiLoggingService already documents for
+//      logging. A cache read/write error is logged as a warning and the call proceeds
+//      as if it were a cache miss.
+//
 // A note on `confidence`: it is the model's own self-report (see
 // ai-gateway.types.ts#withConfidence), not a calibrated probability computed from
 // logprobs or an ensemble. Groq's chat completions endpoint doesn't expose the kind of
@@ -114,20 +129,47 @@ export class AiGatewayService {
     const startedAt = Date.now();
     const cacheable = options.cacheable ?? this.defaultCacheable(taskType);
 
-    const { text: redactedInput } = this.redaction.redact(rawInput);
-    const { text: budgetedInput } = this.tokenBudget.trimToBudget(redactedInput, MAX_CONTEXT_TOKENS);
+    const { text: redactedInput, redactedTypes } = this.redaction.redact(rawInput);
+    const { text: budgetedInput, wasTrimmed } = this.tokenBudget.trimToBudget(redactedInput, MAX_CONTEXT_TOKENS);
+
+    // These don't go into AiInteractionLog (that row shape is owned by
+    // AiLoggingService, out of scope for this feature) but they're worth surfacing to
+    // stdout/stderr — silently trimming context can degrade an answer in a way that's
+    // otherwise invisible to whoever is debugging a "the AI gave a weird answer"
+    // report, and knowing *that* PII was redacted (never the value) is useful audit
+    // signal even without a persisted row.
+    if (redactedTypes.length > 0) {
+      this.logger.debug(
+        `Redacted PII types [${redactedTypes.join(", ")}] from input for feature "${options.feature}" (prompt "${options.promptName}")`,
+      );
+    }
+    if (wasTrimmed) {
+      this.logger.warn(
+        `Input for feature "${options.feature}" (prompt "${options.promptName}") exceeded the ${MAX_CONTEXT_TOKENS}-token budget and was trimmed — this may reduce answer quality/grounding.`,
+      );
+    }
 
     const prompt = await this.prompts.getActive(options.promptName);
     const model = this.router.modelFor(taskType);
     const temperature = this.router.temperatureFor(taskType);
 
     if (cacheable) {
-      const cached = await this.cache.get<z.infer<TSchema>>(
-        options.feature,
-        prompt.name,
-        prompt.version,
-        budgetedInput,
-      );
+      // Fail-open: a cache outage must degrade to "always call Groq", never to "the AI
+      // feature is down". Mirrors AiLoggingService.log()'s own fail-open contract.
+      let cached: z.infer<TSchema> | null = null;
+      try {
+        cached = await this.cache.get<z.infer<TSchema>>(
+          options.feature,
+          prompt.name,
+          prompt.version,
+          budgetedInput,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `AiCacheService.get failed for "${prompt.name}" (feature "${options.feature}") — proceeding without cache: ${(err as Error).message}`,
+        );
+      }
+
       if (cached) {
         await this.logging.log({
           userId: options.userId,
@@ -173,18 +215,57 @@ export class AiGatewayService {
               },
             ];
 
-      const completion = await this.groq.chat({
-        model,
-        messages,
-        temperature,
-        maxTokens: MAX_OUTPUT_TOKENS,
-        jsonMode: true,
-      });
+      let completion: Awaited<ReturnType<GroqClient["chat"]>>;
+      try {
+        completion = await this.groq.chat({
+          model,
+          messages,
+          temperature,
+          maxTokens: MAX_OUTPUT_TOKENS,
+          jsonMode: true,
+        });
+      } catch (err) {
+        // GroqClient has already exhausted its own transport-level retry budget
+        // (see groq.client.ts's maxRetries loop) before this throws, so this is NOT
+        // retried again here — retrying transport failures is that class's job, not
+        // this one's. Previously this exception propagated straight past this method
+        // uncaught, which meant AiInteractionLog never got a row for outright Groq
+        // failures (only for "OK" and "MALFORMED_FALLBACK") even though the
+        // AiInteractionStatus.ERROR enum value exists specifically for this case, and
+        // GET /ai/health's errorRate silently under-counted real outages as a result.
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        await this.logging.log({
+          userId: options.userId,
+          feature: options.feature,
+          taskType,
+          promptName: prompt.name,
+          promptVersion: prompt.version,
+          model,
+          status: "ERROR",
+          retries,
+          latencyMs: Date.now() - startedAt,
+          cacheHit: false,
+          redactedInput: budgetedInput,
+          errorMessage,
+        });
+        // Rethrow the original error unchanged (still AiUnavailableException in the
+        // normal case) so every calling feature's existing
+        // `catch (e) { if (e instanceof AiUnavailableException) ...fallback... }`
+        // pattern keeps working exactly as documented, with no signature/behavior
+        // change visible to callers beyond "the failure is now also logged".
+        throw err;
+      }
 
       const attemptResult = this.validator.parse(envelope, completion.content);
       if (attemptResult.ok && attemptResult.data) {
         if (cacheable) {
-          await this.cache.set(options.feature, prompt.name, prompt.version, budgetedInput, attemptResult.data);
+          try {
+            await this.cache.set(options.feature, prompt.name, prompt.version, budgetedInput, attemptResult.data);
+          } catch (err) {
+            this.logger.warn(
+              `AiCacheService.set failed for "${prompt.name}" (feature "${options.feature}") — result was not cached: ${(err as Error).message}`,
+            );
+          }
         }
         await this.logging.log({
           userId: options.userId,
