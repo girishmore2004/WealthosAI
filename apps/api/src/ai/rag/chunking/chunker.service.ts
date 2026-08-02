@@ -78,7 +78,16 @@ function splitIntoUnits(text: string): string[] {
     // short paragraphs stay intact rather than being fragmented into single sentences
     // for no benefit.
     if (countWords(paragraph) > DEFAULT_TARGET_WORDS) {
-      const sentences = paragraph.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [paragraph];
+      // Matches a run of text ending in .!?  (a normal sentence) OR, as the final
+      // alternative, a trailing run of text with NO terminal punctuation at all. The
+      // trailing alternative matters: without it, any paragraph whose last sentence
+      // doesn't end in ./!/? (very common in OCR'd bank/card statement text, or any
+      // paragraph simply cut off mid-thought) had that entire trailing fragment
+      // silently dropped by the previous regex — content that was chunked and
+      // embedded would never actually include it, making it permanently
+      // unsearchable even though it exists in the source document. Every character
+      // of the input paragraph must end up in some unit.
+      const sentences = paragraph.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [paragraph];
       units.push(...sentences.map((s) => s.trim()).filter(Boolean));
     } else {
       units.push(paragraph.trim());
