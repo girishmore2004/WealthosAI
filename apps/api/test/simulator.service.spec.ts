@@ -20,7 +20,7 @@ describe("SimulatorService", () => {
   const mockIncome = { monthlyForecast: jest.fn(), list: jest.fn() };
   const mockExpenses = { list: jest.fn() };
   const mockInvestments = { totalCurrentValue: jest.fn() };
-  const mockLoans = { totalOutstanding: jest.fn(), prepaymentImpact: jest.fn() };
+  const mockLoans = { totalOutstanding: jest.fn(), prepaymentImpact: jest.fn(), list: jest.fn() };
   const mockRetirement = { getOrCreateProfile: jest.fn(), computePlan: jest.fn() };
   const mockGoals = { list: jest.fn() };
 
@@ -31,6 +31,9 @@ describe("SimulatorService", () => {
     mockExpenses.list.mockResolvedValue([{ amount: 60000 }]);
     mockInvestments.totalCurrentValue.mockResolvedValue(300000);
     mockLoans.totalOutstanding.mockResolvedValue(200000);
+    mockLoans.list.mockResolvedValue([
+      { id: "loan-1", outstandingPrincipal: 200000, interestRateAnnual: 8.5, emiAmount: 4500 },
+    ]);
     mockPrisma.client.user.findUnique.mockResolvedValue({ dateOfBirth: new Date(1994, 0, 1) });
     mockRetirement.getOrCreateProfile.mockResolvedValue({ targetRetirementAge: 60 });
 
@@ -77,6 +80,23 @@ describe("SimulatorService", () => {
     it("does not write anything to the DB for a plain run (only save() should persist)", async () => {
       await service.run("user-1", "SALARY_HIKE", { percentIncrease: 10 });
       expect(mockPrisma.client.savedScenario.create).not.toHaveBeenCalled();
+    });
+
+    it("populates per-loan detail and totalMonthlyEmi on the baseline from LoansService.list()", async () => {
+      const { baseline } = await service.run("user-1", "SALARY_HIKE", { percentIncrease: 10 });
+      expect(mockLoans.list).toHaveBeenCalledWith("user-1");
+      expect(baseline.loans).toEqual([
+        { id: "loan-1", principal: 200000, annualRatePercent: 8.5, emi: 4500 },
+      ]);
+      expect(baseline.totalMonthlyEmi).toBe(4500);
+    });
+
+    it("still produces a finite result when the user has no loans at all", async () => {
+      mockLoans.list.mockResolvedValue([]);
+      mockLoans.totalOutstanding.mockResolvedValue(0);
+      const { baseline, result } = await service.run("user-1", "SALARY_HIKE", { percentIncrease: 10 });
+      expect(baseline.loans).toEqual([]);
+      expect(Number.isFinite(Number(result.projectedNetWorthIn5Years))).toBe(true);
     });
   });
 
