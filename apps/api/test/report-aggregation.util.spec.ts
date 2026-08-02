@@ -11,10 +11,8 @@ describe("groupExpensesByCategory", () => {
       24500,
     );
 
-    expect(rows).toEqual([
-      { category: "Rent", amount: "20000.00", percentOfTotal: expect.closeTo ? undefined : 81.6 },
-      { category: "Groceries", amount: "4500.00", percentOfTotal: 18.4 },
-    ]);
+    expect(rows[0]).toEqual({ category: "Rent", amount: "20000.00", percentOfTotal: 81.6 });
+    expect(rows[1]).toEqual({ category: "Groceries", amount: "4500.00", percentOfTotal: 18.4 });
   });
 
   it("returns 0% for every row when totalExpenses is 0 (avoids division by zero)", () => {
