@@ -716,19 +716,28 @@ model AiInteractionLog {
   taskType       String // "classification" | "extraction" | "generation" | "summarization" | "ranking"
   promptName     String
   promptVersion  Int
-  model          String // actual Groq model id used for this call
+  model          String // actual Groq model id used for this call, or "cache" on a cache hit
   status         AiInteractionStatus
   confidence     Decimal?             @db.Decimal(4, 3) // 0.000–1.000, self-reported by the model — see AiGatewayService doc comment
   retries        Int                  @default(0)
   latencyMs      Int
   cacheHit       Boolean              @default(false)
+  cacheType      String? // "exact" | "semantic" | null — which AiCacheService path served this hit; null when cacheHit is false. See ai-cache.service.ts.
   redactedInput  String // post-redaction input actually sent to the model, truncated to ~4kb by the logger
   rawOutput      String? // truncated to ~4kb; null when status is ERROR
   errorMessage   String?
+  promptTokens       Int      @default(0) // real usage reported by Groq's own response `usage` block — NOT TokenBudgetService's pre-call char/4 estimate. 0 on a cache hit.
+  completionTokens   Int      @default(0)
+  estimatedCostUsd   Decimal? @db.Decimal(12, 8) // computed by TokenAccountingService from the real usage above against config ai.modelPricing; null (not 0) when `model` isn't in that pricing table
+  routingReason      String? // see RoutingReason in ai-gateway.types.ts — why ModelRouterService picked `model` for this call
+  fallbackUsed       Boolean  @default(false) // true when `model` was NOT ModelRouterService's first-choice candidate for this call
+  groundingScore     Decimal? @db.Decimal(4, 3) // 0.000–1.000; null when the caller didn't supply AiCallOptions.groundingContext (not measured, not "0 = hallucinated"). See grounding.service.ts.
+  hallucinationRisk  String   @default("unmeasured") // "unmeasured" | "low" | "medium" | "high" — coarse bucket derived from groundingScore
   createdAt      DateTime             @default(now())
 
   @@index([userId, createdAt])
   @@index([feature, createdAt])
+  @@index([model, taskType, createdAt])
 }
 
 // A named, versioned prompt template. New versions are inserted rather than mutated in
