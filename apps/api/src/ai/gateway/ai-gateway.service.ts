@@ -1,14 +1,18 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { z } from "zod";
 import { GroqClient } from "../groq/groq.client";
 import { ModelRouterService } from "./model-router.service";
+import { ModelRoutingStatsService } from "./model-routing-stats.service";
+import { TokenAccountingService } from "./token-accounting.service";
+import { GroundingService } from "./grounding.service";
 import { SchemaValidatorService } from "./schema-validator.service";
 import { TokenBudgetService } from "./token-budget.service";
 import { RedactionService } from "./redaction.service";
 import { PromptRegistryService } from "../ops/prompt-registry.service";
 import { AiLoggingService } from "../ops/ai-logging.service";
 import { AiCacheService } from "../ops/ai-cache.service";
-import { AiValidationException } from "../exceptions/ai.exceptions";
+import { AiGroundingException, AiValidationException } from "../exceptions/ai.exceptions";
 import {
   AiCallOptions,
   AiResult,
@@ -24,42 +28,45 @@ const MAX_CONTEXT_TOKENS = 6000;
 const MAX_OUTPUT_TOKENS = 1024;
 
 // The AI Gateway. This is the ONE place in the codebase that talks to a model —
-// every other AI feature (Coach, RAG, Scenario Studio, Copilot Ingestion, etc., as
-// they land in later phases) calls through here rather than hitting GroqClient
-// directly, so redaction/budgeting/caching/logging/validation is applied uniformly
-// regardless of which feature is asking.
+// every other AI feature (Coach, RAG, Scenario Studio, Copilot Ingestion, etc.) calls
+// through here rather than hitting GroqClient directly, so redaction/budgeting/
+// caching/logging/validation/routing/grounding is applied uniformly regardless of
+// which feature is asking.
 //
-// Pipeline for every call: redact free text -> trim to token budget -> check cache
-// (if cacheable) -> resolve active prompt + pick model via ModelRouterService -> call
-// Groq, asking for a JSON object matching the caller's schema wrapped in a
-// self-reported confidence envelope -> validate with SchemaValidatorService; on
-// failure, retry with the validation issues fed back to the model as a correction
-// instruction (up to config.ai.maxRetries times) -> log the interaction -> write cache
-// on success -> return.
+// Pipeline for every call: redact free text -> trim to token budget -> check exact-
+// match cache, then similarity-based semantic cache, if cacheable -> resolve active
+// prompt + resolve a dynamic model + fallback chain via ModelRouterService (complexity/
+// accuracy/latency/budget-aware, see that class) -> call Groq, walking the fallback
+// chain on transport failure -> validate with SchemaValidatorService, retrying with
+// the validation issues fed back to the model on failure -> optionally score
+// groundedness against caller-supplied context and retry once more if rejected -> log
+// the interaction (status, exact token usage, cost, routing reason, grounding) ->
+// write both caches on success -> return.
 //
-// Two resilience properties this pipeline guarantees, both load-bearing for callers'
+// Resilience properties this pipeline guarantees, all load-bearing for callers'
 // documented `catch (e) { if (e instanceof AiUnavailableException) ...fallback... }`
 // pattern (see ai.exceptions.ts and every feature under ai/*):
-//   1. A transport-level failure (GroqClient throwing AiUnavailableException after
-//      exhausting its own retries) is always logged with status "ERROR" before it is
-//      rethrown — AiInteractionLog/recentStats() must never under-report failures just
-//      because the model never actually answered. This call is NOT itself retried here
-//      (GroqClient already exhausted its own transport retry budget); the gateway's
-//      retry loop below is reserved for *validation* failures on responses that did
-//      come back.
-//   2. AiCacheService being unavailable (e.g. a Redis blip) must never fail an AI call
-//      outright — same fail-open philosophy AiLoggingService already documents for
-//      logging. A cache read/write error is logged as a warning and the call proceeds
-//      as if it were a cache miss.
+//   1. A transport-level failure only becomes a thrown AiUnavailableException after
+//      EVERY candidate model in the router's fallback chain has been tried (see
+//      model-router.service.ts's RoutingDecision.chain) — not just the first one.
+//      Each candidate's own GroqClient.chat call has already exhausted its own
+//      transport-level retry budget before moving to the next candidate; the model-
+//      fallback loop here is reserved for "this whole model is unavailable", not
+//      transient blips GroqClient already smooths over.
+//   2. The final transport failure (after the chain is exhausted) is always logged
+//      with status "ERROR" before it is rethrown — AiInteractionLog/recentStats() must
+//      never under-report failures just because the model never actually answered.
+//   3. AiCacheService being unavailable (e.g. a Redis blip), on either the exact-match
+//      or semantic path, must never fail an AI call outright — same fail-open
+//      philosophy AiLoggingService already documents for logging. A cache read/write
+//      error is treated as a cache miss and the call proceeds to Groq.
 //
-// A note on `confidence`: it is the model's own self-report (see
-// ai-gateway.types.ts#withConfidence), not a calibrated probability computed from
-// logprobs or an ensemble. Groq's chat completions endpoint doesn't expose the kind of
-// token-level logprob access this app would need to compute a real confidence score,
-// and building a separate calibration model is out of scope for this phase. Treat it
-// as "how sure did the model say it was", useful for a UI badge, not as a statistic
-// you'd do further math on. This limitation is intentional and documented rather than
-// hidden — see README "Phase 10".
+// A note on `confidence` vs `groundingScore`: confidence is the model's own self-
+// report (see ai-gateway.types.ts#withConfidence) — not a calibrated probability.
+// groundingScore, when a caller supplies `groundingContext`, is computed independently
+// by GroundingService by comparing the response against that context — it is a real,
+// deterministic measurement, not another thing the model is asked to self-assess. The
+// two are deliberately kept separate in AiResult rather than blended into one number.
 @Injectable()
 export class AiGatewayService {
   private readonly logger = new Logger(AiGatewayService.name);
@@ -67,12 +74,16 @@ export class AiGatewayService {
   constructor(
     private groq: GroqClient,
     private router: ModelRouterService,
+    private routingStats: ModelRoutingStatsService,
+    private tokenAccounting: TokenAccountingService,
+    private grounding: GroundingService,
     private validator: SchemaValidatorService,
     private tokenBudget: TokenBudgetService,
     private redaction: RedactionService,
     private prompts: PromptRegistryService,
     private logging: AiLoggingService,
     private cache: AiCacheService,
+    private config: ConfigService,
   ) {}
 
   async classify<T extends [string, ...string[]]>(
@@ -120,6 +131,16 @@ export class AiGatewayService {
     return taskType === "classification" || taskType === "extraction" || taskType === "ranking";
   }
 
+  /** Semantic caching defaults on for the same task types the exact-match cache
+   * defaults on for (deterministic-ish "pick/pull/order something" tasks), and
+   * defaults OFF for generation/summarization even when a caller forces
+   * `cacheable: true` on those — prose composition is exactly the case where two
+   * *similar but not identical* prompts often should NOT collapse to the same cached
+   * text (see AiCallOptions.semanticCache's doc comment). */
+  private defaultSemanticCacheable(taskType: AiTaskType, cacheable: boolean): boolean {
+    return cacheable && this.defaultCacheable(taskType);
+  }
+
   private async runStructured<TSchema extends z.ZodTypeAny>(
     taskType: AiTaskType,
     envelope: TSchema,
@@ -128,16 +149,16 @@ export class AiGatewayService {
   ): Promise<AiResult<z.infer<TSchema>["result"]>> {
     const startedAt = Date.now();
     const cacheable = options.cacheable ?? this.defaultCacheable(taskType);
+    const semanticCacheEnabled = options.semanticCache ?? this.defaultSemanticCacheable(taskType, cacheable);
+    const semanticThreshold = options.semanticCacheThreshold ?? this.config.get<number>("ai.semanticCacheThreshold")!;
+    // Grounding's low/medium/high risk buckets are owned entirely by
+    // GroundingService.score() (0.85/0.6 cutoffs) rather than a second configurable
+    // threshold here — one source of truth for "what counts as ungrounded" that both
+    // AiResult.hallucinationRisk and the reject-and-retry check below agree on.
 
     const { text: redactedInput, redactedTypes } = this.redaction.redact(rawInput);
     const { text: budgetedInput, wasTrimmed } = this.tokenBudget.trimToBudget(redactedInput, MAX_CONTEXT_TOKENS);
 
-    // These don't go into AiInteractionLog (that row shape is owned by
-    // AiLoggingService, out of scope for this feature) but they're worth surfacing to
-    // stdout/stderr — silently trimming context can degrade an answer in a way that's
-    // otherwise invisible to whoever is debugging a "the AI gave a weird answer"
-    // report, and knowing *that* PII was redacted (never the value) is useful audit
-    // signal even without a persisted row.
     if (redactedTypes.length > 0) {
       this.logger.debug(
         `Redacted PII types [${redactedTypes.join(", ")}] from input for feature "${options.feature}" (prompt "${options.promptName}")`,
@@ -150,44 +171,111 @@ export class AiGatewayService {
     }
 
     const prompt = await this.prompts.getActive(options.promptName);
-    const model = this.router.modelFor(taskType);
-    const temperature = this.router.temperatureFor(taskType);
 
+    // --- Cache lookup: exact match first, then similarity-based, both fail-open ----
     if (cacheable) {
-      // Fail-open: a cache outage must degrade to "always call Groq", never to "the AI
-      // feature is down". Mirrors AiLoggingService.log()'s own fail-open contract.
       let cached: z.infer<TSchema> | null = null;
       try {
-        cached = await this.cache.get<z.infer<TSchema>>(
-          options.feature,
-          prompt.name,
-          prompt.version,
-          budgetedInput,
-        );
+        cached = await this.cache.get<z.infer<TSchema>>(options.feature, prompt.name, prompt.version, budgetedInput);
       } catch (err) {
         this.logger.warn(
           `AiCacheService.get failed for "${prompt.name}" (feature "${options.feature}") — proceeding without cache: ${(err as Error).message}`,
         );
       }
+      let cacheType: "exact" | "semantic" | null = cached ? "exact" : null;
+
+      if (!cached && semanticCacheEnabled) {
+        try {
+          const semanticHit = await this.cache.getSemantic<z.infer<TSchema>>(
+            options.feature,
+            prompt.name,
+            prompt.version,
+            budgetedInput,
+            semanticThreshold,
+          );
+          if (semanticHit) {
+            cached = semanticHit.value;
+            cacheType = "semantic";
+          }
+        } catch (err) {
+          this.logger.warn(
+            `AiCacheService.getSemantic failed for "${prompt.name}" (feature "${options.feature}") — proceeding without semantic cache: ${(err as Error).message}`,
+          );
+        }
+      }
 
       if (cached) {
-        await this.logging.log({
-          userId: options.userId,
-          feature: options.feature,
-          taskType,
-          promptName: prompt.name,
-          promptVersion: prompt.version,
-          model,
-          status: "OK",
-          confidence: cached.confidence,
-          retries: 0,
-          latencyMs: Date.now() - startedAt,
-          cacheHit: true,
-          redactedInput: budgetedInput,
-        });
-        return this.toResult(cached, { model, promptName: prompt.name, promptVersion: prompt.version, startedAt, retries: 0, cacheHit: true });
+        // Grounding is scored against THIS call's context even on a cache hit — the
+        // cached input text can be identical/near-identical while the underlying
+        // facts a caller assembled (e.g. today's net worth vs. last week's) differ.
+        // A cache hit that fails a `rejectOnLowGrounding` check falls through to a
+        // live call below rather than being served stale/ungrounded — there is no
+        // model to corrective-retry against for a cache hit, so "make a fresh call
+        // instead" is the correct degrade, not "throw".
+        let groundingScore: number | null = null;
+        let hallucinationRisk: "unmeasured" | "low" | "medium" | "high" = "unmeasured";
+        if (options.groundingContext) {
+          const scored = this.grounding.score(JSON.stringify(cached.result), options.groundingContext);
+          groundingScore = scored.score;
+          hallucinationRisk = scored.risk;
+        }
+
+        const cacheRejected = options.rejectOnLowGrounding && hallucinationRisk === "high";
+        if (!cacheRejected) {
+          await this.logging.log({
+            userId: options.userId,
+            feature: options.feature,
+            taskType,
+            promptName: prompt.name,
+            promptVersion: prompt.version,
+            model: "cache",
+            status: "OK",
+            confidence: cached.confidence,
+            retries: 0,
+            latencyMs: Date.now() - startedAt,
+            cacheHit: true,
+            cacheType,
+            redactedInput: budgetedInput,
+            promptTokens: 0,
+            completionTokens: 0,
+            estimatedCostUsd: 0,
+            fallbackUsed: false,
+            groundingScore,
+            hallucinationRisk,
+          });
+          return this.toResult(cached, {
+            model: "cache",
+            promptName: prompt.name,
+            promptVersion: prompt.version,
+            startedAt,
+            retries: 0,
+            cacheHit: true,
+            cacheType,
+            promptTokens: 0,
+            completionTokens: 0,
+            estimatedCostUsd: 0,
+            routingReason: "task_default",
+            fallbackUsed: false,
+            groundingScore,
+            hallucinationRisk,
+          });
+        }
+        this.logger.warn(
+          `Cached result for "${prompt.name}" (feature "${options.feature}") failed grounding verification against this call's context — ignoring cache and calling the model fresh.`,
+        );
       }
     }
+
+    // --- Dynamic model routing + fallback chain -------------------------------------
+    const routing = this.router.resolveChain(taskType, budgetedInput, {
+      complexityHint: options.complexityHint,
+      maxLatencyMs: options.maxLatencyMs,
+      maxCostUsd: options.maxCostUsd,
+    });
+    const temperature = routing.temperature;
+    let chainStartIndex = 0; // once a candidate answers successfully, later corrective retries in this call start from that same candidate rather than re-trying earlier ones that already failed
+    let routingReason = routing.reason;
+    let fallbackUsed = false;
 
     const schemaDescription = this.validator.describe(envelope);
     const systemPrompt =
@@ -196,7 +284,7 @@ export class AiGatewayService {
 
     let lastIssues: string[] = [];
     let retries = 0;
-    const maxAttempts = 1 + 2; // one initial attempt + up to 2 corrective retries, independent of GroqClient's own transport-level retries
+    const maxAttempts = 1 + 2; // one initial attempt + up to 2 corrective retries (schema OR grounding), independent of GroqClient's own transport-level retries
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const messages =
@@ -215,86 +303,199 @@ export class AiGatewayService {
               },
             ];
 
-      let completion: Awaited<ReturnType<GroqClient["chat"]>>;
-      try {
-        completion = await this.groq.chat({
-          model,
-          messages,
-          temperature,
-          maxTokens: MAX_OUTPUT_TOKENS,
-          jsonMode: true,
-        });
-      } catch (err) {
-        // GroqClient has already exhausted its own transport-level retry budget
-        // (see groq.client.ts's maxRetries loop) before this throws, so this is NOT
-        // retried again here — retrying transport failures is that class's job, not
-        // this one's. Previously this exception propagated straight past this method
-        // uncaught, which meant AiInteractionLog never got a row for outright Groq
-        // failures (only for "OK" and "MALFORMED_FALLBACK") even though the
-        // AiInteractionStatus.ERROR enum value exists specifically for this case, and
-        // GET /ai/health's errorRate silently under-counted real outages as a result.
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        await this.logging.log({
-          userId: options.userId,
-          feature: options.feature,
-          taskType,
-          promptName: prompt.name,
-          promptVersion: prompt.version,
-          model,
-          status: "ERROR",
-          retries,
-          latencyMs: Date.now() - startedAt,
-          cacheHit: false,
-          redactedInput: budgetedInput,
-          errorMessage,
-        });
-        // Rethrow the original error unchanged (still AiUnavailableException in the
-        // normal case) so every calling feature's existing
-        // `catch (e) { if (e instanceof AiUnavailableException) ...fallback... }`
-        // pattern keeps working exactly as documented, with no signature/behavior
-        // change visible to callers beyond "the failure is now also logged".
-        throw err;
+      const attemptStartedAt = Date.now();
+      let completion: Awaited<ReturnType<GroqClient["chat"]>> | undefined;
+      let modelUsed = routing.chain[chainStartIndex];
+
+      for (let chainIdx = chainStartIndex; chainIdx < routing.chain.length; chainIdx++) {
+        const candidateModel = routing.chain[chainIdx];
+        try {
+          completion = await this.groq.chat({
+            model: candidateModel,
+            messages,
+            temperature,
+            maxTokens: MAX_OUTPUT_TOKENS,
+            jsonMode: true,
+          });
+          modelUsed = candidateModel;
+          fallbackUsed = fallbackUsed || chainIdx > 0;
+          if (chainIdx > 0) routingReason = "fallback_after_failure";
+          chainStartIndex = chainIdx; // stick with whatever candidate just worked for any further attempts
+          break;
+        } catch (err) {
+          this.routingStats.record(candidateModel, taskType, "ERROR", Date.now() - attemptStartedAt);
+          const isLastCandidate = chainIdx === routing.chain.length - 1;
+          if (!isLastCandidate) {
+            this.logger.warn(
+              `Model "${candidateModel}" unavailable for "${prompt.name}" (feature "${options.feature}") — falling back to next candidate in routing chain.`,
+            );
+            continue;
+          }
+          // Every candidate in the chain has now failed. GroqClient has already
+          // exhausted its own transport-level retry budget for each of them before
+          // throwing, so none of this is retried again here — retrying transport
+          // failures is GroqClient's job; this loop's job was only to try the other
+          // models the router offered.
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          await this.logging.log({
+            userId: options.userId,
+            feature: options.feature,
+            taskType,
+            promptName: prompt.name,
+            promptVersion: prompt.version,
+            model: candidateModel,
+            status: "ERROR",
+            retries,
+            latencyMs: Date.now() - startedAt,
+            cacheHit: false,
+            redactedInput: budgetedInput,
+            errorMessage,
+            promptTokens: 0,
+            completionTokens: 0,
+            estimatedCostUsd: 0,
+            routingReason,
+            fallbackUsed,
+          });
+          throw err;
+        }
+      }
+
+      if (!completion) {
+        // Unreachable in practice (the loop above either sets completion or throws),
+        // but keeps TypeScript's control-flow analysis honest without a non-null
+        // assertion.
+        throw new AiValidationException(prompt.name, retries);
       }
 
       const attemptResult = this.validator.parse(envelope, completion.content);
-      if (attemptResult.ok && attemptResult.data) {
-        if (cacheable) {
-          try {
-            await this.cache.set(options.feature, prompt.name, prompt.version, budgetedInput, attemptResult.data);
-          } catch (err) {
-            this.logger.warn(
-              `AiCacheService.set failed for "${prompt.name}" (feature "${options.feature}") — result was not cached: ${(err as Error).message}`,
-            );
-          }
-        }
+      const attemptLatencyMs = Date.now() - attemptStartedAt;
+
+      if (!attemptResult.ok || !attemptResult.data) {
+        this.routingStats.record(modelUsed, taskType, "MALFORMED_FALLBACK", attemptLatencyMs);
+        lastIssues = attemptResult.issues ?? ["Unknown validation failure"];
+        retries++;
+        this.logger.warn(`AI response for "${prompt.name}" failed validation (attempt ${attempt + 1}): ${lastIssues.join("; ")}`);
+        continue;
+      }
+
+      // --- Grounding / hallucination check on a schema-valid response ---------------
+      let groundingScore: number | null = null;
+      let hallucinationRisk: "unmeasured" | "low" | "medium" | "high" = "unmeasured";
+      let unmatchedNumbers: string[] = [];
+      if (options.groundingContext) {
+        const scored = this.grounding.score(JSON.stringify(attemptResult.data.result), options.groundingContext);
+        groundingScore = scored.score;
+        hallucinationRisk = scored.risk;
+        unmatchedNumbers = scored.unmatchedNumbers;
+      }
+
+      const shouldRejectForGrounding =
+        options.rejectOnLowGrounding && hallucinationRisk === "high" && attempt < maxAttempts - 1;
+
+      if (shouldRejectForGrounding) {
+        this.routingStats.record(modelUsed, taskType, "MALFORMED_FALLBACK", attemptLatencyMs);
+        lastIssues = [
+          `Your answer introduced figures not present in the given facts: ${unmatchedNumbers.join(", ") || "(unsupported content)"}. ` +
+            "Only state figures that literally appear in the provided context.",
+        ];
+        retries++;
+        this.logger.warn(
+          `AI response for "${prompt.name}" (feature "${options.feature}") failed grounding verification (attempt ${attempt + 1}), retrying with a correction: ${lastIssues[0]}`,
+        );
+        continue;
+      }
+
+      // --- Success: log, cache, return -------------------------------------------
+      this.routingStats.record(modelUsed, taskType, "OK", attemptLatencyMs);
+
+      const promptTokens = completion.promptTokens;
+      const completionTokens = completion.completionTokens;
+      const estimatedCostUsd = this.tokenAccounting.estimateCostUsd(modelUsed, { promptTokens, completionTokens });
+
+      if (options.rejectOnLowGrounding && hallucinationRisk === "high") {
+        // Exhausted all corrective attempts and still ungrounded.
         await this.logging.log({
           userId: options.userId,
           feature: options.feature,
           taskType,
           promptName: prompt.name,
           promptVersion: prompt.version,
-          model: completion.model,
-          status: "OK",
-          confidence: attemptResult.data.confidence,
+          model: modelUsed,
+          status: "MALFORMED_FALLBACK",
           retries,
           latencyMs: Date.now() - startedAt,
           cacheHit: false,
           redactedInput: budgetedInput,
           rawOutput: completion.content,
+          promptTokens,
+          completionTokens,
+          estimatedCostUsd,
+          routingReason,
+          fallbackUsed,
+          groundingScore,
+          hallucinationRisk,
+          errorMessage: `Grounding rejected after ${retries} corrective ${retries === 1 ? "retry" : "retries"}`,
         });
-        return this.toResult(attemptResult.data, {
-          model: completion.model,
-          promptName: prompt.name,
-          promptVersion: prompt.version,
-          startedAt,
-          retries,
-          cacheHit: false,
-        });
+        throw new AiGroundingException(prompt.name, unmatchedNumbers);
       }
 
-      lastIssues = attemptResult.issues ?? ["Unknown validation failure"];
-      retries++;
-      this.logger.warn(`AI response for "${prompt.name}" failed validation (attempt ${attempt + 1}): ${lastIssues.join("; ")}`);
+      if (cacheable) {
+        try {
+          await this.cache.set(options.feature, prompt.name, prompt.version, budgetedInput, attemptResult.data);
+        } catch (err) {
+          this.logger.warn(
+            `AiCacheService.set failed for "${prompt.name}" (feature "${options.feature}") — result was not cached: ${(err as Error).message}`,
+          );
+        }
+      }
+      if (semanticCacheEnabled) {
+        try {
+          await this.cache.setSemantic(options.feature, prompt.name, prompt.version, budgetedInput, attemptResult.data);
+        } catch (err) {
+          this.logger.warn(
+            `AiCacheService.setSemantic failed for "${prompt.name}" (feature "${options.feature}") — result was not added to the semantic cache: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      await this.logging.log({
+        userId: options.userId,
+        feature: options.feature,
+        taskType,
+        promptName: prompt.name,
+        promptVersion: prompt.version,
+        model: modelUsed,
+        status: "OK",
+        confidence: attemptResult.data.confidence,
+        retries,
+        latencyMs: Date.now() - startedAt,
+        cacheHit: false,
+        redactedInput: budgetedInput,
+        rawOutput: completion.content,
+        promptTokens,
+        completionTokens,
+        estimatedCostUsd,
+        routingReason,
+        fallbackUsed,
+        groundingScore,
+        hallucinationRisk,
+      });
+      return this.toResult(attemptResult.data, {
+        model: modelUsed,
+        promptName: prompt.name,
+        promptVersion: prompt.version,
+        startedAt,
+        retries,
+        cacheHit: false,
+        cacheType: null,
+        promptTokens,
+        completionTokens,
+        estimatedCostUsd,
+        routingReason,
+        fallbackUsed,
+        groundingScore,
+        hallucinationRisk,
+      });
     }
 
     await this.logging.log({
@@ -303,13 +504,18 @@ export class AiGatewayService {
       taskType,
       promptName: prompt.name,
       promptVersion: prompt.version,
-      model,
+      model: routing.chain[chainStartIndex],
       status: "MALFORMED_FALLBACK",
       retries,
       latencyMs: Date.now() - startedAt,
       cacheHit: false,
       redactedInput: budgetedInput,
       errorMessage: lastIssues.join("; "),
+      promptTokens: 0,
+      completionTokens: 0,
+      estimatedCostUsd: 0,
+      routingReason,
+      fallbackUsed,
     });
 
     throw new AiValidationException(prompt.name, retries);
@@ -317,11 +523,28 @@ export class AiGatewayService {
 
   private toResult<T>(
     envelopeData: { result: T; confidence: number },
-    meta: { model: string; promptName: string; promptVersion: number; startedAt: number; retries: number; cacheHit: boolean },
+    meta: {
+      model: string;
+      promptName: string;
+      promptVersion: number;
+      startedAt: number;
+      retries: number;
+      cacheHit: boolean;
+      cacheType: "exact" | "semantic" | null;
+      promptTokens: number;
+      completionTokens: number;
+      estimatedCostUsd: number | null;
+      routingReason: AiResult<T>["meta"]["routingReason"];
+      fallbackUsed: boolean;
+      groundingScore: number | null;
+      hallucinationRisk: "unmeasured" | "low" | "medium" | "high";
+    },
   ): AiResult<T> {
     return {
       data: envelopeData.result,
       confidence: envelopeData.confidence,
+      groundingScore: meta.groundingScore,
+      hallucinationRisk: meta.hallucinationRisk,
       meta: {
         model: meta.model,
         promptName: meta.promptName,
@@ -329,6 +552,13 @@ export class AiGatewayService {
         latencyMs: Date.now() - meta.startedAt,
         retries: meta.retries,
         cacheHit: meta.cacheHit,
+        cacheType: meta.cacheType,
+        promptTokens: meta.promptTokens,
+        completionTokens: meta.completionTokens,
+        totalTokens: meta.promptTokens + meta.completionTokens,
+        estimatedCostUsd: meta.estimatedCostUsd,
+        routingReason: meta.routingReason,
+        fallbackUsed: meta.fallbackUsed,
       },
     };
   }
