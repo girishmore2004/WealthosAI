@@ -1,6 +1,9 @@
 import { Module } from "@nestjs/common";
 import { GroqClient } from "./groq/groq.client";
 import { ModelRouterService } from "./gateway/model-router.service";
+import { ModelRoutingStatsService } from "./gateway/model-routing-stats.service";
+import { TokenAccountingService } from "./gateway/token-accounting.service";
+import { GroundingService } from "./gateway/grounding.service";
 import { SchemaValidatorService } from "./gateway/schema-validator.service";
 import { TokenBudgetService } from "./gateway/token-budget.service";
 import { RedactionService } from "./gateway/redaction.service";
@@ -20,11 +23,19 @@ import { AiJobsController } from "./controllers/ai-jobs.controller";
 // separate deployment). Every future AI feature module (RAG, Coach 2.0, Scenario
 // Studio, Copilot Ingestion) is expected to import AiModule and depend on
 // AiGatewayService / AiQueueService rather than reaching for GroqClient directly.
+//
+// ModelRoutingStatsService, TokenAccountingService, and GroundingService are new
+// gateway-internal collaborators (dynamic routing signal, exact cost accounting, and
+// grounding/hallucination scoring respectively) — not exported, since nothing outside
+// AiGatewayService is expected to call them directly today.
 @Module({
   controllers: [AiHealthController, AiJobsController],
   providers: [
     GroqClient,
     ModelRouterService,
+    ModelRoutingStatsService,
+    TokenAccountingService,
+    GroundingService,
     SchemaValidatorService,
     TokenBudgetService,
     RedactionService,
