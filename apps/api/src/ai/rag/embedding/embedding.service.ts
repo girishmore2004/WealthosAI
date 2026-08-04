@@ -2,6 +2,19 @@ import { Injectable, Logger } from "@nestjs/common";
 
 export const EMBEDDING_DIMENSIONS = 384;
 
+// Bump this whenever the embedding model, pooling strategy, or normalization changes
+// in a way that makes previously-stored vectors no longer comparable via cosine
+// similarity to freshly-computed ones (e.g. swapping Xenova/all-MiniLM-L6-v2 for a
+// different model, or changing pooling from "mean" to something else). Every
+// AiEmbeddingChunk row stores the EMBEDDING_MODEL_VERSION that produced it;
+// RagIndexingService compares that stored value against this constant on each reindex
+// and, on a mismatch, forces a full re-embed for that user instead of silently mixing
+// vectors from two incompatible embedding spaces in the same similarity search — see
+// RagIndexingService#reindexUser's migration-path handling for the exact logic. This
+// is the intentionally simple, versioned migration path: bump the number, deploy,
+// next reindex per user does one full rebuild, then incremental indexing resumes.
+export const EMBEDDING_MODEL_VERSION = 1;
+
 // Runs entirely in-process (WASM), no Groq/external inference call — embeddings are
 // cheap enough that CPU-only local inference is genuinely practical, unlike the
 // larger generation/reasoning models this app routes to Groq instead. Model:
