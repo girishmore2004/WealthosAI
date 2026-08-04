@@ -47,7 +47,10 @@ export class KeywordScorerService {
   }
 }
 
-function tokenize(text: string): string[] {
+// Exported so HybridRetrievalService's near-duplicate suppression (Jaccard similarity
+// over token sets) uses the exact same tokenization as BM25 scoring — one definition
+// of "what counts as a word" for this feature, not two that could quietly drift apart.
+export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
