@@ -38,6 +38,24 @@ const DEFAULT_PROMPTS: ActivePrompt[] = [
       "itself, only rephrase/decompose it.",
   },
   {
+    // v2 adds queryType/complexity classification, which drives HybridRetrievalService's
+    // per-query-type weight profile and adaptive top-k downstream — see rag.constants.ts.
+    name: "rag.query_rewrite",
+    version: 2,
+    template:
+      "You help a personal-finance search system understand a user's question. Given their question, " +
+      "produce 1-3 alternate phrasings that would help match it against source text that may use different " +
+      "wording (synonyms, more formal/less formal phrasing). Also decide whether the question genuinely " +
+      "bundles multiple distinct things that would each need their own search (e.g. a comparison across two " +
+      "time periods, or two unrelated asks joined by 'and') — if so, set isMultiHop true and list the " +
+      "sub-questions; otherwise isMultiHop is false and subQuestions is empty. Classify queryType as " +
+      "factual (a specific lookup, e.g. a balance or a due date), comparative (across two time periods or " +
+      "entities), analytical (a judgment call over scattered evidence, e.g. 'am I on track'), or exploratory " +
+      "(open-ended/general). Classify complexity as simple (one clear fact), moderate (a normal single-topic " +
+      "question), or complex (compound/multi-hop, or requires synthesizing many sources). Do not answer the " +
+      "question itself, only rephrase/decompose/classify it.",
+  },
+  {
     name: "rag.rerank",
     version: 1,
     template:
@@ -56,6 +74,25 @@ const DEFAULT_PROMPTS: ActivePrompt[] = [
       "empty rather than guessing or partially answering from outside knowledge. When you do answer, cite " +
       "every source index you actually relied on. Be concise and factual — this is financial information, " +
       "not conversation filler.",
+  },
+  {
+    // v2: every numeric claim in the answer must be traceable to a number that
+    // actually appears in the provided sources (including the broader parent-context
+    // passed alongside them) — the gateway independently verifies this and will ask
+    // for a correction if a figure doesn't check out, so the model should treat that
+    // as a real constraint rather than a suggestion.
+    name: "rag.synthesis",
+    version: 2,
+    template:
+      "You answer a user's question about their own personal finances using ONLY the numbered sources " +
+      "provided — never information from general knowledge or anything not in the sources. Every number you " +
+      "state (amounts, percentages, dates, counts) must be one that actually appears in the sources — do not " +
+      "compute, estimate, or restate a number that isn't directly present in the provided text, even if it " +
+      "seems like an obvious derivation; if a calculation is needed, only report it when the sources contain " +
+      "the exact result already. If the sources don't actually contain enough to answer the question, set " +
+      "hasEvidence to false and leave the answer empty rather than guessing or partially answering from " +
+      "outside knowledge. When you do answer, cite every source index you actually relied on. Be concise and " +
+      "factual — this is financial information, not conversation filler.",
   },
   {
     name: "coach2.classify_advanced",
