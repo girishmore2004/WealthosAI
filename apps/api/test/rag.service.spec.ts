@@ -6,7 +6,9 @@ function makeChunk(id: string, semanticScore: number): ScoredChunk {
     id,
     sourceType: "DOCUMENT",
     sourceId: `src-${id}`,
+    chunkIndex: 0,
     text: `some text for ${id}`,
+    parentText: `some text for ${id}`,
     metadata: { title: `Doc ${id}` },
     sourceCreatedAt: new Date(),
     semanticScore,
@@ -14,15 +16,19 @@ function makeChunk(id: string, semanticScore: number): ScoredChunk {
     recencyScore: 0,
     priorityScore: 0,
     combinedScore: semanticScore,
+    relatedSourceIds: [],
+    expansionReason: "seed",
   };
 }
+
+const basePlan = { rewrittenQueries: ["q"], isMultiHop: false, subQuestions: [], queryType: "exploratory" as const, complexity: "moderate" as const };
 
 describe("RagService.search", () => {
   const mockPrisma = { client: { aiSearchLog: { create: jest.fn().mockResolvedValue({}) } } };
 
   it("returns the no-evidence answer and skips reranking/synthesis when nothing clears the evidence threshold", async () => {
     const mockQueryRewrite = {
-      plan: jest.fn().mockResolvedValue({ originalQuery: "q", rewrittenQueries: ["q"], isMultiHop: false, subQuestions: [] }),
+      plan: jest.fn().mockResolvedValue({ originalQuery: "q", ...basePlan }),
     };
     const weakChunks = [makeChunk("a", 0.1)];
     const mockRetrieval = {
@@ -53,7 +59,7 @@ describe("RagService.search", () => {
 
   it("runs the full pipeline and returns cited sources when evidence exists", async () => {
     const mockQueryRewrite = {
-      plan: jest.fn().mockResolvedValue({ originalQuery: "q", rewrittenQueries: ["q", "q rephrased"], isMultiHop: false, subQuestions: [] }),
+      plan: jest.fn().mockResolvedValue({ originalQuery: "q", ...basePlan, rewrittenQueries: ["q", "q rephrased"] }),
     };
     const strongChunks = [makeChunk("a", 0.8), makeChunk("b", 0.7)];
     const mockRetrieval = {
@@ -70,6 +76,8 @@ describe("RagService.search", () => {
         answer: "Your loan balance is X.",
         citedChunkIds: ["a"],
         confidence: 0.85,
+        groundingScore: 0.9,
+        hallucinationRisk: "low",
       }),
     };
 
@@ -87,7 +95,12 @@ describe("RagService.search", () => {
     expect(result.answer).toBe("Your loan balance is X.");
     expect(result.citedSources).toHaveLength(1);
     expect(result.citedSources[0].chunkId).toBe("a");
+    expect(["high", "medium", "low"]).toContain(result.citedSources[0].confidence);
     expect(result.answerConfidence).toBe(0.85);
+    expect(result.groundingScore).toBe(0.9);
+    expect(result.hallucinationRisk).toBe("low");
+    expect(result.queryType).toBe("exploratory");
+    expect(result.complexity).toBe("moderate");
     // retrievalConfidence should be derived from top semantic score + rerank confidence, not just echoed
     expect(result.retrievalConfidence).toBeGreaterThan(0);
     expect(mockPrisma.client.aiSearchLog.create).toHaveBeenCalledWith(
@@ -98,7 +111,7 @@ describe("RagService.search", () => {
   it("never fails the search if writing the search log itself fails", async () => {
     const failingPrisma = { client: { aiSearchLog: { create: jest.fn().mockRejectedValue(new Error("db down")) } } };
     const mockQueryRewrite = {
-      plan: jest.fn().mockResolvedValue({ originalQuery: "q", rewrittenQueries: ["q"], isMultiHop: false, subQuestions: [] }),
+      plan: jest.fn().mockResolvedValue({ originalQuery: "q", ...basePlan }),
     };
     const mockRetrieval = { search: jest.fn().mockResolvedValue([]), hasEvidence: jest.fn().mockReturnValue(false) };
 
