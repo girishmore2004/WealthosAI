@@ -181,6 +181,7 @@ model User {
   ingestionReviewItems IngestionReviewItem[]
   sentHouseholdInvites HouseholdInvite[] @relation("HouseholdInviteSentBy")   // NEW
   budgets Budget[]   // NEW
+  aiSourceIndexStates AiSourceIndexState[]
 
   @@index([householdId])
 }
@@ -820,6 +821,12 @@ model AiEmbeddingChunk {
   sourceId        String
   chunkIndex      Int
   text            String
+  // The larger parent section this child chunk was extracted from at index time (see
+  // ChunkerService's parent-child hierarchical chunking) — never itself embedded or
+  // matched, carried purely so a matched child chunk can be handed to synthesis/
+  // grounding with real surrounding context ("contextual chunk expansion") instead of
+  // just its own narrow ~180-word window.
+  parentText      String       @default("")
   // Denormalized display fields so retrieval results can render a citation card
   // without a second query per source table: { title, category?, occurredAt? }
   metadata        Json
@@ -828,11 +835,40 @@ model AiEmbeddingChunk {
   sourcePriority  Int          @default(0) // static per-sourceType trust weight, see HybridRetrievalService
   sourceCreatedAt DateTime // drives recency weighting — the origin record's own date, not this row's createdAt
   createdAt       DateTime     @default(now())
+  // Which EMBEDDING_MODEL_VERSION produced `embedding` — compared against the
+  // currently-active version on each reindex so a model/pooling change forces a full
+  // re-embed instead of silently mixing incompatible vector spaces in one similarity
+  // search. See embedding.service.ts and RagIndexingService#reindexUser.
+  embeddingModelVersion Int    @default(1)
+  // Layer 3 (knowledge-graph / document-relationship traversal) edges, computed once
+  // at index time — see RagIndexingService#computeRelatedSourceIds. Every chunk
+  // belonging to the same source shares the same relatedSourceIds.
+  relatedSourceIds String[]    @default([])
 
   @@index([userId, sourceType])
   @@index([userId, sourceCreatedAt])
+  @@index([userId, sourceId])
+  @@index([userId, embeddingModelVersion])
 }
+// Tracks the last-indexed content hash per (user, source) pair so RagIndexingService
+// can do incremental/delta reindexing — only sources whose content actually changed
+// since their last recorded state get re-chunked and re-embedded, rather than a full
+// delete-and-rebuild of every user's entire index on every reindex call. A row with no
+// matching current source (Document deleted, etc.) signals "this source's chunks
+// should be removed" the next time that user is reindexed.
+model AiSourceIndexState {
+  id          String       @id @default(cuid())
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  sourceType  AiSourceType
+  sourceId    String
+  contentHash String // sha256 of the source's (text, metadata) pair as of last index
+  chunkCount  Int
+  indexedAt   DateTime     @default(now())
 
+  @@unique([userId, sourceType, sourceId])
+  @@index([userId])
+}
 model AiSearchLog {
   id                String   @id @default(cuid())
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -846,6 +882,20 @@ model AiSearchLog {
   answerConfidence  Decimal? @db.Decimal(4, 3)
   answer            String
   createdAt         DateTime @default(now())
+  // QueryRewriteService's classification for this search — see rag.constants.ts's
+  // QueryType/QueryComplexity — kept for observability into how often each profile/
+  // adaptive top-k tier actually gets used, not read back by any code path today.
+  queryType         String?
+  complexity        String?
+  // The gateway's independent numeric-grounding score/risk bucket for the synthesized
+  // answer (see AnswerSynthesisService/GroundingService) — null/"unmeasured" on the
+  // no-evidence and AI-unavailable paths, where no model response existed to score.
+  groundingScore    Decimal? @db.Decimal(4, 3)
+  hallucinationRisk String?
+  // Per-citation confidence bucket (see RagService#citationConfidence), keyed by
+  // chunk id — { chunkId, confidence }[]. Json rather than a join table since nothing
+  // queries into it relationally, same reasoning as AiEmbeddingChunk's own metadata.
+  citationConfidences Json?
 
   @@index([userId, createdAt])
 }
