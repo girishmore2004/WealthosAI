@@ -30,6 +30,8 @@ export class RagController {
       sourceTypes: dto.sourceTypes,
       dateFrom: dto.dateFrom ? new Date(dto.dateFrom) : undefined,
       dateTo: dto.dateTo ? new Date(dto.dateTo) : undefined,
+      categories: dto.categories,
+      tags: dto.tags,
     });
   }
 
