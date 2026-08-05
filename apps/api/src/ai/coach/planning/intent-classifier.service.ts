@@ -27,6 +27,29 @@ const ADVANCED_ONLY_PATTERNS: RegExp[] = [
   /trade-?off/i,
   /prioriti[sz]e/i,
   /compare.*(month|year|period|quarter)/i,
+  // Plan-creation phrasing — e.g. "pay off my loan in 18 months", "save X for a house
+  // in 3 years" — would otherwise match matchIntent()'s DEBT/GOALS/SAVINGS_RATE
+  // keywords and be wrongly routed to the fixed-template v1 answer instead of the
+  // Planner Agent, which is what can actually create a tracked, multi-step plan.
+  /\b(set up|create|start|build|make)\b.*\bplan\b/i,
+  /\bplan\b.*\b(to|for)\b.*(pay off|save|retire|invest|buy)/i,
+  /(pay off|payoff).{0,40}\bin\b\s*\d+\s*(month|year)/i,
+  /\bsave\b.{0,40}\b(in|by|within)\b\s*\d+\s*(month|year)/i,
+  /help me (pay off|save (up|for)|reach|hit)\b/i,
+  // Plan-progress phrasing — "on track" alone would slip past matchIntent (no
+  // keyword collision), but "how's my loan plan going" or "check my savings goal
+  // progress" would otherwise hit DEBT/GOALS first.
+  /\bon track\b/i,
+  /progress.*(plan|goal)/i,
+  /how.?s my (plan|goal)/i,
+  /(check|update).*(plan|goal).*(status|progress)/i,
+  // Calculation/what-if phrasing — a standalone hypothetical number, not a question
+  // about the user's actual stored data, even though it may mention "loan"/"EMI"/
+  // "invest"/"save".
+  /what (would|will) my emi/i,
+  /what if i (pay|prepay|invest|save|borrow)/i,
+  /how much (do i need|should i|would i) (save|invest|pay)/i,
+  /\bcalculate\b/i,
 ];
 
 @Injectable()
