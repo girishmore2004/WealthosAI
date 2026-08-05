@@ -191,6 +191,10 @@ model User {
   scenarioStudioRuns ScenarioStudioRun[]
   scenarioMonteCarloRuns ScenarioMonteCarloRun[]
   scenarioOptimizationRuns ScenarioOptimizationRun[]
+  ingestionBatches   IngestionBatch[]
+  ingestionReviewItems IngestionReviewItem[]
+  merchantCategoryMemories MerchantCategoryMemory[]
+  suggestionRankingProfile SuggestionRankingProfile?
 
   @@index([householdId])
 }
@@ -1294,17 +1298,40 @@ enum IngestionItemStatus {
   REJECTED
 }
 
+// Learning feedback loop + OCR + reconciliation additions below (IngestionSourceType,
+// TransactionKind, MerchantCategoryMemory, MerchantCategoryGlobalStat,
+// SuggestionRankingProfile, and the new fields on IngestionBatch/IngestionReviewItem)
+// are scoped entirely to the Copilot Ingestion feature — see
+// merchant/merchant-memory.service.ts, scoring/category-ranking.model.ts, and
+// reconciliation/reconciliation.service.ts for the services that own them.
+
+enum IngestionSourceType {
+  TEXT
+  OCR_IMAGE
+}
+
+enum TransactionKind {
+  EXPENSE
+  LOAN_EMI
+  INVESTMENT_CONTRIBUTION
+}
+
 model IngestionBatch {
-  id              String                 @id @default(cuid())
-  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId          String
-  sourceLabel     String // free text the user gave this import, e.g. "HDFC Feb statement"
-  rawTextExcerpt  String // truncated copy of the input, for audit — not the full statement text long-term
-  totalLines      Int
-  parsedCount     Int
-  unparsedCount   Int
-  items           IngestionReviewItem[]
-  createdAt       DateTime               @default(now())
+  id                      String                 @id @default(cuid())
+  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                  String
+  sourceLabel             String // free text the user gave this import, e.g. "HDFC Feb statement"
+  ingestionSource         IngestionSourceType    @default(TEXT)
+  // Set only when ingestionSource is OCR_IMAGE — see OcrQualityEstimationService.
+  // Null (not 0) for a TEXT-sourced batch, since "no OCR was performed" is a different
+  // fact than "OCR was performed and scored zero confidence."
+  ocrExtractionConfidence Decimal?               @db.Decimal(4, 3)
+  rawTextExcerpt          String // truncated, PII-scrubbed copy of the input, for audit — not the full statement text long-term
+  totalLines              Int
+  parsedCount             Int
+  unparsedCount           Int
+  items                   IngestionReviewItem[]
+  createdAt               DateTime               @default(now())
 
   @@index([userId, createdAt])
 }
@@ -1323,6 +1350,16 @@ model IngestionReviewItem {
   suggestedCategoryId       String?
   suggestedCategoryName     String?
   categorySuggestionConfidence Decimal          @db.Decimal(4, 3)
+  // Which signal produced suggestedCategoryId — "personal_memory" | "personal_memory_fuzzy"
+  // (both persisted as "memory" — see CategorySuggestionService) | "ai" | "global" |
+  // "blended" | "rule_based_fallback" | "none". Plain String (not an enum) because
+  // CategoryRankingModel's SuggestionSource union is an application-level concept that
+  // may grow new blend labels without needing a migration each time — the same
+  // reasoning IngestionReviewItem.duplicateResolution below already uses.
+  suggestionSource          String              @default("none")
+  // Personal merchant memory's total observation count for this merchant at
+  // suggestion time (0 if never seen) — see ACTIVE_LEARNING_MIN_SAMPLE_SIZE.
+  merchantMemorySampleSize  Int                 @default(0)
   isDuplicateCandidate      Boolean
   duplicateOfExpenseId      String?
   duplicateConfidence       Decimal             @db.Decimal(4, 3)
@@ -1330,9 +1367,19 @@ model IngestionReviewItem {
   recurringMatchMerchant    String?
   isAnomalyCandidate        Boolean
   anomalyZScore             Decimal?            @db.Decimal(6, 2)
+  // Set by ReconciliationService.classifyLine() at ingest time — routing only
+  // (which comparison applies), never used to auto-create/auto-modify a Loan/
+  // Investment record.
+  transactionKind           TransactionKind     @default(EXPENSE)
+  reconciliationNote        String?
   missingFields             String[]
   overallConfidence         Decimal             @db.Decimal(4, 3)
   rationale                 String
+  // True when this item should be prioritized in the review queue regardless of its
+  // raw confidence number — either the merchant has too few prior observations to
+  // trust, or the blended confidence itself is below the active-learning bar. See
+  // SuggestionScoringService and ACTIVE_LEARNING_CONFIDENCE_THRESHOLD.
+  needsActiveLearningReview Boolean             @default(false)
   status                    IngestionItemStatus @default(PENDING)
   resolvedExpenseId         String?
   duplicateResolution       String? // "kept_both" | "skipped_duplicate" | "merged" — set only when isDuplicateCandidate was true
@@ -1341,6 +1388,68 @@ model IngestionReviewItem {
 
   @@index([userId, status])
   @@index([batchId])
+  @@index([userId, needsActiveLearningReview])
+}
+
+// Personal, per-user merchant -> category memory. Written only from
+// IngestionReviewService#approve() (a real human decision), read from
+// CategorySuggestionService on every new suggestion. See MerchantMemoryService for the
+// full decay/relearning behavior.
+model MerchantCategoryMemory {
+  id                 String   @id @default(cuid())
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId             String
+  merchantNormalized String
+  categoryId         String
+  categoryName       String
+  // Decayed at read time (MerchantMemoryService), never destructively overwritten by
+  // decay itself — this column always holds the last *reinforced* confidence value.
+  confidence         Decimal  @db.Decimal(4, 3)
+  acceptedCount      Int      @default(0)
+  overrideCount      Int      @default(0)
+  // Sentence embedding of merchantNormalized, for fuzzy (cosine-similarity) matching
+  // of near-variant merchant strings — see MerchantMemoryService#lookupFuzzy. Brute-
+  // force scanned per user (bounded by MERCHANT_MEMORY_FUZZY_CANDIDATE_LIMIT), the
+  // same no-vector-index approach AiEmbeddingChunk already uses for RAG.
+  embedding          Float[]
+  lastAcceptedAt     DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([userId, merchantNormalized])
+  @@index([userId])
+}
+
+// Cross-user, privacy-safe prior: a normalized merchant string mapped to a category
+// NAME (never an id — categories are looked up by name against the calling user's own
+// list, see MerchantMemoryService#globalLookup) with a bare occurrence count. This is
+// deliberately the only cross-user data this feature writes — no userId, no amounts,
+// no dates, no raw statement text, no embeddings. See the PII-shape guard in
+// MerchantMemoryService#bumpGlobalStat applied before every write here.
+model MerchantCategoryGlobalStat {
+  id                 String   @id @default(cuid())
+  merchantNormalized String
+  categoryName       String
+  count              Int      @default(1)
+  updatedAt          DateTime @updatedAt
+
+  @@unique([merchantNormalized, categoryName])
+  @@index([merchantNormalized])
+}
+
+// Per-user weights for CategoryRankingModel's linear blend of {memory, ai, global}
+// category candidates — nudged after every human approval/override
+// (learnFromCorrection), read on every suggestion (rank). Bounded, symmetric online
+// learning, not a persisted black-box model — see category-ranking.model.ts.
+model SuggestionRankingProfile {
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String   @unique
+  weightMemory Decimal  @db.Decimal(4, 3) @default(0.5)
+  weightAi     Decimal  @db.Decimal(4, 3) @default(0.4)
+  weightGlobal Decimal  @db.Decimal(4, 3) @default(0.1)
+  sampleCount  Int      @default(0)
+  updatedAt    DateTime @updatedAt
 }
 
 // --- Phase 5: AI Coach, What-If Simulator ----------------------------------------
