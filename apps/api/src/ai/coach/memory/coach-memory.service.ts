@@ -21,6 +21,11 @@ export interface RecordRunInput {
    * back) doesn't silently return null for every past run regardless of what was
    * actually said at the time. */
   staleAdviceNote: string | null;
+  /** Phase 20 additions — all optional so every pre-existing call site (and the
+   * existing spec test, which doesn't set these) continues to work unmodified. */
+  criticFlags?: string[];
+  createdTaskIds?: string[];
+  planId?: string | null;
 }
 
 @Injectable()
@@ -93,6 +98,9 @@ export class CoachMemoryService {
         confidence: input.confidence,
         verificationPassed: input.verificationPassed,
         staleAdviceNote: input.staleAdviceNote,
+        criticFlags: input.criticFlags ?? [],
+        createdTaskIds: input.createdTaskIds ?? [],
+        planId: input.planId ?? null,
       },
     });
   }
