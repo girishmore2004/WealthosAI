@@ -1,4 +1,9 @@
 import type {
+  ScenarioStudioResultDTO,
+  ScenarioStudioRunDTO,
+  MonteCarloResultDTO,
+  OptimizedScenarioDTO,
+  OptimizationConstraintsDTO,
   DashboardSummaryDTO,
   ExpenseDTO,
   CategoryBreakdownDTO,
@@ -343,6 +348,28 @@ export const api = {
     build: (prompt: string, targetGoalIds?: string[]) =>
       request<ScenarioStudioResultDTO>("/scenario-studio/build", { method: "POST", body: JSON.stringify({ prompt, targetGoalIds }) }),
     history: (take?: number) => request<ScenarioStudioRunDTO[]>(`/scenario-studio/history${take ? `?take=${take}` : ""}`),
+    // Probabilistic planning: Monte Carlo simulation for a single scenario type +
+    // params. `overrides` is any subset of MonteCarloConfigDTO's fields (iterations,
+    // horizonYears, seed, or the distribution assumption means/stddevs) — omitted
+    // fields fall back to the API's own defaults.
+    simulate: (
+      scenarioType: string,
+      params: Record<string, unknown>,
+      overrides?: Partial<Omit<MonteCarloResultDTO["config"], never>>,
+    ) =>
+      request<{ result: MonteCarloResultDTO; explanation: string; explanationConfidence: number; verificationPassed: boolean }>(
+        "/scenario-studio/simulate",
+        { method: "POST", body: JSON.stringify({ scenarioType, params, ...overrides }) },
+      ),
+    // Constraint-solving recommendation — see OptimizationConstraintsDTO for the
+    // supported budget/tax/retirement/goal constraint fields.
+    optimize: (constraints: OptimizationConstraintsDTO) =>
+      request<OptimizedScenarioDTO & { explanation: string; explanationConfidence: number; verificationPassed: boolean }>(
+        "/scenario-studio/optimize",
+        { method: "POST", body: JSON.stringify(constraints) },
+      ),
+    simulationHistory: (take?: number) => request<unknown[]>(`/scenario-studio/history/simulations${take ? `?take=${take}` : ""}`),
+    optimizationHistory: (take?: number) => request<unknown[]>(`/scenario-studio/history/optimizations${take ? `?take=${take}` : ""}`),
   },
   mlInsights: {
     summary: () => request<MlInsightsSummaryDTO>("/ml-insights/summary"),
