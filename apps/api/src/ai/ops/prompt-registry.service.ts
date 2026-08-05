@@ -163,6 +163,71 @@ const DEFAULT_PROMPTS: ActivePrompt[] = [
       "not recompute any difference yourself — use the ones already given.",
   },
   {
+    name: "coach2.compose_compare_periods",
+    version: 1,
+    template:
+      "You compose a short, plain-language comparison between two time periods, using ONLY the figures " +
+      "already given in the facts (income, expenses, savings rate, and the precomputed differences). Do " +
+      "not recompute any difference yourself — use the ones already given.",
+  },
+  {
+    name: "coach2.parse_calculation_request",
+    version: 1,
+    template:
+      "You extract a structured deterministic calculation request from a user's question — which " +
+      "operation (a hypothetical EMI, the maximum affordable loan for a given EMI budget, a loan payoff " +
+      "timeline with extra monthly payment, a savings projection, or the required monthly savings " +
+      "contribution to reach a target), and only the numeric fields relevant to that operation. Never " +
+      "invent a number the user didn't state — leave a field unset rather than guessing.",
+  },
+  {
+    name: "coach2.parse_plan_request",
+    version: 1,
+    template:
+      "You extract a structured long-running financial plan request from a user's question — which type of " +
+      "plan (debt payoff, savings target, retirement, investment allocation, or custom), a short title, the " +
+      "target amount if one was stated, the timeline in months if one was stated, and any specific loan or " +
+      "goal the user referred to by name. Never invent a target amount or timeline the user didn't actually " +
+      "state — leave it unset instead so the system can ask rather than silently guess.",
+  },
+  {
+    name: "coach2.compose_create_plan",
+    version: 1,
+    template:
+      "You compose a short, plain-language confirmation that a financial plan has been created, using ONLY " +
+      "the numbers given in the facts (the starting value, target, target date, and required pace). " +
+      "Explain what the plan tracks and what the user needs to do to stay on pace — do not invent any " +
+      "figure not already given, and do not promise the plan will succeed.",
+  },
+  {
+    name: "coach2.compose_plan_progress",
+    version: 1,
+    template:
+      "You compose a short, plain-language status update on one or more financial plans, using ONLY the " +
+      "numbers already given in the facts (current value, expected value, and whether each is on track). " +
+      "Be direct about whether the user is on track or falling behind — do not soften a genuinely behind- " +
+      "schedule plan into sounding fine, and do not calculate anything not already given.",
+  },
+  {
+    name: "coach2.compose_calculation",
+    version: 1,
+    template:
+      "You compose a short, plain-language answer to a personal-finance calculation question, using ONLY " +
+      "the already-computed numbers given in the facts. Do not perform any calculation yourself — the " +
+      "numbers in the facts are the complete, correct answer; your job is only to phrase them clearly.",
+  },
+  {
+    name: "coach2.critic_check",
+    version: 1,
+    template:
+      "You review a personal-finance coaching answer for two problems: (1) overpromising — absolute or " +
+      'guarantee language like "guaranteed", "risk-free", "you will definitely" about outcomes that are ' +
+      "never actually certain, and (2) unsafe advice — suggestions like borrowing against retirement " +
+      "savings, dropping insurance, or concentrating all savings into one option. Classify as exactly one " +
+      "of: safe, overpromising, unsafe_advice, needs_disclaimer (a directive recommendation stated as fact " +
+      "rather than informational framing). Choose safe only if none of these problems are present.",
+  },
+  {
     name: "scenario_studio.parse_prompt",
     version: 1,
     template:
