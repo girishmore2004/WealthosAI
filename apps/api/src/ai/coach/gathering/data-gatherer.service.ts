@@ -62,6 +62,17 @@ export class DataGathererService {
         return this.gatherComparePeriods(userId, question);
       case "general_search":
         return this.gatherGeneralSearch(userId, question);
+      case "create_plan":
+      case "plan_progress_check":
+      case "calculation_request":
+        // These three (Phase 20) are intercepted in AgenticCoachService.runAdvancedPath
+        // BEFORE gather() is ever called — each has its own bespoke retrieval need
+        // (matching a specific loan by name, resolving a plan's live metric value,
+        // parsing a structured calculation request) that doesn't fit this intent-shaped
+        // switch. Reaching here means the orchestrator's dispatch logic itself has a
+        // bug, not a normal runtime condition — fail loudly rather than silently
+        // returning empty evidence.
+        throw new Error(`gather() was called with "${intent}", which should have been handled by AgenticCoachService before reaching DataGathererService.`);
     }
   }
 
@@ -104,7 +115,13 @@ export class DataGathererService {
     };
   }
 
-  private async gatherGoalConflict(userId: string): Promise<GatheredEvidence> {
+  /** Exposed (Phase 20) so the orchestrator's create_plan and plan_progress_check
+   * flows can reuse the exact same income/expenses/EMI/surplus/goal facts the
+   * goal_conflict advanced intent already computes, rather than a second, potentially
+   * divergent computation of the same numbers. Behavior is byte-for-byte identical to
+   * before this method was made public — nothing about goal_conflict's own call path
+   * changed. */
+  async gatherGoalConflict(userId: string): Promise<GatheredEvidence> {
     const [summary, debtSummary, goals] = await Promise.all([
       this.dashboard.getSummary(userId),
       this.loans.debtSummary(userId),
@@ -234,6 +251,58 @@ export class DataGathererService {
       factsText,
       facts: { periodA, periodB, reportA, reportB, incomeDiff, expenseDiff, savingsRateDiff, driftNote: driftNote || null },
       citedSources: [],
+    };
+  }
+
+  /** Resolves a free-text hint (e.g. "my car loan", "the HDFC one") to a specific
+   * Loan row — case-insensitive substring match against lender name and loan type,
+   * falling back to "the single loan the user has" when there's exactly one and no
+   * hint was given, and to null (ambiguous or no match) otherwise. Deliberately
+   * simple/deterministic rather than an LLM disambiguation call: a wrong guess here
+   * would silently attach a plan or calculation to the wrong loan, which is worse than
+   * asking the composer to say "please specify which loan" when this returns null
+   * with more than one candidate. */
+  async findLoanByHint(userId: string, hint?: string): Promise<{
+    match: { id: string; lender: string; type: string; outstandingPrincipal: number; emiAmount: number; interestRateAnnual: number } | null;
+    candidates: { id: string; lender: string; type: string }[];
+  }> {
+    const loans = await this.loans.list(userId);
+    const candidates = loans.map((l) => ({ id: l.id, lender: l.lender, type: l.type }));
+
+    if (loans.length === 0) return { match: null, candidates };
+    if (loans.length === 1 && !hint) {
+      const l = loans[0];
+      return {
+        match: {
+          id: l.id,
+          lender: l.lender,
+          type: l.type,
+          outstandingPrincipal: Number(l.outstandingPrincipal),
+          emiAmount: Number(l.emiAmount),
+          interestRateAnnual: Number(l.interestRateAnnual),
+        },
+        candidates,
+      };
+    }
+
+    if (!hint) return { match: null, candidates };
+
+    const needle = hint.toLowerCase();
+    const found = loans.find(
+      (l) => l.lender.toLowerCase().includes(needle) || needle.includes(l.lender.toLowerCase()) || l.type.toLowerCase().includes(needle),
+    );
+
+    if (!found) return { match: null, candidates };
+    return {
+      match: {
+        id: found.id,
+        lender: found.lender,
+        type: found.type,
+        outstandingPrincipal: Number(found.outstandingPrincipal),
+        emiAmount: Number(found.emiAmount),
+        interestRateAnnual: Number(found.interestRateAnnual),
+      },
+      candidates,
     };
   }
 
