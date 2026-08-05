@@ -5,6 +5,73 @@ export type Role = "OWNER" | "MEMBER";
 export type TaxRegime = "OLD" | "NEW";
 export type RiskProfile = "CONSERVATIVE" | "MODERATE" | "AGGRESSIVE";
 export type CategoryType = "NEED" | "WANT" | "SAVINGS";
+export type CoachPlanType = "DEBT_PAYOFF" | "SAVINGS_TARGET" | "RETIREMENT" | "INVESTMENT_ALLOCATION" | "CUSTOM";
+export type CoachPlanStatus = "ACTIVE" | "AT_RISK" | "COMPLETED" | "ABANDONED";
+export type CoachStepStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "SKIPPED";
+export type CoachTaskStatus = "OPEN" | "DONE" | "DISMISSED";
+export type CoachNudgeSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export interface CoachPlanStepDTO {
+  id: string;
+  sequence: number;
+  description: string;
+  dueDate: string | null;
+  status: CoachStepStatus;
+  completedAt: string | null;
+}
+
+export interface CoachPlanDTO {
+  id: string;
+  type: CoachPlanType;
+  title: string;
+  objective: string;
+  targetMetricType: string;
+  targetValue: string;
+  targetDate: string;
+  startingValue: string;
+  currentValue: string;
+  status: CoachPlanStatus;
+  lastCheckedAt: string | null;
+  createdAt: string;
+  steps?: CoachPlanStepDTO[];
+}
+
+export interface CoachTaskDTO {
+  id: string;
+  planId: string | null;
+  title: string;
+  detail: string;
+  dueDate: string | null;
+  status: CoachTaskStatus;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface CoachNudgeDTO {
+  id: string;
+  planId: string | null;
+  severity: CoachNudgeSeverity;
+  message: string;
+  dismissed: boolean;
+  createdAt: string;
+}
+
+export interface AgenticCoachResultDTO {
+  question: string;
+  path: "DETERMINISTIC" | "ADVANCED";
+  matchedIntent: string | null;
+  advancedIntent: string | null;
+  plan: string[];
+  facts: Record<string, unknown>;
+  citedSources: string[];
+  answer: string;
+  confidence: number;
+  verificationPassed: boolean;
+  staleAdviceNote: string | null;
+  planId: string | null;
+  criticFlags: string[];
+  createdTaskIds: string[];
+}
 export type IncomeSource =
   | "SALARY"
   | "FREELANCE"
