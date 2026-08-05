@@ -187,8 +187,93 @@ model User {
   coachPlans           CoachPlan[]           // NEW — Phase 20
   coachTasks           CoachTask[]           // NEW — Phase 20
   coachNudges          CoachNudge[]          // NEW — Phase 20
+
+  scenarioStudioRuns ScenarioStudioRun[]
+  scenarioMonteCarloRuns ScenarioMonteCarloRun[]
+  scenarioOptimizationRuns ScenarioOptimizationRun[]
+
   @@index([householdId])
 }
+
+// --- Phase 13: Scenario Studio ------------------------------------------------------
+//
+// See README "Phase 13 — Scenario Studio" for the full design. Built entirely on top
+// of the existing deterministic SimulatorService/simulator.engine.ts (Phase 5) — every
+// variant's numbers come from that same engine, re-run with different (deterministically
+// derived) parameters. Nothing here invents a financial projection; the AI layer only
+// parses prompts into structured params and explains an already-computed ranking.
+
+model ScenarioStudioRun {
+  id              String   @id @default(cuid())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+  prompt          String
+  scenarioType    String
+  baseParams      Json
+  targetGoalIds   String[]
+  variants        Json // summarized per-variant results (label, params, key numbers, feasibility)
+  sensitivity     Json // SensitivityDimension[] output
+  rankedOrder     String[] // variant labels, best to worst
+  explanation     String
+  explanationConfidence Decimal @db.Decimal(4, 3)
+  verificationPassed Boolean
+  // NEW (Phase 16): the fast, reduced-fidelity Monte Carlo preview attached to the
+  // ranked winner — nullable because a preview failure never blocks the rest of the
+  // deterministic result (see ScenarioStudioService.tryMonteCarloSummary()).
+  monteCarloSummary Json?
+  createdAt       DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// --- Phase 16: Scenario Studio — Probabilistic Planning ------------------------------
+//
+// Two new audit-log tables, parallel in spirit to ScenarioStudioRun above: one per new
+// endpoint (POST /scenario-studio/simulate, POST /scenario-studio/optimize). Neither
+// touches ScenarioStudioRun or SavedScenario — both new features call the existing
+// SimulatorService (via MonteCarloSimulationService) to gather the real baseline and
+// only log their own additional layer here, same pattern Phase 13's own migration
+// comment already established.
+
+model ScenarioMonteCarloRun {
+  id                    String   @id @default(cuid())
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                String
+  scenarioType          String
+  params                Json
+  config                Json // MonteCarloConfigDTO snapshot (iterations, horizon, seed, assumptions)
+  terminalPercentiles   Json // { p10, p25, p50, p75, p90 }
+  probabilityOfNetWorthDecline Decimal @db.Decimal(6, 5)
+  riskLevel             String
+  coefficientOfVariation Decimal @db.Decimal(10, 5)
+  explanation           String
+  explanationConfidence Decimal @db.Decimal(4, 3)
+  verificationPassed    Boolean
+  createdAt             DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model ScenarioOptimizationRun {
+  id                    String   @id @default(cuid())
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                String
+  scenarioType          String
+  constraints           Json
+  recommendedParams     Json
+  searchRange           Json // { min, max }
+  candidatesEvaluated   Int
+  feasible              Boolean
+  violatedConstraints   String[]
+  riskAdjustedScore     Decimal @db.Decimal(16, 2)
+  explanation           String
+  explanationConfidence Decimal @db.Decimal(4, 3)
+  verificationPassed    Boolean
+  createdAt             DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
 model HouseholdInvite {
   id          String                @id @default(cuid())
   household   Household             @relation(fields: [householdId], references: [id], onDelete: Cascade)
