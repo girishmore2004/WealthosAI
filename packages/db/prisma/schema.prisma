@@ -182,7 +182,11 @@ model User {
   sentHouseholdInvites HouseholdInvite[] @relation("HouseholdInviteSentBy")   // NEW
   budgets Budget[]   // NEW
   aiSourceIndexStates AiSourceIndexState[]
-
+ // --- Add inside model User, alongside its other relation fields ---
+  coachFinancialMemory CoachFinancialMemory? // NEW — Phase 20
+  coachPlans           CoachPlan[]           // NEW — Phase 20
+  coachTasks           CoachTask[]           // NEW — Phase 20
+  coachNudges          CoachNudge[]          // NEW — Phase 20
   @@index([householdId])
 }
 model HouseholdInvite {
@@ -918,26 +922,223 @@ enum CoachPath {
   ADVANCED
 }
 
+// --- AgenticCoachRun gets 3 new columns (inserted just before createdAt) ---
 model AgenticCoachRun {
   id                String     @id @default(cuid())
   user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId            String
   question          String
   path              CoachPath
-  matchedIntent     String? // the Phase 5 intent id, when path is DETERMINISTIC
-  advancedIntent    String? // one of coach2.constants.ts's AdvancedCoachIntent, when path is ADVANCED
-  plan              String[] // ordered, human-readable steps actually taken — the "show your work" record
-  facts             Json // structured evidence gathered, shown in the frontend's expandable evidence section
-  citedSources      String[] // AiEmbeddingChunk ids, when the general_search path was used
+  matchedIntent     String?
+  advancedIntent    String?
+  plan              String[]
+  facts             Json
+  citedSources      String[]
   answer            String
   confidence        Decimal    @db.Decimal(4, 3)
-  verificationPassed Boolean // did the composed answer pass NumericConsistencyVerifier
+  verificationPassed Boolean
   staleAdviceNote   String?
+  // --- Phase 20 additions (multi-agent planner) — both nullable/defaulted, so every
+  // pre-existing row (and every pre-existing INSERT that doesn't set them) behaves
+  // exactly as before: an empty array, not a schema break.
+  criticFlags       String[]   @default([]) // e.g. "OVERPROMISING", "UNSAFE_ADVICE" — see CriticAgentService
+  createdTaskIds    String[]   @default([]) // CoachTask ids the Execution/Task Agent created from this run, if any
+  planId            String?    // set when this run created or reported on a CoachPlan
   createdAt         DateTime   @default(now())
 
   @@index([userId, createdAt])
   @@index([userId, matchedIntent])
   @@index([userId, advancedIntent])
+}
+
+// --- Phase 20: Coach Multi-Agent Planner --------------------------------------------
+//
+// Turns the Phase 12 Agentic Coach from a single-turn "answer this question" agent
+// into a persistent multi-agent financial planner. Six cooperating agents, each with
+// one job:
+//   - Planner Agent    (planning/financial-plan-agent.service.ts) — builds/maintains
+//     CoachPlan + CoachPlanStep rows.
+//   - Retriever Agent  (gathering/data-gatherer.service.ts) — fetches user-specific
+//     data from the money modules. Unchanged data-access pattern from Phase 12.
+//   - Calculator Agent (calculation/finance-calculator.service.ts) — deterministic
+//     finance math only (EMI, prepayment payoff, savings/goal projection, retirement
+//     corpus, tax estimate passthrough). Never calls the LLM.
+//   - Verifier Agent   (verification/verifier-agent.service.ts) — wraps
+//     NumericConsistencyVerifier and additionally checks a composed answer's claims
+//     against the CoachPlan it's reporting on.
+//   - Critic Agent     (verification/critic-agent.service.ts) — screens composed
+//     answers for over-promising language and unsafe-advice patterns, heuristically
+//     and (when available) via one closed-set LLM classification call.
+//   - Execution/Task Agent (execution/task-agent.service.ts) — turns advice into
+//     concrete CoachTask rows with due dates.
+//
+// All of this is additive: CoachPath, AgenticCoachRun, CoachInteraction, and every
+// Phase 5/12 table above are untouched in shape (aside from the three new nullable/
+// defaulted columns on AgenticCoachRun immediately above, which are pure additions).
+
+enum CoachPlanType {
+  DEBT_PAYOFF
+  SAVINGS_TARGET
+  RETIREMENT
+  INVESTMENT_ALLOCATION
+  CUSTOM
+}
+
+enum CoachPlanStatus {
+  ACTIVE
+  AT_RISK
+  COMPLETED
+  ABANDONED
+}
+
+enum CoachStepStatus {
+  PENDING
+  IN_PROGRESS
+  DONE
+  SKIPPED
+}
+
+enum CoachTaskStatus {
+  OPEN
+  DONE
+  DISMISSED
+}
+
+enum CoachProgressSource {
+  USER_QUERY
+  PROACTIVE_CHECK
+}
+
+enum CoachNudgeSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// Distilled, structured cross-session memory — deliberately separate from
+// AgenticCoachRun (which is the full raw per-turn log). One row per user. Agents read
+// this before planning/composing and write back to it after a run that surfaces a new
+// constraint or preference, so "the coach remembers I don't want to touch my
+// emergency fund" survives across sessions without re-deriving it from run history
+// every time.
+model CoachFinancialMemory {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String   @unique
+  // Array of { text, source ("user_stated" | "inferred"), sourceRunId, createdAt } —
+  // e.g. "don't want to touch the emergency fund", "prefers avalanche over snowball".
+  constraints Json      @default("[]")
+  // Array of { key, value, updatedAt } — e.g. riskToleranceOverride, communicationTone.
+  preferences Json      @default("[]")
+  // Free-form per-goal/plan context the agents have learned, keyed by a label (goal
+  // id or plan id) — e.g. "house goal: flexible on the target date, firm on amount".
+  goalNotes   Json      @default("{}")
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+}
+
+// A persistent, long-running financial plan the Planner Agent builds and the
+// Execution Monitor (plans/plan-monitor.service.ts) tracks over time — e.g. "pay off
+// the car loan in 18 months" or "save ₹12,00,000 for a house in 3 years". Deliberately
+// NOT a full re-derivation of Goal/Loan/RetirementProfile: `targetMetricType` is a
+// small free-text label (not a foreign key into a fifth different table) because the
+// plan's job is to track ONE scalar number toward ONE target, however that number is
+// computed by the Calculator/Retriever Agents — see PlanMonitorService for exactly how
+// each targetMetricType is resolved back to a live number.
+model CoachPlan {
+  id               String          @id @default(cuid())
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           String
+  type             CoachPlanType
+  title            String
+  objective        String          // the user's own stated goal, kept verbatim for context
+  linkedGoalId     String?         // optional Goal.id this plan tracks, when applicable
+  linkedLoanId     String?         // optional Loan.id this plan tracks, when applicable
+  targetMetricType String          // "goal_saved_amount" | "loan_outstanding_principal" | "retirement_corpus_gap" | "custom_amount"
+  targetValue      Decimal         @db.Decimal(14, 2)
+  targetDate       DateTime
+  startingValue    Decimal         @db.Decimal(14, 2)
+  currentValue     Decimal         @db.Decimal(14, 2)
+  status           CoachPlanStatus @default(ACTIVE)
+  lastCheckedAt    DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  steps    CoachPlanStep[]
+  tasks    CoachTask[]
+  progress CoachProgressSnapshot[]
+  nudges   CoachNudge[]
+
+  @@index([userId, status])
+}
+
+model CoachPlanStep {
+  id          String          @id @default(cuid())
+  plan        CoachPlan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId      String
+  sequence    Int
+  description String
+  dueDate     DateTime?
+  status      CoachStepStatus @default(PENDING)
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@index([planId, sequence])
+}
+
+// Execution/Task Agent output — a concrete, actionable follow-up. Not every task is
+// plan-bound (`planId` nullable): a one-off piece of advice from the ADVANCED path
+// (e.g. "review your insurance gap") can also produce a task without a long-running
+// plan behind it.
+model CoachTask {
+  id          String          @id @default(cuid())
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  plan        CoachPlan?      @relation(fields: [planId], references: [id], onDelete: SetNull)
+  planId      String?
+  title       String
+  detail      String
+  dueDate     DateTime?
+  status      CoachTaskStatus @default(OPEN)
+  sourceRunId String?         // AgenticCoachRun.id that produced this task, when applicable
+  createdAt   DateTime        @default(now())
+  completedAt DateTime?
+
+  @@index([userId, status])
+  @@index([planId])
+}
+
+// One row per execution-monitoring check (on-demand via a user's "how's my plan
+// going" question, or proactive via the daily background scan) — the plan's own
+// timeline, so progress can be charted and "on track vs not" compared over time
+// rather than only ever knowing the single latest state.
+model CoachProgressSnapshot {
+  id          String               @id @default(cuid())
+  plan        CoachPlan            @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId      String
+  checkedAt   DateTime             @default(now())
+  metricValue Decimal              @db.Decimal(14, 2)
+  onTrack     Boolean
+  note        String
+  source      CoachProgressSource
+
+  @@index([planId, checkedAt])
+}
+
+// Proactive coaching output — a nudge the background monitor (or an on-demand check)
+// decided was worth surfacing to the user without them having asked a question first.
+model CoachNudge {
+  id        String             @id @default(cuid())
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  plan      CoachPlan?         @relation(fields: [planId], references: [id], onDelete: SetNull)
+  planId    String?
+  severity  CoachNudgeSeverity @default(INFO)
+  message   String
+  dismissed Boolean            @default(false)
+  createdAt DateTime           @default(now())
+
+  @@index([userId, dismissed])
 }
 
 // --- Phase 13: Scenario Studio ------------------------------------------------------
