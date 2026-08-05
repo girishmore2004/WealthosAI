@@ -1,7 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { ExpensesService } from "../../../expenses/expenses.service";
 import { PaymentMethod } from "@wealthos/db";
+import { MerchantMemoryService } from "../merchant/merchant-memory.service";
+import { CategoryRankingModel, SuggestionSource } from "../scoring/category-ranking.model";
 
 export interface ApprovalEdits {
   categoryId?: string;
@@ -16,9 +18,13 @@ export type DuplicateResolution = "kept_both" | "skipped_duplicate" | "merged";
 
 @Injectable()
 export class IngestionReviewService {
+  private readonly logger = new Logger(IngestionReviewService.name);
+
   constructor(
     private prisma: PrismaService,
     private expenses: ExpensesService,
+    private merchantMemory: MerchantMemoryService,
+    private ranking: CategoryRankingModel,
   ) {}
 
   async approve(userId: string, itemId: string, edits: ApprovalEdits = {}, duplicateResolution?: DuplicateResolution) {
@@ -56,6 +62,7 @@ export class IngestionReviewService {
         spentAt: edits.spentAt,
         notes: edits.notes,
       });
+      await this.recordLearningFeedback(userId, item, categoryId);
       return this.prisma.client.ingestionReviewItem.update({
         where: { id: itemId },
         data: { status: "APPROVED", duplicateResolution, resolvedExpenseId: updated.id, resolvedAt: new Date() },
@@ -71,6 +78,8 @@ export class IngestionReviewService {
       notes: edits.notes,
       isRecurring: item.isRecurringCandidate,
     });
+
+    await this.recordLearningFeedback(userId, item, categoryId);
 
     return this.prisma.client.ingestionReviewItem.update({
       where: { id: itemId },
@@ -89,6 +98,31 @@ export class IngestionReviewService {
       where: { id: itemId },
       data: { status: "REJECTED", resolvedAt: new Date() },
     });
+  }
+
+  /** The single write path for the whole learning feedback loop — deliberately only
+   * reachable from a completed, human-approved expense creation/merge, never from an
+   * unverified AI suggestion. Both merchant memory (MerchantMemoryService) and the
+   * ranking model's per-source weights (CategoryRankingModel) learn from the same
+   * ground truth: did the human keep the suggested category, or pick a different one.
+   * Failure here is logged and swallowed rather than propagated — a learning-loop
+   * write failing must never roll back or fail the expense that was already
+   * successfully created/merged; the human's approval is the thing that matters. */
+  private async recordLearningFeedback(userId: string, item: { suggestedCategoryId: string | null; suggestionSource: string; merchantNormalized: string }, finalCategoryId: string): Promise<void> {
+    try {
+      const category = await this.prisma.client.category.findUnique({ where: { id: finalCategoryId } });
+      if (!category) return;
+
+      const wasCorrect = item.suggestedCategoryId !== null && item.suggestedCategoryId === finalCategoryId;
+      const source = item.suggestionSource as SuggestionSource;
+
+      await Promise.all([
+        this.merchantMemory.recordFeedback(userId, item.merchantNormalized, finalCategoryId, category.name),
+        this.ranking.learnFromCorrection(userId, source, wasCorrect),
+      ]);
+    } catch (err) {
+      this.logger.warn(`Learning feedback write failed (expense was still created/merged successfully): ${(err as Error).message}`);
+    }
   }
 
   private async getOwnedPendingItem(userId: string, itemId: string) {
