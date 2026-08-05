@@ -4,12 +4,17 @@ import { ExpensesService } from "../../expenses/expenses.service";
 import { FeatureExtractionService, ExpenseTransactionPoint } from "../ml-insights/features/feature-extraction.service";
 import { parseStatementText, ParsedLine } from "./parsing/statement-parser";
 import { StatementUnderstandingService } from "./parsing/statement-understanding.service";
+import { StatementOcrAdapter } from "./parsing/statement-ocr.adapter";
+import { OcrQualityEstimationService } from "./parsing/ocr-quality-estimation.service";
 import { normalizeMerchantText } from "./merchant/merchant-normalization";
 import { CategorySuggestionService } from "./merchant/category-suggestion.service";
 import { DuplicateDetectionService, ExistingExpenseForDupeCheck } from "./detection/duplicate-detection.service";
 import { RecurringDetectionService, SubscriptionCandidate } from "./detection/recurring-detection.service";
 import { AnomalyFlaggingService } from "./detection/anomaly-flagging.service";
 import { SuggestionScoringService } from "./scoring/suggestion-scoring.service";
+import { ReconciliationService, TransactionKind } from "./reconciliation/reconciliation.service";
+import { scrubPii } from "./privacy/pii-scrub.util";
+import { SuggestionSource } from "./scoring/category-ranking.model";
 import { PaymentMethod } from "@wealthos/db";
 
 const MAX_RAW_TEXT_EXCERPT_CHARS = 4000;
@@ -50,6 +55,8 @@ export interface IngestReviewItemData {
   suggestedCategoryId: string | null;
   suggestedCategoryName: string | null;
   categorySuggestionConfidence: number;
+  suggestionSource: SuggestionSource;
+  merchantMemorySampleSize: number;
   isDuplicateCandidate: boolean;
   duplicateOfExpenseId: string | null;
   duplicateConfidence: number;
@@ -57,9 +64,12 @@ export interface IngestReviewItemData {
   recurringMatchMerchant: string | null;
   isAnomalyCandidate: boolean;
   anomalyZScore: number | null;
+  transactionKind: TransactionKind;
+  reconciliationNote: string | null;
   missingFields: string[];
   overallConfidence: number;
   rationale: string;
+  needsActiveLearningReview: boolean;
 }
 
 @Injectable()
@@ -69,14 +79,51 @@ export class CopilotIngestionService {
     private expenses: ExpensesService,
     private features: FeatureExtractionService,
     private understanding: StatementUnderstandingService,
+    private ocrAdapter: StatementOcrAdapter,
+    private ocrQuality: OcrQualityEstimationService,
     private categorySuggestion: CategorySuggestionService,
     private duplicateDetection: DuplicateDetectionService,
     private recurringDetection: RecurringDetectionService,
     private anomalyFlagging: AnomalyFlaggingService,
+    private reconciliation: ReconciliationService,
     private scoring: SuggestionScoringService,
   ) {}
 
   async ingest(userId: string, sourceLabel: string, rawText: string, defaultPaymentMethod: PaymentMethod) {
+    return this.ingestParsedText(userId, sourceLabel, rawText, defaultPaymentMethod, "TEXT", null);
+  }
+
+  /** Statement-image ingestion: runs the raw image through a self-contained Tesseract
+   * pass (StatementOcrAdapter — see that file for why it doesn't reuse the Documents
+   * module's OCR adapter), estimates how trustworthy the extraction was
+   * (OcrQualityEstimationService), then feeds the OCR'd text through the exact same
+   * deterministic-parse → AI-fallback → suggestion pipeline as a pasted-text import.
+   * The OCR path never bypasses deterministic parsing/validation — an OCR'd line still
+   * has to match the same statement-line shape as a pasted one to be deterministically
+   * parsed; garbled OCR output simply falls through to "unparsed," the same as garbled
+   * pasted text would. */
+  async ingestFromOcr(userId: string, sourceLabel: string, fileBuffer: Buffer, mimeType: string, defaultPaymentMethod: PaymentMethod) {
+    const ocrResult = await this.ocrAdapter.process(fileBuffer, mimeType);
+    const { parsed: deterministicallyParsed } = parseStatementText(ocrResult.text);
+    const totalOcrLines = ocrResult.text.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+
+    const quality = this.ocrQuality.estimate({
+      engineConfidence: ocrResult.engineConfidence,
+      totalLines: totalOcrLines,
+      deterministicallyParsedLines: deterministicallyParsed.length,
+    });
+
+    return this.ingestParsedText(userId, sourceLabel, ocrResult.text, defaultPaymentMethod, "OCR_IMAGE", quality.extractionConfidence);
+  }
+
+  private async ingestParsedText(
+    userId: string,
+    sourceLabel: string,
+    rawText: string,
+    defaultPaymentMethod: PaymentMethod,
+    ingestionSource: "TEXT" | "OCR_IMAGE",
+    ocrExtractionConfidence: number | null,
+  ) {
     const { parsed: deterministicallyParsed, unparsedLines } = parseStatementText(rawText);
 
     // Cap how many leftover lines are actually offered to the AI fallback BEFORE
@@ -107,28 +154,38 @@ export class CopilotIngestionService {
 
     const items: IngestReviewItemData[] = [];
     for (const line of allParsed) {
-      items.push(await this.buildReviewItem(userId, line, categories, existingForDupeCheck, subscriptions, allTransactionPoints, defaultPaymentMethod));
+      items.push(
+        await this.buildReviewItem(userId, line, categories, existingForDupeCheck, subscriptions, allTransactionPoints, defaultPaymentMethod, ocrExtractionConfidence),
+      );
     }
 
     const batch = await this.prisma.client.ingestionBatch.create({
       data: {
         userId,
         sourceLabel,
-        rawTextExcerpt: rawText.slice(0, MAX_RAW_TEXT_EXCERPT_CHARS),
+        ingestionSource,
+        ocrExtractionConfidence,
+        // Raw text is scrubbed of obvious PII shapes before being persisted for audit
+        // purposes — see privacy/pii-scrub.util.ts for why this is a separate,
+        // narrower pass than the redaction the AI Gateway already applies to anything
+        // actually sent to a model.
+        rawTextExcerpt: scrubPii(rawText.slice(0, MAX_RAW_TEXT_EXCERPT_CHARS)),
         totalLines: rawText.split(/\r?\n/).filter((l) => l.trim().length > 0).length,
         parsedCount: allParsed.length,
         unparsedCount: stillUnparsedCount,
         items: {
           create: items.map((item) => ({
             userId,
-            rawLine: item.rawLine,
+            rawLine: scrubPii(item.rawLine),
             parsedDate: item.parsedDate,
             parsedAmount: item.parsedAmount,
-            merchantRaw: item.merchantRaw,
+            merchantRaw: scrubPii(item.merchantRaw),
             merchantNormalized: item.merchantNormalized,
             suggestedCategoryId: item.suggestedCategoryId,
             suggestedCategoryName: item.suggestedCategoryName,
             categorySuggestionConfidence: item.categorySuggestionConfidence,
+            suggestionSource: item.suggestionSource,
+            merchantMemorySampleSize: item.merchantMemorySampleSize,
             isDuplicateCandidate: item.isDuplicateCandidate,
             duplicateOfExpenseId: item.duplicateOfExpenseId,
             duplicateConfidence: item.duplicateConfidence,
@@ -136,9 +193,12 @@ export class CopilotIngestionService {
             recurringMatchMerchant: item.recurringMatchMerchant,
             isAnomalyCandidate: item.isAnomalyCandidate,
             anomalyZScore: item.anomalyZScore,
+            transactionKind: item.transactionKind,
+            reconciliationNote: item.reconciliationNote,
             missingFields: item.missingFields,
             overallConfidence: item.overallConfidence,
             rationale: item.rationale,
+            needsActiveLearningReview: item.needsActiveLearningReview,
           })),
         },
       },
@@ -156,12 +216,14 @@ export class CopilotIngestionService {
     subscriptions: SubscriptionCandidate[],
     allTransactionPoints: ExpenseTransactionPoint[],
     defaultPaymentMethod: PaymentMethod,
+    ocrExtractionConfidence: number | null,
   ): Promise<IngestReviewItemData> {
     const merchantNormalized = normalizeMerchantText(line.merchantRaw);
 
-    const [categorySuggestion, duplicateResult] = await Promise.all([
+    const [categorySuggestion, duplicateResult, reconciliationResult] = await Promise.all([
       this.categorySuggestion.suggest(userId, merchantNormalized, categories),
       Promise.resolve(this.duplicateDetection.check(line, existingForDupeCheck)),
+      this.reconciliation.classifyLine(userId, { merchantNormalized, amount: line.amount, date: line.date }),
     ]);
 
     const recurringResult = this.recurringDetection.check(line, subscriptions);
@@ -180,6 +242,10 @@ export class CopilotIngestionService {
     const missingFields = ["paymentMethod (defaulted, not detected)"];
     if (!categorySuggestion.categoryId) missingFields.push("category (no confident suggestion)");
 
+    const hasReconciliationMismatch =
+      reconciliationResult.transactionKind !== "EXPENSE" &&
+      (reconciliationResult.matchedRecordId === null || (reconciliationResult.reconciliationNote?.includes("but the recorded EMI") ?? false));
+
     const score = this.scoring.score({
       categorySuggestionConfidence: categorySuggestion.confidence,
       isDuplicateCandidate: duplicateResult.isDuplicateCandidate,
@@ -187,6 +253,9 @@ export class CopilotIngestionService {
       isRecurringCandidate: recurringResult.isRecurringCandidate,
       isAnomalyCandidate: anomalyResult.isAnomalyCandidate,
       missingFields,
+      merchantMemorySampleSize: categorySuggestion.memorySampleSize,
+      ocrExtractionConfidence: ocrExtractionConfidence ?? undefined,
+      hasReconciliationMismatch,
     });
 
     return {
@@ -198,6 +267,8 @@ export class CopilotIngestionService {
       suggestedCategoryId: categorySuggestion.categoryId,
       suggestedCategoryName: categorySuggestion.categoryName,
       categorySuggestionConfidence: categorySuggestion.confidence,
+      suggestionSource: categorySuggestion.source,
+      merchantMemorySampleSize: categorySuggestion.memorySampleSize,
       isDuplicateCandidate: duplicateResult.isDuplicateCandidate,
       duplicateOfExpenseId: duplicateResult.duplicateOfExpenseId,
       duplicateConfidence: duplicateResult.duplicateConfidence,
@@ -205,9 +276,12 @@ export class CopilotIngestionService {
       recurringMatchMerchant: recurringResult.recurringMatchMerchant,
       isAnomalyCandidate: anomalyResult.isAnomalyCandidate,
       anomalyZScore: anomalyResult.anomalyZScore,
+      transactionKind: reconciliationResult.transactionKind,
+      reconciliationNote: reconciliationResult.reconciliationNote,
       missingFields,
       overallConfidence: score.overallConfidence,
       rationale: score.rationale,
+      needsActiveLearningReview: score.needsActiveLearningReview,
     };
   }
 
@@ -224,5 +298,22 @@ export class CopilotIngestionService {
     const batch = await this.prisma.client.ingestionBatch.findUnique({ where: { id: batchId }, include: { items: true } });
     if (!batch || batch.userId !== userId) return null;
     return batch;
+  }
+
+  /** On-demand batch-level reconciliation report — see ReconciliationService for why
+   * this is computed live rather than cached on the batch row. */
+  async getReconciliationReport(userId: string, batchId: string) {
+    const batch = await this.getBatch(userId, batchId);
+    if (!batch) return null;
+    return this.reconciliation.reconcileBatch(
+      userId,
+      batch.items.map((i) => ({
+        rawLine: i.rawLine,
+        merchantNormalized: i.merchantNormalized,
+        parsedAmount: Number(i.parsedAmount),
+        parsedDate: i.parsedDate,
+        status: i.status,
+      })),
+    );
   }
 }
