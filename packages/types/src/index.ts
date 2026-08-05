@@ -958,6 +958,11 @@ export interface ScenarioStudioResultDTO {
   explanation: string;
   explanationConfidence: number;
   verificationPassed: boolean;
+  // Fast, reduced-fidelity Monte Carlo preview of the ranked winner's parameters —
+  // null when the preview itself failed (e.g. AI/DB hiccup) or was skipped; never
+  // blocks the rest of the (already-deterministic) result from being returned. See
+  // ScenarioStudioService.build() and BUILD_MC_PREVIEW_ITERATIONS.
+  monteCarloSummary: MonteCarloResultDTO | null;
 }
 
 export interface ScenarioStudioRunDTO {
@@ -972,6 +977,7 @@ export interface ScenarioStudioRunDTO {
   explanation: string;
   explanationConfidence: string;
   verificationPassed: boolean;
+  monteCarloSummary: MonteCarloResultDTO | null;
   createdAt: string;
 }
 
@@ -1113,6 +1119,101 @@ export interface ApproveReviewItemInput {
   notes?: string;
   duplicateResolution?: DuplicateResolution;
 }
+// --- Phase 16: Scenario Studio — Probabilistic Planning (Monte Carlo + Optimization) --
+//
+// Additive to Phase 13's deterministic Scenario Studio types above — every DTO there
+// is unchanged (except ScenarioStudioResultDTO/ScenarioStudioRunDTO gaining one new
+// optional-in-spirit `monteCarloSummary` field). The deterministic simulator engine
+// (simulator.engine.ts) remains the audited, tested foundation these probabilistic
+// features are layered on top of, not a replacement for it.
 
+export interface PercentileSetDTO {
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
+// A percentile band at one point in time along the projection horizon — the data
+// shape a "fan chart" (uncertainty cone) visualization consumes directly.
+export interface YearlyBandDTO extends PercentileSetDTO {
+  monthIndex: number; // 1-based month within the horizon
+}
+
+export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+
+export interface MonteCarloConfigDTO {
+  iterations: number;
+  horizonYears: number;
+  seed: number;
+  annualReturnMeanPercent: number;
+  annualReturnStdDevPercent: number;
+  expenseInflationMeanPercent: number;
+  expenseInflationStdDevPercent: number;
+  incomeGrowthMeanPercent: number;
+  incomeGrowthStdDevPercent: number;
+  propertyAppreciationMeanPercent: number;
+  propertyAppreciationStdDevPercent: number;
+}
+
+export interface MonteCarloResultDTO {
+  scenarioType: ScenarioType;
+  iterations: number;
+  horizonYears: number;
+  terminalPercentiles: PercentileSetDTO;
+  // Fraction (0-1) of simulated trajectories ending below today's actual net worth.
+  probabilityOfNetWorthDecline: number;
+  // Fraction (0-1) of simulated trajectories ending below a supplied goal target, or
+  // null when no target was supplied for this run (not "0% risk" — "not measured",
+  // same null-vs-zero distinction AiResult.groundingScore already makes elsewhere).
+  probabilityOfGoalShortfall: number | null;
+  riskLevel: RiskLevel;
+  // stdDev / |mean| of the terminal net worth distribution — the raw number
+  // riskLevel is bucketed from, exposed for callers that want finer-grained display.
+  coefficientOfVariation: number;
+  yearlyBands: YearlyBandDTO[];
+  // Human-readable statement of every distributional assumption used, so a UI or an
+  // LLM explanation can ground claims in exactly what was modeled rather than an
+  // opaque number.
+  assumptions: string[];
+  config: MonteCarloConfigDTO;
+}
+
+// Only scenario types with a single, meaningfully-optimizable decision variable
+// support optimization — see OPTIMIZABLE_SCENARIO_TYPES in
+// apps/api/src/ai/scenario-studio/scenario-studio.constants.ts for exactly which ones
+// and why (e.g. HOUSE_PURCHASE's four interacting fields are explicitly out of scope
+// for a single-variable grid search).
+export interface OptimizationConstraintsDTO {
+  scenarioType: ScenarioType;
+  loanId?: string; // required for LOAN_PREPAYMENT
+  goalId?: string; // required for GOAL_DELAY
+  maxMonthlyBudgetPercent?: number;
+  minRetirementAge?: number;
+  maxRetirementAge?: number;
+  respectGoalFunding?: boolean;
+  respectTaxAdvantagedLimit?: boolean;
+  targetGoalIds?: string[];
+}
+
+export interface OptimizationSearchRangeDTO {
+  min: number;
+  max: number;
+}
+
+export interface OptimizedScenarioDTO {
+  scenarioType: ScenarioType;
+  recommendedParams: Record<string, unknown>;
+  searchRange: OptimizationSearchRangeDTO;
+  candidatesEvaluated: number;
+  // Full-fidelity Monte Carlo result for the recommended parameters (never a
+  // search-time reduced-iteration approximation — see ScenarioOptimizerService).
+  monteCarlo: MonteCarloResultDTO;
+  feasible: boolean;
+  violatedConstraints: string[];
+  riskAdjustedScore: number;
+  constraintsApplied: OptimizationConstraintsDTO;
+}
 
 
