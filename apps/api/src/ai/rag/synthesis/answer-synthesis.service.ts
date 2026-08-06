@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { z } from "zod";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
+import { AiResult } from "../../gateway/ai-gateway.types";
 import { AiGroundingException, AiUnavailableException, AiValidationException } from "../../exceptions/ai.exceptions";
 import { RerankedChunk } from "../retrieval/reranking.service";
 
@@ -76,7 +77,7 @@ export class AnswerSynthesisService {
     const input = `Question: ${query}\n\nNumbered sources (answer ONLY using these, cite which you used):\n\n${sourceList}`;
     const groundingContext = buildGroundingContext(chunks);
 
-    let result: Awaited<ReturnType<AiGatewayService["extract"]>>;
+    let result: AiResult<z.infer<typeof synthesisSchema>>;
     try {
       result = await this.gateway.extract(input, synthesisSchema, {
         feature: "rag.synthesis",
