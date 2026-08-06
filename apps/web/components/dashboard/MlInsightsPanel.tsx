@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { MlInsightsSummaryDTO } from "@wealthos/types";
 import { api } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
 import { formatINR } from "@/lib/format";
 
 // Deliberately a separate component with its own fetch, not folded into
@@ -70,9 +71,11 @@ export function MlInsightsPanel() {
       </p>
 
       {!hasAnySignal ? (
-        <p className="text-sm text-ink-soft">No notable statistical signals this month.</p>
+        <p className="rounded-md bg-surface-muted px-3 py-3 text-sm text-ink-soft">
+          No notable statistical signals this month.
+        </p>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-1">
           {anomalies.prediction.length > 0 && (
             <SignalRow
               label="Unusual spending"
@@ -147,15 +150,13 @@ function SignalRow({
   badge?: string;
 }) {
   return (
-    <div className="border-b border-line pb-2 last:border-b-0 last:pb-0">
-      <div className="flex items-center justify-between gap-2">
+    <div className="border-b border-line py-3 first:pt-0 last:border-b-0 last:pb-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <p className="text-sm font-medium text-ink">{label}</p>
-          {badge && (
-            <span className="rounded bg-line px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ink-faint">{badge}</span>
-          )}
+          {badge && <Badge tone="info">{badge}</Badge>}
         </div>
-        <span className="font-mono text-[11px] text-ink-faint">{Math.round(confidence * 100)}% confidence</span>
+        <span className="stat-value text-[11px] text-ink-faint">{Math.round(confidence * 100)}% confidence</span>
       </div>
       <p className="mt-1 text-xs text-ink-soft">{detail}</p>
     </div>
