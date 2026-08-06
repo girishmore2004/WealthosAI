@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 
 export interface MemoryConstraint {
@@ -104,7 +105,7 @@ export class FinancialMemoryService {
 
       await this.prisma.client.coachFinancialMemory.update({
         where: { userId },
-        data: { constraints: updated },
+        data: { constraints: updated as unknown as Prisma.InputJsonValue },
       });
     } catch (err) {
       // Financial memory is an enhancement, not a dependency any user-facing answer
@@ -122,7 +123,7 @@ export class FinancialMemoryService {
 
       await this.prisma.client.coachFinancialMemory.update({
         where: { userId },
-        data: { preferences: updated },
+        data: { preferences: updated as unknown as Prisma.InputJsonValue },
       });
     } catch (err) {
       this.logger.warn(`Failed to persist preference for user ${userId}: ${(err as Error).message}`);
