@@ -42,11 +42,11 @@ export class FinanceCalculatorService {
     totalPayable: number;
     totalInterest: number;
   } {
-    const emi = calculateEmi(principal, annualRatePercent, tenureMonths);
-    const totalPayable = emi * tenureMonths;
+    const emi = Number(calculateEmi(principal, annualRatePercent, tenureMonths).toFixed(2));
+    const totalPayable = Number((emi * tenureMonths).toFixed(2));
     return {
-      emi: Number(emi.toFixed(2)),
-      totalPayable: Number(totalPayable.toFixed(2)),
+      emi,
+      totalPayable,
       totalInterest: Number((totalPayable - principal).toFixed(2)),
     };
   }
