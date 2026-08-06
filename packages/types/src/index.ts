@@ -1003,12 +1003,71 @@ export interface ExpenseAnomalyDTO {
   amount: number;
   categoryMedian: number;
   zScore: number;
+  /** NEW — deterministic, rule-based candidate reasons this transaction was flagged
+   * (new merchant, first-in-category, recurring-amount change, magnitude vs. median).
+   * Always present and always traceable to the input data, independent of whether the
+   * LLM narrative below (see MlInsightsSummaryDTO.anomalyExplanation) was available. */
+  likelyCauses: string[];
+}
+
+/** NEW — result of the AI-Gateway-backed anomaly explanation call. `usedFallback`
+ * true means `narrative` is the deterministic, rule-based fallback (built directly
+ * from ExpenseAnomalyDTO.likelyCauses) rather than an LLM composition — surfaced
+ * explicitly so the UI can show "AI explanation unavailable" without guessing from
+ * confidence alone. */
+export interface AnomalyExplanationDTO {
+  narrative: string;
+  confidence: number;
+  verificationPassed: boolean;
+  usedFallback: boolean;
+}
+
+export interface QuantileForecastPointDTO {
+  monthsAhead: number;
+  p10: number;
+  p50: number;
+  p90: number;
 }
 
 export interface CashflowForecastDTO {
   nextMonthProjectedCashflow: number;
   trendSlopePerMonth: number;
   stressRisk: boolean;
+  /** NEW — 95% confidence interval around nextMonthProjectedCashflow. */
+  confidenceInterval95: { lower: number; upper: number };
+  /** NEW — P10/P50/P90 projected net cashflow, 1/2/3 months ahead. */
+  quantileForecast: QuantileForecastPointDTO[];
+  /** NEW — trend/seasonal/residual decomposition summary of the historical series.
+   * hasSeasonality is false (and seasonalAdjustmentThisMonth is 0) unless there are
+   * 24+ months of history — with less, a per-calendar-month seasonal index would be
+   * statistically indistinguishable from noise. */
+  decomposition: { hasSeasonality: boolean; seasonalAdjustmentThisMonth: number; residualStdDev: number };
+  /** NEW — this user's own long-run mean/stdDev net cashflow, the Bayesian prior
+   * behind the forecast above ("personalized baseline"). */
+  personalizedBaseline: { historicalMean: number; historicalStdDev: number };
+}
+
+export type ForecastMetricNameDTO = "income" | "expenses" | "savingsRate";
+
+export interface MetricForecastResultDTO {
+  metric: ForecastMetricNameDTO;
+  nextMonthP50: number;
+  trendSlopePerMonth: number;
+  confidenceInterval95: { lower: number; upper: number };
+  quantileForecast: QuantileForecastPointDTO[];
+  decomposition: { hasSeasonality: boolean; trendSlope: number };
+  personalizedBaseline: { historicalMean: number; historicalStdDev: number };
+  fitQuality: number;
+}
+
+/** NEW — independent Bayesian quantile forecasts for income, expenses, and savings
+ * rate (distinct from CashflowForecastDTO, which forecasts only the combined net
+ * cashflow figure). */
+export interface MetricsForecastDTO {
+  income: MetricForecastResultDTO;
+  expenses: MetricForecastResultDTO;
+  savingsRate: MetricForecastResultDTO;
+  insufficientHistory: boolean;
 }
 
 export interface DebtRiskPredictionDTO {
@@ -1038,6 +1097,37 @@ export interface DriftPredictionDTO {
   zStatistic: number;
 }
 
+/** NEW — model-performance monitoring: has the cashflow FORECAST MODEL's own
+ * prediction error gotten worse over time. Distinct from DriftPredictionDTO, which
+ * tracks whether the USER's savings rate itself has shifted. `monitored: false` means
+ * there isn't yet enough resolved forecast history (predicted-then-realized months)
+ * to say anything, as opposed to `driftDetected: false` which means "monitored, and
+ * stable". */
+export interface ConceptDriftPredictionDTO {
+  monitored: boolean;
+  driftDetected: boolean;
+  recentMeanAbsoluteError: number;
+  priorMeanAbsoluteError: number;
+  sampleSize: number;
+  zStatistic: number;
+  direction: "degrading" | "improving" | "stable";
+}
+
+export interface FeatureShiftResultDTO {
+  name: string;
+  psi: number;
+  severity: "none" | "moderate" | "significant";
+}
+
+/** NEW — online feature-distribution-shift monitoring via Population Stability Index
+ * between a reference window and the recent window, per engineered feature (avg
+ * transaction amount, transactions/month, distinct categories/month). */
+export interface FeatureMonitoringPredictionDTO {
+  monitored: boolean;
+  features: FeatureShiftResultDTO[];
+  anyShiftDetected: boolean;
+}
+
 export type BehavioralStateDTO = "high_saving" | "balanced" | "overspending";
 
 export interface MonthSegmentDTO {
@@ -1047,13 +1137,37 @@ export interface MonthSegmentDTO {
   state: BehavioralStateDTO;
 }
 
+export type SpendingClusterDTO = "disciplined_saver" | "steady_balanced" | "volatile_spender" | "concentrated_spender" | "overspender";
+
+export interface BehavioralFeatureVectorDTO {
+  avgSavingsRate: number;
+  expenseVolatilityCV: number;
+  recurringSpendShare: number;
+  categoryConcentrationHHI: number;
+  topCategoryName: string | null;
+  topCategoryShare: number;
+}
+
+/** NEW — user-specific engineered behavioral features (savings-rate level, expense
+ * volatility, category concentration, recurring-spend share) plus a rule-based
+ * spending-cluster label. */
+export interface BehavioralFeatureResultDTO {
+  features: BehavioralFeatureVectorDTO;
+  cluster: SpendingClusterDTO;
+}
+
 export interface MlInsightsSummaryDTO {
   anomalies: ModelOutputDTO<ExpenseAnomalyDTO[]>;
+  anomalyExplanation: AnomalyExplanationDTO;
   cashflowForecast: ModelOutputDTO<CashflowForecastDTO>;
+  metricsForecast: ModelOutputDTO<MetricsForecastDTO>;
   debtRisk: ModelOutputDTO<DebtRiskPredictionDTO>;
   goalSuccess: ModelOutputDTO<GoalSuccessPredictionDTO[]>;
   drift: ModelOutputDTO<DriftPredictionDTO>;
+  conceptDrift: ModelOutputDTO<ConceptDriftPredictionDTO>;
+  featureMonitoring: ModelOutputDTO<FeatureMonitoringPredictionDTO>;
   habitSegmentation: ModelOutputDTO<MonthSegmentDTO[]>;
+  behavioralFeatures: ModelOutputDTO<BehavioralFeatureResultDTO>;
 }
 
 // --- Phase 15: Copilot Ingestion -----------------------------------------------------
