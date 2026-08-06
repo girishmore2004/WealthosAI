@@ -2,7 +2,7 @@ const aiFeatures: { title: string; description: string }[] = [
   {
     title: "AI Search",
     description:
-      "Ask questions across your own documents, reports, and financial history. Answers are cited and grounded — with no confident-sounding guesses when the evidence is weak.",
+      "Ask questions across your own documents, reports, and financial history. Answers are cited and grounded - with no confident-sounding guesses when the evidence is weak.",
   },
   {
     title: "Agentic Coach",
@@ -12,12 +12,12 @@ const aiFeatures: { title: string; description: string }[] = [
   {
     title: "ML Insights",
     description:
-      "Real statistical models — regression, anomaly detection, risk scoring — run over your own data. Not a black-box score, and no language model involved.",
+      "Real statistical models - regression, anomaly detection, risk scoring - run over your own data. Not a black-box score, and no language model involved.",
   },
   {
     title: "Scenario Studio",
     description:
-      "Ask a natural-language \"what if\" question and get ranked, explained projections — powered by the same deterministic Simulator engine, re-run with new parameters.",
+      "Ask a natural-language what-if question and get ranked, explained projections - powered by the same deterministic Simulator engine, re-run with new parameters.",
   },
   {
     title: "Copilot Ingestion",
@@ -33,14 +33,14 @@ export function AISection() {
         <div className="mb-8 max-w-2xl">
           <p className="text-xs uppercase tracking-wide text-marigold-400">AI, built on a deterministic core</p>
           <h2 className="mt-2 font-display text-3xl text-paper">
-            AI that explains your numbers — never invents them
+            AI that explains your numbers - never invents them
           </h2>
           <p className="mt-3 text-sm leading-relaxed text-paper/70">
-            Every calculation in WealthOS AI — net worth, amortization, tax, retirement
-            corpus, simulator projections — is computed by plain, auditable logic with
+            Every calculation in WealthOS AI - net worth, amortization, tax, retirement
+            corpus, simulator projections - is computed by plain, auditable logic with
             no model call involved. The AI layer reads and explains that output; it
             never replaces it. Where a generated answer would introduce a number that
-            can&apos;t be traced back to something already computed, it&apos;s discarded in
+            can't be traced back to something already computed, it's discarded in
             favor of the raw facts.
           </p>
         </div>
