@@ -4,7 +4,7 @@ import { calculateEmi } from "../../../simulator/simulator.engine";
 import {
   MonteCarloConfigDTO,
   MonteCarloResultDTO,
-  RiskLevel,
+  MonteCarloRiskLevel,
   RunScenarioResponseDTO,
   ScenarioParamsByType,
   ScenarioType,
@@ -113,7 +113,7 @@ export class MonteCarloSimulationService {
     };
   }
 
-  private classifyRisk(coefficientOfVariation: number): RiskLevel {
+  private classifyRisk(coefficientOfVariation: number): MonteCarloRiskLevel {
     if (coefficientOfVariation < RISK_LEVEL_COV_THRESHOLDS.low) return "LOW";
     if (coefficientOfVariation < RISK_LEVEL_COV_THRESHOLDS.medium) return "MEDIUM";
     return "HIGH";
