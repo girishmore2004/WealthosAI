@@ -9,13 +9,13 @@ const steps: { number: string; title: string; description: string }[] = [
     number: "02",
     title: "Add what you already have",
     description:
-      "Income, expenses, investments, loans, insurance, property, business, and goals — add as much or as little as you want, whenever you want.",
+      "Income, expenses, investments, loans, insurance, property, business, and goals - add as much or as little as you want, whenever you want.",
   },
   {
     number: "03",
     title: "See your full picture",
     description:
-      "A live net worth and health score on your dashboard, deterministic alerts, and — whenever you want a deeper answer — AI Search, Coach, and Scenario Studio.",
+      "A live net worth and health score on your dashboard, deterministic alerts, and - whenever you want a deeper answer - AI Search, Coach, and Scenario Studio.",
   },
 ];
 
