@@ -5,7 +5,7 @@ const points: { title: string; description: string }[] = [
   },
   {
     title: "Your data stays scoped to you",
-    description: "Every record is read and written against your own account — a household owner sees per-member detail; members see rollups only.",
+    description: "Every record is read and written against your own account - a household owner sees per-member detail; members see rollups only.",
   },
   {
     title: "PII is redacted before any AI call",
@@ -13,7 +13,7 @@ const points: { title: string; description: string }[] = [
   },
   {
     title: "Human approval for AI-suggested writes",
-    description: "Copilot Ingestion never creates an expense automatically — every suggestion sits in a review queue until you approve it.",
+    description: "Copilot Ingestion never creates an expense automatically - every suggestion sits in a review queue until you approve it.",
   },
 ];
 
