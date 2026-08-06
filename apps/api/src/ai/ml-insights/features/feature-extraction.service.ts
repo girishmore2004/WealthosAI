@@ -23,6 +23,15 @@ export interface ExpenseTransactionPoint {
   categoryName: string;
   amount: number;
   spentAt: Date;
+  /** NEW — carried through from Expense.merchant/isRecurring so AnomalyDetectionModel
+   * can generate a real likely-cause explanation (new merchant, recurring-amount
+   * change, first-in-category) instead of only a bare z-score, and so
+   * BehavioralFeaturesModel can compute a recurring-vs-discretionary spend split.
+   * Optional because AnomalyFlaggingService (Copilot Ingestion) constructs a minimal
+   * candidate point inline without these fields — every consumer must treat their
+   * absence as "unknown", never as "not recurring"/"no merchant". */
+  merchant?: string | null;
+  isRecurring?: boolean;
 }
 
 const TRAILING_MONTHS_DEFAULT = 12;
@@ -38,13 +47,25 @@ export class FeatureExtractionService {
    * detection at the individual-transaction level. */
   async transactionPoints(userId: string): Promise<ExpenseTransactionPoint[]> {
     const expenses = await this.expenses.list(userId);
-    return expenses.map((e: { id: string; categoryId: string; category: { name: string }; amount: unknown; spentAt: Date }) => ({
-      id: e.id,
-      categoryId: e.categoryId,
-      categoryName: e.category.name,
-      amount: Number(e.amount),
-      spentAt: e.spentAt,
-    }));
+    return expenses.map(
+      (e: {
+        id: string;
+        categoryId: string;
+        category: { name: string };
+        amount: unknown;
+        spentAt: Date;
+        merchant?: string | null;
+        isRecurring?: boolean;
+      }) => ({
+        id: e.id,
+        categoryId: e.categoryId,
+        categoryName: e.category.name,
+        amount: Number(e.amount),
+        spentAt: e.spentAt,
+        merchant: e.merchant ?? null,
+        isRecurring: Boolean(e.isRecurring),
+      }),
+    );
   }
 
   /** Monthly-aggregated income/expense/cashflow series, most-recent-last, for
