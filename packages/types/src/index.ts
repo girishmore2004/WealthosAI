@@ -56,22 +56,6 @@ export interface CoachNudgeDTO {
   createdAt: string;
 }
 
-export interface AgenticCoachResultDTO {
-  question: string;
-  path: "DETERMINISTIC" | "ADVANCED";
-  matchedIntent: string | null;
-  advancedIntent: string | null;
-  plan: string[];
-  facts: Record<string, unknown>;
-  citedSources: string[];
-  answer: string;
-  confidence: number;
-  verificationPassed: boolean;
-  staleAdviceNote: string | null;
-  planId: string | null;
-  criticFlags: string[];
-  createdTaskIds: string[];
-}
 export type IncomeSource =
   | "SALARY"
   | "FREELANCE"
@@ -888,6 +872,9 @@ export interface AgenticCoachResultDTO {
   confidence: number;
   verificationPassed: boolean;
   staleAdviceNote: string | null;
+  planId: string | null;
+  criticFlags: string[];
+  createdTaskIds: string[];
 }
 
 export interface AgenticCoachRunDTO {
@@ -1255,7 +1242,7 @@ export interface YearlyBandDTO extends PercentileSetDTO {
   monthIndex: number; // 1-based month within the horizon
 }
 
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+export type MonteCarloRiskLevel = "LOW" | "MEDIUM" | "HIGH";
 
 export interface MonteCarloConfigDTO {
   iterations: number;
@@ -1282,7 +1269,7 @@ export interface MonteCarloResultDTO {
   // null when no target was supplied for this run (not "0% risk" — "not measured",
   // same null-vs-zero distinction AiResult.groundingScore already makes elsewhere).
   probabilityOfGoalShortfall: number | null;
-  riskLevel: RiskLevel;
+  riskLevel: MonteCarloRiskLevel;
   // stdDev / |mean| of the terminal net worth distribution — the raw number
   // riskLevel is bucketed from, exposed for callers that want finer-grained display.
   coefficientOfVariation: number;
@@ -1329,5 +1316,3 @@ export interface OptimizedScenarioDTO {
   riskAdjustedScore: number;
   constraintsApplied: OptimizationConstraintsDTO;
 }
-
-
