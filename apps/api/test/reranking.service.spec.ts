@@ -7,7 +7,9 @@ function makeChunk(id: string, combinedScore: number): ScoredChunk {
     id,
     sourceType: "DOCUMENT",
     sourceId: `src-${id}`,
+    chunkIndex: 0,
     text: `text for ${id}`,
+    parentText: `text for ${id}`,
     metadata: {},
     sourceCreatedAt: new Date(),
     semanticScore: combinedScore,
@@ -15,6 +17,8 @@ function makeChunk(id: string, combinedScore: number): ScoredChunk {
     recencyScore: 0,
     priorityScore: 0,
     combinedScore,
+    relatedSourceIds: [],
+    expansionReason: "seed",
   };
 }
 
