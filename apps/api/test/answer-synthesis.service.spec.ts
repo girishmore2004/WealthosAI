@@ -7,7 +7,9 @@ function makeRerankedChunk(id: string): RerankedChunk {
     id,
     sourceType: "DOCUMENT",
     sourceId: `src-${id}`,
+    chunkIndex: 0,
     text: `some source text for ${id}`,
+    parentText: `some source text for ${id}`,
     metadata: {},
     sourceCreatedAt: new Date(),
     semanticScore: 0.8,
@@ -15,6 +17,8 @@ function makeRerankedChunk(id: string): RerankedChunk {
     recencyScore: 0.5,
     priorityScore: 0.5,
     combinedScore: 0.8,
+    relatedSourceIds: [],
+    expansionReason: "seed",
     rerankPosition: 0,
   };
 }
