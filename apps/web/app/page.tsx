@@ -49,7 +49,7 @@ export default function HomePage() {
   if (loading || user) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <p className="text-sm text-ink-faint">Loading WealthOS AI…</p>
+        <p className="text-sm text-ink-faint">Loading WealthOS AI...</p>
       </div>
     );
   }
