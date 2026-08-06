@@ -40,7 +40,6 @@ export default function HomePage() {
   const { user, loading } = useAuth();
   const router = useRouter();
 
-  // Logged-in visitors skip the marketing page entirely and land on their dashboard.
   useEffect(() => {
     if (!loading && user) {
       router.replace("/dashboard");
