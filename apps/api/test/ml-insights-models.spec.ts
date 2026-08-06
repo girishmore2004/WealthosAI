@@ -1,16 +1,35 @@
 import { AnomalyDetectionModel } from "../src/ai/ml-insights/models/anomaly-detection.model";
 import { CashflowForecastModel } from "../src/ai/ml-insights/models/cashflow-forecast.model";
+import { MetricsForecastModel } from "../src/ai/ml-insights/models/metrics-forecast.model";
 import { DebtRiskModel } from "../src/ai/ml-insights/models/debt-risk.model";
 import { GoalSuccessModel } from "../src/ai/ml-insights/models/goal-success.model";
 import { DriftDetectionModel } from "../src/ai/ml-insights/models/drift-detection.model";
+import { ConceptDriftModel, ForecastActualPair } from "../src/ai/ml-insights/models/concept-drift.model";
+import { FeatureMonitoringModel, MonitoredFeatureWindow } from "../src/ai/ml-insights/models/feature-monitoring.model";
 import { HabitSegmentationModel } from "../src/ai/ml-insights/models/habit-segmentation.model";
-import { ExpenseTransactionPoint, MonthlyPoint } from "../src/ai/ml-insights/features/feature-extraction.service";
+import { BehavioralFeaturesModel } from "../src/ai/ml-insights/models/behavioral-features.model";
+import { buildForecastActualPairs } from "../src/ai/ml-insights/history/concept-drift-pairs.util";
+import { buildFeatureMonitoringWindows } from "../src/ai/ml-insights/features/feature-monitoring-windows.util";
+import { ExpenseTransactionPoint, MonthlyPoint, CategoryExpensePoint } from "../src/ai/ml-insights/features/feature-extraction.service";
 
 describe("AnomalyDetectionModel", () => {
   const model = new AnomalyDetectionModel();
 
-  function makeTxns(categoryId: string, categoryName: string, amounts: number[]): ExpenseTransactionPoint[] {
-    return amounts.map((amount, i) => ({ id: `${categoryId}-${i}`, categoryId, categoryName, amount, spentAt: new Date() }));
+  function makeTxns(
+    categoryId: string,
+    categoryName: string,
+    amounts: number[],
+    opts: { merchant?: (i: number) => string | null; isRecurring?: (i: number) => boolean; spentAt?: (i: number) => Date } = {},
+  ): ExpenseTransactionPoint[] {
+    return amounts.map((amount, i) => ({
+      id: `${categoryId}-${i}`,
+      categoryId,
+      categoryName,
+      amount,
+      spentAt: opts.spentAt ? opts.spentAt(i) : new Date(2026, 0, i + 1),
+      merchant: opts.merchant ? opts.merchant(i) : null,
+      isRecurring: opts.isRecurring ? opts.isRecurring(i) : false,
+    }));
   }
 
   it("flags a transaction far outside its category's typical range", () => {
@@ -29,6 +48,45 @@ describe("AnomalyDetectionModel", () => {
     const txns = makeTxns("rare", "Rare category", [100, 100000]); // only 2 transactions — below MIN_TRANSACTIONS_FOR_BASELINE
     const result = model.detect(txns);
     expect(result.prediction).toEqual([]);
+  });
+
+  it("includes a magnitude-based likely cause for a large outlier", () => {
+    const txns = makeTxns("groceries", "Groceries", [1200, 1100, 1300, 1250, 1150, 1180, 50000]);
+    const result = model.detect(txns);
+    const anomaly = result.prediction.find((a) => a.amount === 50000)!;
+    expect(anomaly.likelyCauses.some((c) => c.includes("x this category's typical"))).toBe(true);
+  });
+
+  it("flags a new-merchant likely cause when the outlier's merchant hasn't appeared before in the category", () => {
+    const txns = makeTxns(
+      "shopping",
+      "Shopping",
+      [1000, 1050, 950, 1020, 980, 40000],
+      { merchant: (i) => (i === 5 ? "BrandNewStore" : "UsualStore") },
+    );
+    const result = model.detect(txns);
+    const anomaly = result.prediction.find((a) => a.amount === 40000)!;
+    expect(anomaly.likelyCauses.some((c) => c.includes('BrandNewStore'))).toBe(true);
+  });
+
+  it("flags a recurring-amount-change likely cause when the outlier is marked recurring", () => {
+    const txns = makeTxns(
+      "subscriptions",
+      "Subscriptions",
+      [500, 500, 500, 500, 500, 15000],
+      { isRecurring: () => true },
+    );
+    const result = model.detect(txns);
+    const anomaly = result.prediction.find((a) => a.amount === 15000)!;
+    expect(anomaly.likelyCauses.some((c) => c.toLowerCase().includes("recurring"))).toBe(true);
+  });
+
+  it("always returns at least one likely cause, even when no specific rule matches", () => {
+    const txns = makeTxns("groceries", "Groceries", [1200, 1100, 1300, 1250, 1150, 1180, 50000]);
+    const result = model.detect(txns);
+    for (const anomaly of result.prediction) {
+      expect(anomaly.likelyCauses.length).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -64,6 +122,76 @@ describe("CashflowForecastModel", () => {
     const result = model.forecast(series);
     expect(result.confidence).toBeLessThan(0.5);
     expect(result.prediction.nextMonthProjectedCashflow).toBe(2000);
+  });
+
+  it("orders quantiles p10 <= p50 <= p90 and centers the 95% CI on the point forecast", () => {
+    const series = makeSeries([1000, 1500, 900, 1700, 1100, 1600]);
+    const result = model.forecast(series);
+    const first = result.prediction.quantileForecast[0];
+    expect(first.p10).toBeLessThanOrEqual(first.p50);
+    expect(first.p50).toBeLessThanOrEqual(first.p90);
+    const ci = result.prediction.confidenceInterval95;
+    expect(ci.lower).toBeLessThanOrEqual(result.prediction.nextMonthProjectedCashflow);
+    expect(ci.upper).toBeGreaterThanOrEqual(result.prediction.nextMonthProjectedCashflow);
+  });
+
+  it("surfaces the user's own personalized baseline mean/stdDev", () => {
+    const series = makeSeries([1000, 2000, 3000, 4000, 5000]);
+    const result = model.forecast(series);
+    expect(result.prediction.personalizedBaseline.historicalMean).toBeCloseTo(3000, 0);
+    expect(result.prediction.personalizedBaseline.historicalStdDev).toBeGreaterThan(0);
+  });
+
+  it("does not report seasonality with fewer than 24 months of history", () => {
+    const series = makeSeries([1000, 1500, 900, 1700, 1100, 1600]);
+    const result = model.forecast(series);
+    expect(result.prediction.decomposition.hasSeasonality).toBe(false);
+    expect(result.prediction.decomposition.seasonalAdjustmentThisMonth).toBe(0);
+  });
+});
+
+describe("MetricsForecastModel", () => {
+  const model = new MetricsForecastModel();
+
+  function makeSeries(rows: { income: number; expenses: number }[]): MonthlyPoint[] {
+    return rows.map((r, i) => ({
+      month: `2026-${String((i % 12) + 1).padStart(2, "0")}`,
+      totalExpenses: r.expenses,
+      totalIncome: r.income,
+      netCashflow: r.income - r.expenses,
+      savingsRate: r.income > 0 ? (r.income - r.expenses) / r.income : 0,
+    }));
+  }
+
+  it("forecasts income and expenses independently, each with ordered quantiles", () => {
+    const series = makeSeries([
+      { income: 50000, expenses: 30000 },
+      { income: 52000, expenses: 31000 },
+      { income: 54000, expenses: 29000 },
+      { income: 56000, expenses: 32000 },
+      { income: 58000, expenses: 30000 },
+    ]);
+    const result = model.forecast(series);
+    expect(result.prediction.insufficientHistory).toBe(false);
+    for (const metric of [result.prediction.income, result.prediction.expenses, result.prediction.savingsRate]) {
+      const first = metric.quantileForecast[0];
+      expect(first.p10).toBeLessThanOrEqual(first.p50);
+      expect(first.p50).toBeLessThanOrEqual(first.p90);
+    }
+    // Income is rising and expenses are roughly flat — income's trend slope should be
+    // clearly positive, distinctly different information from the combined cashflow
+    // number alone.
+    expect(result.prediction.income.trendSlopePerMonth).toBeGreaterThan(0);
+  });
+
+  it("flags insufficient history and returns flat carry-forward estimates with too few months", () => {
+    const series = makeSeries([
+      { income: 50000, expenses: 30000 },
+      { income: 51000, expenses: 29000 },
+    ]);
+    const result = model.forecast(series);
+    expect(result.prediction.insufficientHistory).toBe(true);
+    expect(result.confidence).toBeLessThan(0.5);
   });
 });
 
@@ -255,5 +383,191 @@ describe("HabitSegmentationModel", () => {
     const result = model.segment(series);
     expect(result.confidence).toBe(0);
     expect(result.prediction).toEqual([]);
+  });
+});
+
+describe("ConceptDriftModel", () => {
+  const model = new ConceptDriftModel();
+
+  function makePairs(errors: number[]): ForecastActualPair[] {
+    return errors.map((err, i) => ({
+      targetMonth: `2026-${String(i + 1).padStart(2, "0")}`,
+      predictedNetCashflow: 1000,
+      actualNetCashflow: 1000 - err, // err is the absolute forecast error for that month
+    }));
+  }
+
+  it("reports not monitored with fewer than 6 resolved forecast-actual pairs", () => {
+    const result = model.detect(makePairs([100, 100, 100]));
+    expect(result.prediction.monitored).toBe(false);
+    expect(result.prediction.driftDetected).toBe(false);
+  });
+
+  it("detects degrading accuracy when recent forecast error is clearly worse than prior error", () => {
+    const result = model.detect(makePairs([50, 50, 50, 800, 800, 800]));
+    expect(result.prediction.monitored).toBe(true);
+    expect(result.prediction.driftDetected).toBe(true);
+    expect(result.prediction.direction).toBe("degrading");
+  });
+
+  it("detects improving accuracy when recent forecast error is clearly better than prior error", () => {
+    const result = model.detect(makePairs([800, 800, 800, 50, 50, 50]));
+    expect(result.prediction.direction).toBe("improving");
+  });
+
+  it("finds no drift when forecast error is stable across windows", () => {
+    const result = model.detect(makePairs([100, 105, 95, 100, 98, 102]));
+    expect(result.prediction.driftDetected).toBe(false);
+    expect(result.prediction.direction).toBe("stable");
+  });
+});
+
+describe("buildForecastActualPairs", () => {
+  function makeMonthlySeries(months: Record<string, number>): MonthlyPoint[] {
+    return Object.entries(months).map(([month, netCashflow]) => ({
+      month,
+      totalExpenses: 1000,
+      totalIncome: 1000 + netCashflow,
+      netCashflow,
+      savingsRate: 0.1,
+    }));
+  }
+
+  it("pairs a past run's forecast against the now-resolved actual for its target month", () => {
+    const runs = [{ createdAt: new Date(2026, 0, 15), predictedNextMonthCashflow: 500 }]; // targets 2026-02
+    const monthlySeries = makeMonthlySeries({ "2026-02": 450 });
+    const pairs = buildForecastActualPairs(runs, monthlySeries);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].targetMonth).toBe("2026-02");
+    expect(pairs[0].predictedNetCashflow).toBe(500);
+    expect(pairs[0].actualNetCashflow).toBe(450);
+  });
+
+  it("skips a run whose target month hasn't resolved yet (no matching actual data)", () => {
+    const runs = [{ createdAt: new Date(2026, 0, 15), predictedNextMonthCashflow: 500 }];
+    const pairs = buildForecastActualPairs(runs, []);
+    expect(pairs).toHaveLength(0);
+  });
+
+  it("keeps only the latest run for a given target month when duplicates exist", () => {
+    const runs = [
+      { createdAt: new Date(2026, 0, 20), predictedNextMonthCashflow: 700 }, // more recent, targets 2026-02
+      { createdAt: new Date(2026, 0, 5), predictedNextMonthCashflow: 500 }, // earlier, also targets 2026-02
+    ];
+    const monthlySeries = makeMonthlySeries({ "2026-02": 450 });
+    const pairs = buildForecastActualPairs(runs, monthlySeries);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].predictedNetCashflow).toBe(700);
+  });
+});
+
+describe("FeatureMonitoringModel", () => {
+  const model = new FeatureMonitoringModel();
+
+  function makeWindow(name: string, reference: number[], current: number[]): MonitoredFeatureWindow {
+    return { name, reference, current };
+  }
+
+  it("reports not monitored when there isn't enough data per window", () => {
+    const result = model.detect([makeWindow("tiny", [1, 2], [1, 2])]);
+    expect(result.prediction.monitored).toBe(false);
+  });
+
+  it("finds no shift when reference and current windows match", () => {
+    const values = Array.from({ length: 20 }, (_, i) => i);
+    const result = model.detect([makeWindow("stable", values, values)]);
+    expect(result.prediction.anyShiftDetected).toBe(false);
+    expect(result.prediction.features[0].severity).toBe("none");
+  });
+
+  it("flags a significant shift when the current window has moved entirely outside the reference range", () => {
+    const reference = Array.from({ length: 20 }, (_, i) => i);
+    const current = Array.from({ length: 20 }, (_, i) => i + 1000);
+    const result = model.detect([makeWindow("shifted", reference, current)]);
+    expect(result.prediction.anyShiftDetected).toBe(true);
+    expect(result.prediction.features[0].severity).toBe("significant");
+  });
+});
+
+describe("buildFeatureMonitoringWindows", () => {
+  function makeTxn(categoryId: string, amount: number, spentAt: Date): ExpenseTransactionPoint {
+    return { id: `${categoryId}-${spentAt.getTime()}`, categoryId, categoryName: categoryId, amount, spentAt };
+  }
+
+  it("splits transactions into a reference window (older) and a current window (most recent months)", () => {
+    const monthlySeries: MonthlyPoint[] = [
+      { month: "2026-01", totalExpenses: 100, totalIncome: 200, netCashflow: 100, savingsRate: 0.5 },
+      { month: "2026-02", totalExpenses: 100, totalIncome: 200, netCashflow: 100, savingsRate: 0.5 },
+      { month: "2026-03", totalExpenses: 100, totalIncome: 200, netCashflow: 100, savingsRate: 0.5 },
+      { month: "2026-04", totalExpenses: 100, totalIncome: 200, netCashflow: 100, savingsRate: 0.5 },
+    ];
+    const transactions = [
+      makeTxn("groceries", 100, new Date(2026, 0, 5)),
+      makeTxn("groceries", 110, new Date(2026, 1, 5)),
+      makeTxn("groceries", 900, new Date(2026, 3, 5)), // in the "current" (last 3 months) window
+    ];
+    const windows = buildFeatureMonitoringWindows(transactions, monthlySeries);
+    const amountWindow = windows.find((w) => w.name.includes("Avg transaction amount"))!;
+    expect(amountWindow.current).toContain(900);
+    expect(amountWindow.reference).not.toContain(900);
+  });
+
+  it("returns an empty list when there are no active months yet", () => {
+    expect(buildFeatureMonitoringWindows([], [])).toEqual([]);
+  });
+});
+
+describe("BehavioralFeaturesModel", () => {
+  const model = new BehavioralFeaturesModel();
+
+  function makeMonthlySeries(savingsRates: number[]): MonthlyPoint[] {
+    return savingsRates.map((savingsRate, i) => ({
+      month: `2026-${String(i + 1).padStart(2, "0")}`,
+      totalExpenses: 40000,
+      totalIncome: 50000,
+      netCashflow: 50000 * savingsRate,
+      savingsRate,
+    }));
+  }
+
+  it("classifies a consistently high, low-volatility saver as disciplined_saver", () => {
+    const result = model.extract({
+      monthlySeries: makeMonthlySeries([0.3, 0.31, 0.29, 0.3, 0.3]),
+      transactions: [],
+      categorySeries: [],
+    });
+    expect(result.prediction.cluster).toBe("disciplined_saver");
+  });
+
+  it("classifies negative average savings as overspender", () => {
+    const result = model.extract({
+      monthlySeries: makeMonthlySeries([-0.1, -0.2, -0.05, -0.15, -0.1]),
+      transactions: [],
+      categorySeries: [],
+    });
+    expect(result.prediction.cluster).toBe("overspender");
+  });
+
+  it("classifies highly concentrated recent spending as concentrated_spender", () => {
+    const categorySeries: CategoryExpensePoint[] = [
+      { categoryId: "rent", categoryName: "Rent", month: "2026-03", total: 38000 },
+      { categoryId: "misc", categoryName: "Misc", month: "2026-03", total: 2000 },
+      { categoryId: "rent", categoryName: "Rent", month: "2026-04", total: 38000 },
+      { categoryId: "misc", categoryName: "Misc", month: "2026-04", total: 2000 },
+      { categoryId: "rent", categoryName: "Rent", month: "2026-05", total: 38000 },
+      { categoryId: "misc", categoryName: "Misc", month: "2026-05", total: 2000 },
+    ];
+    const result = model.extract({
+      monthlySeries: makeMonthlySeries([0.1, 0.12, 0.1, 0.11, 0.1]),
+      transactions: [],
+      categorySeries,
+    });
+    expect(result.prediction.cluster).toBe("concentrated_spender");
+    expect(result.prediction.features.topCategoryName).toBe("Rent");
+  });
+
+  it("returns 0 confidence with too little history", () => {
+    const result = model.extract({ monthlySeries: makeMonthlySeries([0.1, 0.1]), transactions: [], categorySeries: [] });
+    expect(result.confidence).toBe(0);
   });
 });
