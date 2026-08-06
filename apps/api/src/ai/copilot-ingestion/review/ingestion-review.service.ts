@@ -62,6 +62,12 @@ export class IngestionReviewService {
         spentAt: edits.spentAt,
         notes: edits.notes,
       });
+      // expenses.update() atomically verifies ownership via updateMany before
+      // re-fetching the row with findUnique(), which is typed as possibly null
+      // (e.g. a concurrent delete between the two calls) — guard rather than assume.
+      if (!updated) {
+        throw new NotFoundException("Expense not found");
+      }
       await this.recordLearningFeedback(userId, item, categoryId);
       return this.prisma.client.ingestionReviewItem.update({
         where: { id: itemId },
