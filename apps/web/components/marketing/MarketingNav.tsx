@@ -1,42 +1,38 @@
-const steps: { number: string; title: string; description: string }[] = [
-  {
-    number: "01",
-    title: "Sign in with your email",
-    description:
-      "No passwords to create or remember. Enter your email, we send a 6-digit one-time code, and you're in.",
-  },
-  {
-    number: "02",
-    title: "Add what you already have",
-    description:
-      "Income, expenses, investments, loans, insurance, property, business, and goals — add as much or as little as you want, whenever you want.",
-  },
-  {
-    number: "03",
-    title: "See your full picture",
-    description:
-      "A live net worth and health score on your dashboard, deterministic alerts, and — whenever you want a deeper answer — AI Search, Coach, and Scenario Studio.",
-  },
-];
+import Link from "next/link";
 
-export function HowItWorks() {
+export function MarketingNav() {
   return (
-    <section id="how-it-works" className="border-y border-line bg-surface py-16">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <div className="mb-10 max-w-2xl">
-          <p className="text-xs uppercase tracking-wide text-marigold-600">How it works</p>
-          <h2 className="mt-2 font-display text-3xl text-ink">Up and running in a few minutes</h2>
-        </div>
-        <div className="grid gap-8 sm:grid-cols-3">
-          {steps.map((step) => (
-            <div key={step.number}>
-              <p className="font-display text-3xl text-marigold-500">{step.number}</p>
-              <h3 className="mt-2 font-display text-lg text-ink">{step.title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-ink-soft">{step.description}</p>
-            </div>
-          ))}
+    <header className="border-b border-line bg-paper/80 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6">
+        <Link href="/" className="font-display text-xl text-ink">
+          WealthOS <span className="text-marigold-500">AI</span>
+        </Link>
+        <nav className="hidden items-center gap-8 text-sm text-ink-soft md:flex">
+          <a href="#modules" className="hover:text-ink">
+            Modules
+          </a>
+          <a href="#ai" className="hover:text-ink">
+            AI features
+          </a>
+          <a href="#how-it-works" className="hover:text-ink">
+            How it works
+          </a>
+          <a href="#security" className="hover:text-ink">
+            Security
+          </a>
+        </nav>
+        <div className="flex items-center gap-3">
+          <Link href="/login" className="hidden text-sm font-medium text-ink-soft hover:text-ink sm:block">
+            Log in
+          </Link>
+          <Link
+            href="/login"
+            className="rounded-sm bg-marigold-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98]"
+          >
+            Get started
+          </Link>
         </div>
       </div>
-    </section>
+    </header>
   );
 }
