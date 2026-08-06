@@ -7,7 +7,7 @@ import { EmbeddingService, EMBEDDING_MODEL_VERSION } from "../embedding/embeddin
 import { AiQueueService } from "../../ops/ai-queue.service";
 import { ReportsService } from "../../../reports/reports.service";
 import { DashboardService } from "../../../dashboard/dashboard.service";
-import { RELATED_SOURCE_EXPANSION_LIMIT, SOURCE_PRIORITY } from "../rag.constants";
+import { MAX_RELATED_SOURCE_EXPANSIONS, SOURCE_PRIORITY } from "../rag.constants";
 
 interface SourceDocument {
   sourceType: AiSourceType;
@@ -308,7 +308,7 @@ function computeRelatedSourceIds(sources: SourceDocument[]): Map<string, string[
     const links: string[] = [];
 
     for (const other of documents) {
-      if (links.length >= RELATED_SOURCE_EXPANSION_LIMIT) break;
+      if (links.length >= MAX_RELATED_SOURCE_EXPANSIONS) break;
       if (other.sourceId === doc.sourceId) continue;
       const otherTags = new Set(Array.isArray(other.metadata.tags) ? (other.metadata.tags as string[]) : []);
       const sameCategory = Boolean(docCategory) && other.metadata.category === docCategory;
