@@ -1,3 +1,53 @@
+// "use client";
+
+// import { useEffect, useState } from "react";
+// import type { DashboardSummaryDTO } from "@wealthos/types";
+// import { api, ApiError } from "@/lib/api-client";
+// import { HealthScoreCard } from "@/components/dashboard/HealthScoreCard";
+// import { NetWorthCard } from "@/components/dashboard/NetWorthCard";
+// import { InsightList } from "@/components/dashboard/InsightList";
+// import { MlInsightsPanel } from "@/components/dashboard/MlInsightsPanel";
+
+// export default function DashboardPage() {
+//   const [summary, setSummary] = useState<DashboardSummaryDTO | null>(null);
+//   const [error, setError] = useState<string | null>(null);
+
+//   useEffect(() => {
+//     api.dashboard
+//       .summary()
+//       .then(setSummary)
+//       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load your dashboard."));
+//   }, []);
+
+//   if (error) {
+//     return <p className="text-sm text-loss">{error}</p>;
+//   }
+
+//   if (!summary) {
+//     return <p className="text-sm text-ink-faint">Loading your numbers…</p>;
+//   }
+
+//   return (
+//     <div className="space-y-6">
+//       <div>
+//         <h1 className="font-display text-2xl text-ink">Home</h1>
+//         <p className="text-sm text-ink-soft">Your daily financial health, in one place.</p>
+//       </div>
+//       <div className="grid gap-6 md:grid-cols-2">
+//         <HealthScoreCard score={summary.healthScore} />
+//         <NetWorthCard summary={summary} />
+//       </div>
+//       <InsightList insights={summary.insights} />
+//       <MlInsightsPanel />
+//     </div>
+//   );
+// }
+
+
+
+
+
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -20,7 +70,9 @@ export default function DashboardPage() {
   }, []);
 
   if (error) {
-    return <p className="text-sm text-loss">{error}</p>;
+    return (
+      <div className="panel border-loss/30 bg-loss/5 p-5 text-sm text-loss">{error}</div>
+    );
   }
 
   if (!summary) {
@@ -28,12 +80,13 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="font-display text-2xl text-ink">Home</h1>
-        <p className="text-sm text-ink-soft">Your daily financial health, in one place.</p>
+        <p className="stat-label mb-1">Dashboard</p>
+        <h1 className="font-display text-2xl text-ink sm:text-3xl">Home</h1>
+        <p className="mt-1 text-sm text-ink-soft">Your daily financial health, in one place.</p>
       </div>
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2">
         <HealthScoreCard score={summary.healthScore} />
         <NetWorthCard summary={summary} />
       </div>
