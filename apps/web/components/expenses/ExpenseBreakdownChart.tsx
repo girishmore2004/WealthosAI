@@ -68,9 +68,9 @@ export function ExpenseBreakdownChart({ month, refreshKey }: { month?: string; r
             />
             <Tooltip
               formatter={(value: number) => formatINR(value)}
-              contentStyle={{ fontSize: 12, borderRadius: 4, borderColor: "#E4E0D4" }}
+              contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: "#E9E5D8", boxShadow: "0 8px 24px -12px rgba(21,30,46,0.2)" }}
             />
-            <Bar dataKey="total" radius={[0, 3, 3, 0]}>
+            <Bar dataKey="total" radius={[0, 4, 4, 0]}>
               {chartData.map((_, i) => (
                 <Cell key={i} fill={BAR_COLORS[i % BAR_COLORS.length]} />
               ))}
