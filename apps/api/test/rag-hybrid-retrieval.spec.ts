@@ -29,7 +29,8 @@ function row(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-function makeService(findManyImpl: (args: unknown) => unknown) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeService(findManyImpl: (args: any) => unknown) {
   const mockPrisma = { client: { aiEmbeddingChunk: { findMany: jest.fn(findManyImpl) } } };
   const mockEmbedding = { embed: jest.fn(async (text: string) => embeddingFor(text)) };
   const mockKeywordScorer = { score: jest.fn((_query: string, texts: string[]) => texts.map(() => 0.5)) };
