@@ -42,7 +42,8 @@ export const RECENCY_HALF_LIFE_DAYS = 90;
 // reranking to reach answer synthesis. Reranking is a real (if smaller) model call
 // per search, so TOP_K_RERANKED intentionally stays small — the synthesis prompt only
 // needs the genuinely best few chunks, not everything hybrid search thought was
-// plausible.
+// plausible. These are the "moderate"-complexity defaults; see adaptiveCandidateLimit
+// / adaptiveRerankLimit below for how simple/complex queries scale off them.
 export const TOP_K_CANDIDATES = 20;
 export const TOP_K_RERANKED = 6;
 
@@ -51,3 +52,77 @@ export const TOP_K_RERANKED = 6;
 // found" fallback rather than always returning *something* just because the
 // candidate list wasn't empty.
 export const MIN_EVIDENCE_SIMILARITY = 0.35;
+
+// "hybrid weight optimization per query type" — factual lookups lean harder on
+// keyword/exact-term matching than an open-ended exploratory question would, while
+// comparative/analytical questions lean a little more on recency (both periods being
+// compared are usually recent) and priority (trustworthy, computed sources like
+// Reports matter more when the answer requires synthesis, not just a lookup).
+// `exploratory` is deliberately identical to RETRIEVAL_WEIGHTS — see
+// QueryRewriteService's heuristicComplexity() fallback comment for why exploratory is
+// the safe default when there's no real classification to go on.
+export const RETRIEVAL_WEIGHT_PROFILES: Record<QueryType, typeof RETRIEVAL_WEIGHTS> = {
+  exploratory: RETRIEVAL_WEIGHTS,
+  factual: { semantic: 0.45, keyword: 0.4, recency: 0.1, priority: 0.05 },
+  comparative: { semantic: 0.45, keyword: 0.2, recency: 0.25, priority: 0.1 },
+  analytical: { semantic: 0.45, keyword: 0.2, recency: 0.15, priority: 0.2 },
+};
+
+export type QueryType = "factual" | "comparative" | "analytical" | "exploratory";
+export type QueryComplexity = "simple" | "moderate" | "complex";
+
+// "adaptive top-k based on query complexity" — a simple one-fact lookup doesn't need
+// as wide a candidate net as a compound/multi-hop question that has to synthesize
+// across several sources, so both the retrieval candidate limit and the post-rerank
+// limit scale with the classified complexity rather than staying fixed at the
+// TOP_K_* defaults for every query.
+export const MIN_CANDIDATES = 10;
+export const MAX_CANDIDATES = 40;
+export const MIN_RERANKED = 3;
+export const MAX_RERANKED = 10;
+
+const CANDIDATE_LIMIT_BY_COMPLEXITY: Record<QueryComplexity, number> = {
+  simple: MIN_CANDIDATES,
+  moderate: TOP_K_CANDIDATES,
+  complex: MAX_CANDIDATES,
+};
+
+const RERANK_LIMIT_BY_COMPLEXITY: Record<QueryComplexity, number> = {
+  simple: MIN_RERANKED,
+  moderate: TOP_K_RERANKED,
+  complex: MAX_RERANKED,
+};
+
+export function adaptiveCandidateLimit(complexity: QueryComplexity): number {
+  return CANDIDATE_LIMIT_BY_COMPLEXITY[complexity];
+}
+
+export function adaptiveRerankLimit(complexity: QueryComplexity): number {
+  return RERANK_LIMIT_BY_COMPLEXITY[complexity];
+}
+
+// How many of the top-scoring (by combinedScore) candidates are ever actually sent to
+// the LLM reranker, regardless of how wide adaptiveCandidateLimit let the pool get —
+// bounds Layer 4's model call cost independently of Layer 1-3's net width.
+export const MAX_RERANK_INPUT_ITEMS = 25;
+
+// Layer 3 (relationship expansion) budgets — how many sibling (same-source, nearby
+// chunkIndex) and related-source chunks may be pulled in around the seed matches, and
+// how many chunk positions away from a seed still counts as a "sibling".
+export const MAX_SIBLING_EXPANSIONS = 6;
+export const MAX_RELATED_SOURCE_EXPANSIONS = 6;
+export const SIBLING_EXPANSION_RADIUS = 1;
+
+// Jaccard similarity (on tokenized text) at/above which a chunk is considered a
+// near-duplicate of one already kept and is dropped — see suppressNearDuplicates().
+export const NEAR_DUPLICATE_JACCARD_THRESHOLD = 0.82;
+
+// Bucket thresholds for citationConfidence()'s blended (combinedScore + rerank
+// position) score — "high" needs both a strong retrieval score AND an early rerank
+// position; "medium" tolerates being weaker on one of those; anything below "medium"
+// is surfaced as "low" rather than silently omitted, since the citation is still real
+// evidence even if the confidence in it is lower.
+export const CITATION_CONFIDENCE_BANDS = {
+  high: 0.7,
+  medium: 0.45,
+};
