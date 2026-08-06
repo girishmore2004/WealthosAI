@@ -6,17 +6,26 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
 import { MlInsightsService } from "./ml-insights.service";
 
-// No AiGatewayService involvement anywhere in this controller's dependency chain —
-// every model behind it is synchronous, deterministic-given-its-inputs statistical
-// computation, so there's no Groq quota concern and the rate limit here is generous
-// compared to the AI-gateway-backed routes elsewhere in apps/api/src/ai/.
+// UPDATED (Phase 14.1 — advanced probabilistic models): `summary` now does have one
+// AiGatewayService call in its dependency chain — AnomalyExplanationService, which
+// composes a natural-language "likely cause" narrative for flagged anomalies (see
+// explanation/anomaly-explanation.service.ts). That call is marked `cacheable: true`
+// (same facts → same explanation, so a dashboard reload with unchanged anomalies
+// costs no additional Groq quota) and always falls back to a deterministic,
+// rule-based narrative if the model is unavailable or fails grounding verification —
+// `summary` itself never throws because of it. Every OTHER model behind this
+// controller remains synchronous, deterministic-given-its-inputs statistical
+// computation (OLS regression, Bayesian updating, MAD/z-scores, PSI, Welch's z-test).
+// The rate limit on `summary` is lowered from the fully-deterministic-era 60/hour to
+// 30/hour to reflect the new (cached, fallback-safe, but real) Groq dependency;
+// `history` stays at 60/hour since it only ever reads back already-computed rows.
 @UseGuards(SessionAuthGuard, RateLimitGuard)
 @Controller("ml-insights")
 export class MlInsightsController {
   constructor(private mlInsights: MlInsightsService) {}
 
   @Get("summary")
-  @RateLimit(60, 3600)
+  @RateLimit(30, 3600)
   async summary(@CurrentUser() user: User) {
     return this.mlInsights.summary(user.id);
   }
