@@ -53,7 +53,6 @@ describe("SensitivityAnalysisService", () => {
 
   it("the return-rate sweep uses the engine's month-by-month path with the baseline's real loans, not the flat-debt fallback", async () => {
     const baseRun = makeBaseRun({
-      // @ts-expect-error loans is an optional field added to the baseline DTO
       loans: [{ id: "loan-1", principal: 200000, annualRatePercent: 8.5, emi: 4500 }],
     });
     const mockSimulator = { run: jest.fn().mockResolvedValue(baseRun) };
