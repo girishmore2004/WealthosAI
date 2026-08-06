@@ -97,7 +97,7 @@ describe("InsuranceService.gapAnalysis", () => {
 
       expect(ci).toBeDefined();
       expect(ci.hasCoverage).toBe(false);
-      expect(Number(ci.recommendedCoverage)).toBeCloseTo(6000000, 0); // 12L * 0.5
+      expect(Number(ci.recommendedCoverage)).toBeCloseTo(600000, 0); // 12L annual * 0.5
     });
 
     it("does not include a HOME gap entry for a user who owns no property", async () => {
