@@ -47,8 +47,6 @@ import type {
   AiJobStatusDTO,
   AgenticCoachResultDTO,
   AgenticCoachRunDTO,
-  ScenarioStudioResultDTO,
-  ScenarioStudioRunDTO,
   MlInsightsSummaryDTO,
   IngestionBatchDTO,
   IngestionBatchSummaryDTO,
@@ -187,11 +185,28 @@ export const api = {
   },
   goals: {
     list: () => request<GoalDTO[]>("/goals"),
-    create: (data: { name: string; targetAmount: number; targetDate: string; currentAmount?: number; priority?: string }) =>
-      request<GoalDTO>("/goals", { method: "POST", body: JSON.stringify(data) }),
+    create: (data: {
+      type: string;
+      name: string;
+      targetAmount: number;
+      targetDate: string;
+      currentAmount?: number;
+      monthlyContribution?: number;
+      assumedAnnualReturnPercent?: number;
+    }) => request<GoalDTO>("/goals", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/goals/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ name: string; targetAmount: number; targetDate: string; currentAmount: number; priority: string }>) =>
-      request<GoalDTO>(`/goals/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    update: (
+      id: string,
+      data: Partial<{
+        type: string;
+        name: string;
+        targetAmount: number;
+        targetDate: string;
+        currentAmount: number;
+        monthlyContribution: number;
+        assumedAnnualReturnPercent: number;
+      }>,
+    ) => request<GoalDTO>(`/goals/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   tax: {
     deductions: () => request<TaxDeductionDTO[]>("/tax/deductions"),
