@@ -4,8 +4,16 @@
 
 html,
 body {
-  background-color: #f6f4ee;
+  background-color: #f7f5ef;
   color: #151e2e;
+}
+
+@layer base {
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.01em;
+  }
 }
 
 @layer utilities {
@@ -18,13 +26,116 @@ body {
   }
 
   .ledger-rule {
-    border-bottom: 1px solid #e4e0d4;
+    border-bottom: 1px solid #e9e5d8;
+  }
+
+  /* Shared surface for every panel: dashboard cards, money-module cards, AI panels. */
+  .panel {
+    border-radius: 0.625rem;
+    border: 1px solid #e9e5d8;
+    background-color: #ffffff;
+    box-shadow: 0 1px 2px rgba(21, 30, 46, 0.04);
+  }
+
+  .panel-hover {
+    transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+  .panel-hover:hover {
+    box-shadow: 0 8px 24px -12px rgba(21, 30, 46, 0.16);
+    border-color: #ddd6c2;
+  }
+
+  /* KPI / stat presentation, used across dashboard + money modules. */
+  .stat-label {
+    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8a93a6;
+  }
+
+  .stat-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    font-weight: 600;
+  }
+
+  /* Chart / visualization frame, so every chart sits inside identical padding + header rhythm. */
+  .chart-frame {
+    border-radius: 0.625rem;
+    border: 1px solid #e9e5d8;
+    background: linear-gradient(180deg, #ffffff 0%, #fdfcf8 100%);
+    padding: 1.25rem;
+  }
+
+  /* Table presentation shared by every data table across modules. */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+  }
+  .data-table thead th {
+    text-align: left;
+    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8a93a6;
+    font-weight: 500;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #e9e5d8;
+  }
+  .data-table tbody td {
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid #f0ede2;
+    color: #151e2e;
+    vertical-align: middle;
+  }
+  .data-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+  .data-table tbody tr:hover {
+    background-color: #fbf9f3;
+  }
+
+  /* Severity badge system used by insights, alerts, ML panels, scenario results. */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .badge-info {
+    background-color: #eef1f6;
+    color: #4b5568;
+  }
+  .badge-warning {
+    background-color: #fdf4e4;
+    color: #b8721c;
+  }
+  .badge-critical {
+    background-color: #fbeae4;
+    color: #b3462c;
+  }
+  .badge-success {
+    background-color: #e7f3ed;
+    color: #2f7d5d;
   }
 }
 
 :focus-visible {
   outline: 2px solid #d98f2b;
   outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background-color: #fdf4e4;
+  color: #151e2e;
 }
 
 @media (prefers-reduced-motion: reduce) {
