@@ -93,7 +93,14 @@ export class ModelRouterService {
       if (!taskDefaultsToLarge && complexity === "high") {
         primary = large;
         reason = "complexity_upgrade";
-      } else if (taskDefaultsToLarge && complexity === "low") {
+      } else if (taskDefaultsToLarge && context.complexityHint === "low") {
+        // Downgrading a large-default task requires an EXPLICIT complexityHint of
+        // "low" from a caller who actually knows the input is simple — unlike the
+        // upgrade branch above, this never fires off the crude inferred heuristic.
+        // inferComplexity() is length-based only, and most generation/summarization
+        // inputs are short by nature (a prompt, not the document being summarized),
+        // so inferring "low" from length alone would downgrade the large-default task
+        // type back to small for the common case, defeating the point of the default.
         primary = small;
         reason = "complexity_downgrade";
       }
