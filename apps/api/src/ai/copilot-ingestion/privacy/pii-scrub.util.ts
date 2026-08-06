@@ -13,8 +13,8 @@
 // display, which was previously stored completely unredacted.
 const PII_SCRUB_RULES: { pattern: RegExp; replacement: string }[] = [
   { pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{1,4}\b/g, replacement: "[REDACTED_CARD]" }, // 13-19 digit card-shaped numbers
+  { pattern: /\b[6-9]\d{9}\b/g, replacement: "[REDACTED_PHONE]" }, // Indian 10-digit mobile numbers — must run before the generic account-number rule below, since a bare 10-digit run also matches that broader pattern
   { pattern: /\b\d{9,18}\b/g, replacement: "[REDACTED_ACCOUNT]" }, // long bare digit runs (account/reference numbers)
-  { pattern: /\b[6-9]\d{9}\b/g, replacement: "[REDACTED_PHONE]" }, // Indian 10-digit mobile numbers
   { pattern: /[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/g, replacement: "[REDACTED_EMAIL]" },
   { pattern: /\b[A-Z]{5}\d{4}[A-Z]\b/g, replacement: "[REDACTED_PAN]" }, // Indian PAN format
 ];
