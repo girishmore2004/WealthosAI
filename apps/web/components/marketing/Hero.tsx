@@ -22,7 +22,7 @@ export function Hero() {
           >
             Get started — it&apos;s free
           </Link>
-          <a
+          
             href="#how-it-works"
             className="w-full rounded-sm border border-line bg-surface px-6 py-3 text-sm font-medium text-ink transition-colors hover:border-ink-faint hover:bg-paper sm:w-auto"
           >
