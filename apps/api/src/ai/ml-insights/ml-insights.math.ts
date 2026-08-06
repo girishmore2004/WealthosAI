@@ -77,7 +77,18 @@ export function medianAbsoluteDeviation(values: number[]): { median: number; mad
   const sorted = [...values].sort((a, b) => a - b);
   const median = percentile(sorted, 0.5);
   const deviations = sorted.map((v) => Math.abs(v - median));
-  const mad = percentile([...deviations].sort((a, b) => a - b), 0.5) * 1.4826;
+  let mad = percentile([...deviations].sort((a, b) => a - b), 0.5) * 1.4826;
+  // Degenerate case: when a majority of values sit exactly at the median (e.g. a
+  // stable recurring amount with one sharp spike), the *median* of deviations is 0
+  // even though the data clearly isn't uniform — that 0 would otherwise silently
+  // disable outlier detection via modifiedZScore's zero-MAD guard. Fall back to the
+  // *mean* absolute deviation in that case, which the spike still pulls above 0.
+  // Genuinely uniform data (every deviation is 0) leaves meanDeviation at 0 too, so
+  // this doesn't change that case at all.
+  if (mad === 0) {
+    const meanDeviation = deviations.reduce((sum, d) => sum + d, 0) / deviations.length;
+    if (meanDeviation > 0) mad = meanDeviation;
+  }
   return { median, mad };
 }
 
