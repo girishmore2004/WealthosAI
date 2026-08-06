@@ -44,12 +44,18 @@ export class RerankingService {
     }
 
     // Regardless of how wide the candidate pool got (adaptive top-k can go up to
-    // MAX_CANDIDATES, plus Layer 3 expansions on top of that), only the top-scoring
-    // MAX_RERANK_INPUT_ITEMS by combinedScore are ever sent to the LLM reranker —
-    // bounds this one real model call's latency/token cost independently of how wide
+    // MAX_CANDIDATES, plus Layer 3 expansions on top of that), only the first
+    // MAX_RERANK_INPUT_ITEMS candidates are ever sent to the LLM reranker — bounds
+    // this one real model call's latency/token cost independently of how wide
     // earlier layers cast their net. The remainder still participates in the
     // fallback ordering below if reranking itself is unavailable.
-    const rerankInput = [...candidates].sort((a, b) => b.combinedScore - a.combinedScore).slice(0, MAX_RERANK_INPUT_ITEMS);
+    //
+    // Deliberately NOT re-sorted by combinedScore here: the model's orderedIndices
+    // response refers to positions in whatever array we send it, so re-sorting
+    // `rerankInput` after computing it (or sorting it before sending) would make our
+    // own index bookkeeping diverge from the model's — the caller is expected to hand
+    // candidates in through already in the order that matters.
+    const rerankInput = candidates.slice(0, MAX_RERANK_INPUT_ITEMS);
 
     try {
       const items = rerankInput.map((c) => truncate(`[${c.sourceType}] ${c.text}`, MAX_CHUNK_CHARS_FOR_RERANK));
