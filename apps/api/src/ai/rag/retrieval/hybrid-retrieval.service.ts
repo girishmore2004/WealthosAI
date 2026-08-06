@@ -150,12 +150,20 @@ export class HybridRetrievalService {
    * decide whether to skip generation entirely rather than answer from weak matches.
    * Deliberately checks semanticScore only, not combinedScore — a chunk that's
    * recent/high-priority but not actually similar to the query shouldn't count as
-   * "evidence found" just because those other signals inflated its combined score,
-   * and a Layer-3 expansion chunk (see expandWithRelationships) legitimately earns
-   * its place in the candidate pool without necessarily being independently similar
-   * to the query text itself. */
+   * "evidence found" just because those other signals inflated its combined score.
+   *
+   * Only counts seed chunks (chunks retrieved directly via semantic/keyword search
+   * against the query) — a Layer-3 expansion chunk (sibling/related_source; see
+   * expandWithRelationships) was pulled into the pool via a *relationship* to a seed,
+   * not because it's independently similar to the query text itself, so a
+   * high-scoring expansion chunk alone must not count as evidence that the corpus
+   * actually answers the question. Chunks with no expansionReason set at all (e.g.
+   * plain scored chunks not produced through the seed/expansion pipeline) are treated
+   * like seeds and do count. */
   hasEvidence(scoredChunks: ScoredChunk[]): boolean {
-    return scoredChunks.some((c) => c.semanticScore >= MIN_EVIDENCE_SIMILARITY);
+    return scoredChunks.some(
+      (c) => (c.expansionReason === undefined || c.expansionReason === "seed") && c.semanticScore >= MIN_EVIDENCE_SIMILARITY,
+    );
   }
 
   private scoreChunk(
