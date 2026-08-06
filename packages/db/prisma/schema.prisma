@@ -1269,17 +1269,24 @@ model ScenarioStudioRun {
 // here.
 
 model MlInsightRun {
-  id                  String   @id @default(cuid())
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId              String
-  anomalyCount        Int
-  cashflowStressRisk  Boolean
-  debtRiskScore       Int
-  debtRiskTier        String
-  driftDetected       Boolean
-  driftDirection      String
-  summary             Json // full MlInsightsSummary snapshot, for the history view
-  createdAt           DateTime @default(now())
+  id                    String   @id @default(cuid())
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                String
+  anomalyCount          Int
+  cashflowStressRisk    Boolean
+  debtRiskScore         Int
+  debtRiskTier          String
+  driftDetected         Boolean
+  driftDirection        String
+  // Phase 14.1 — advanced probabilistic models: two additive summary columns so
+  // history rows can be filtered/queried (e.g. "how often has concept drift fired
+  // this year") without deserializing the full `summary` JSON blob, matching the
+  // existing driftDetected/cashflowStressRisk pattern above rather than introducing a
+  // different convention for the new signals.
+  conceptDriftDetected  Boolean  @default(false)
+  featureShiftDetected  Boolean  @default(false)
+  summary               Json // full MlInsightsSummary snapshot, for the history view
+  createdAt             DateTime @default(now())
 
   @@index([userId, createdAt])
 }
