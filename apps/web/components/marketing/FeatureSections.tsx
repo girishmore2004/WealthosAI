@@ -15,7 +15,7 @@ const planningFeatures: { title: string; description: string }[] = [
   { title: "Dashboard", description: "Net worth, cashflow, and a rules-based financial health score at a glance." },
   { title: "Reports", description: "Monthly and yearly summaries, computed server-side, with CSV export." },
   { title: "Alerts", description: "A deterministic, explainable rules engine for renewals, EMIs, overspending, and more." },
-  { title: "What-If Simulator", description: "Model SIP increases, loan prepayment, retirement-age shifts, and more — before you commit." },
+  { title: "What-If Simulator", description: "Model SIP increases, loan prepayment, retirement-age shifts, and more - before you commit." },
 ];
 
 function ModuleGrid({ items }: { items: { title: string; description: string }[] }) {
@@ -45,7 +45,7 @@ export function ModulesSection() {
       <ModuleGrid items={moneyModules} />
       <div className="mt-10 mb-4">
         <p className="text-xs uppercase tracking-wide text-marigold-600">Planning & analytics</p>
-        <h3 className="mt-2 font-display text-2xl text-ink">See where you stand, and where you&apos;re headed</h3>
+        <h3 className="mt-2 font-display text-2xl text-ink">See where you stand, and where you're headed</h3>
       </div>
       <ModuleGrid items={planningFeatures} />
     </section>
