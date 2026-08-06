@@ -72,10 +72,14 @@ export class DocumentOcrHandler implements OnModuleInit {
       }
 
       // Best-effort status update — if this itself fails, don't let it mask the
-      // original OCR error being rethrown below.
-      await this.prisma.client.document
-        .update({ where: { id: documentId }, data: { ocrStatus: "FAILED" } })
-        .catch(() => undefined);
+      // original OCR error being rethrown below. Wrapped in try/catch (rather than
+      // chaining .catch() directly onto the call) so this stays best-effort even if
+      // the underlying call doesn't return a real promise (e.g. a test double).
+      try {
+        await this.prisma.client.document.update({ where: { id: documentId }, data: { ocrStatus: "FAILED" } });
+      } catch {
+        // Swallowed intentionally — see comment above.
+      }
 
       // Rethrown (not swallowed) so AiQueueService's own retry (3 attempts, exponential
       // backoff — see enqueue()'s config) and AiJob-level failure logging still see a
