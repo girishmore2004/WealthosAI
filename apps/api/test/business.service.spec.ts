@@ -101,7 +101,7 @@ describe("BusinessService update/remove flows (atomic ownership hardening)", () 
         where: { id: "b1", userId: "user-1" },
         data: { name: "Renamed Studio", startedAt: undefined },
       });
-      expect(result.name).toBe("Renamed Studio");
+      expect(result!.name).toBe("Renamed Studio");
     });
 
     it("converts a provided startedAt string into a real Date before writing", async () => {
@@ -153,7 +153,7 @@ describe("BusinessService update/remove flows (atomic ownership hardening)", () 
         where: { id: "t1", business: { userId: "user-1" } },
         data: { amount: 5000, occurredAt: undefined },
       });
-      expect(result.amount).toBe(5000);
+      expect(result!.amount).toBe(5000);
     });
 
     it("throws NotFoundException for a transaction whose business belongs to someone else", async () => {
@@ -195,7 +195,7 @@ describe("BusinessService update/remove flows (atomic ownership hardening)", () 
         where: { id: "o1", business: { userId: "user-1" } },
         data: { status: "PAID", dueDate: undefined },
       });
-      expect(result.status).toBe("PAID");
+      expect(result!.status).toBe("PAID");
     });
 
     it("throws NotFoundException for an obligation whose business belongs to someone else", async () => {
