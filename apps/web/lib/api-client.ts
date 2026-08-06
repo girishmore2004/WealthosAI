@@ -167,21 +167,75 @@ export const api = {
   },
   loans: {
     list: () => request<LoanDTO[]>("/loans"),
-    debtSummary: () => request<DebtSummaryDTO>("/loans/debt-summary"),
-    create: (data: { type: string; lender: string; principal: number; interestRate: number; tenureMonths: number; startDate: string; emiAmount?: number }) =>
-      request<LoanDTO>("/loans", { method: "POST", body: JSON.stringify(data) }),
+    summary: () => request<DebtSummaryDTO>("/loans/summary"),
+    payoffOrder: (strategy: "snowball" | "avalanche" = "avalanche") =>
+      request<{ priority: number; loan: LoanDTO }[]>(`/loans/payoff-order?strategy=${strategy}`),
+    create: (data: {
+      type: string;
+      lender: string;
+      principal: number;
+      outstandingPrincipal: number;
+      interestRateAnnual: number;
+      tenureMonths: number;
+      emiAmount: number;
+      startDate: string;
+      notes?: string;
+    }) => request<LoanDTO>("/loans", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/loans/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ type: string; lender: string; principal: number; interestRate: number; tenureMonths: number; startDate: string; emiAmount: number }>) =>
-      request<LoanDTO>(`/loans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    update: (
+      id: string,
+      data: Partial<{
+        type: string;
+        lender: string;
+        principal: number;
+        outstandingPrincipal: number;
+        interestRateAnnual: number;
+        tenureMonths: number;
+        emiAmount: number;
+        startDate: string;
+        notes: string;
+      }>,
+    ) => request<LoanDTO>(`/loans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    amortization: (id: string) => request<{ month: number; emi: number; interest: number; principal: number; balance: number }[]>(`/loans/${id}/amortization`),
+    prepaymentImpact: (id: string, lumpSum: number) =>
+      request<{ monthsSaved: number; interestSaved: number; originalTenureMonths: number; newTenureMonths: number }>(
+        `/loans/${id}/prepayment-impact?lumpSum=${lumpSum}`,
+      ),
   },
   insurance: {
     list: () => request<InsurancePolicyDTO[]>("/insurance"),
-    coverageGaps: () => request<CoverageGapDTO[]>("/insurance/coverage-gaps"),
-    create: (data: { type: string; provider: string; policyNumber?: string; sumAssured: number; premiumAmount: number; premiumFrequency: string; renewalDate: string; notes?: string }) =>
-      request<InsurancePolicyDTO>("/insurance", { method: "POST", body: JSON.stringify(data) }),
+    gapAnalysis: () => request<CoverageGapDTO[]>("/insurance/gap-analysis"),
+    renewals: (withinDays?: number) => request<InsurancePolicyDTO[]>(`/insurance/renewals${withinDays ? `?withinDays=${withinDays}` : ""}`),
+    nomineeSummary: () =>
+      request<{ totalPolicies: number; withNominee: number; missingNominee: { id: string; provider: string; type: string }[] }>(
+        "/insurance/nominee-summary",
+      ),
+    create: (data: {
+      type: string;
+      provider: string;
+      policyNumber?: string;
+      premiumAmount: number;
+      premiumFrequency: string;
+      coverageAmount: number;
+      renewalDate: string;
+      nomineeName?: string;
+      notes?: string;
+    }) => request<InsurancePolicyDTO>("/insurance", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/insurance/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ type: string; provider: string; policyNumber: string; sumAssured: number; premiumAmount: number; premiumFrequency: string; renewalDate: string; notes: string }>) =>
-      request<InsurancePolicyDTO>(`/insurance/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    update: (
+      id: string,
+      data: Partial<{
+        type: string;
+        provider: string;
+        policyNumber: string;
+        premiumAmount: number;
+        premiumFrequency: string;
+        coverageAmount: number;
+        renewalDate: string;
+        nomineeName: string;
+        notes: string;
+      }>,
+    ) => request<InsurancePolicyDTO>(`/insurance/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   goals: {
     list: () => request<GoalDTO[]>("/goals"),
@@ -209,9 +263,9 @@ export const api = {
     ) => request<GoalDTO>(`/goals/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   tax: {
-    deductions: () => request<TaxDeductionDTO[]>("/tax/deductions"),
+    deductions: (financialYear?: string) => request<TaxDeductionDTO[]>(`/tax/deductions${financialYear ? `?financialYear=${financialYear}` : ""}`),
     estimate: (financialYear?: string) => request<TaxEstimateDTO>(`/tax/estimate${financialYear ? `?financialYear=${financialYear}` : ""}`),
-    createDeduction: (data: { section: string; description: string; amount: number; financialYear: string }) =>
+    addDeduction: (data: { section: string; description: string; amount: number; financialYear: string }) =>
       request<TaxDeductionDTO>("/tax/deductions", { method: "POST", body: JSON.stringify(data) }),
     removeDeduction: (id: string) => request<void>(`/tax/deductions/${id}`, { method: "DELETE" }),
   },
