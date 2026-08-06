@@ -42,7 +42,7 @@ export function InlineEditForm({ fields, initialValues, onSave, onCancel }: Inli
   };
 
   return (
-    <form onSubmit={onSubmit} className="rounded-sm border border-marigold-500 bg-paper p-3">
+    <form onSubmit={onSubmit} className="rounded-md border border-marigold-500 bg-paper p-3">
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {fields.map((field) => {
           const value = values[field.key];
@@ -52,7 +52,7 @@ export function InlineEditForm({ fields, initialValues, onSave, onCancel }: Inli
                 key={field.key}
                 value={typeof value === "string" ? value : ""}
                 onChange={(e) => setField(field.key, e.target.value)}
-                className="rounded-sm border border-line bg-surface px-3 py-2 text-sm"
+                className="rounded-md border border-line bg-surface px-3 py-2 text-sm"
               >
                 {field.options.map((o) => (
                   <option key={o.value} value={o.value}>
