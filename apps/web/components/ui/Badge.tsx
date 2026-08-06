@@ -9,6 +9,6 @@ const TONE_CLASS: Record<BadgeTone, string> = {
   success: "badge-success",
 };
 
-export function Badge({ tone = "info", children }: { tone?: BadgeTone; children: ReactNode }) {
+export function Badge({ tone = "info", children }: { tone?: BadgeTone; children: ReactNode}) {
   return <span className={`badge ${TONE_CLASS[tone]}`}>{children}</span>;
 }
