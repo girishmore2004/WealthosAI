@@ -68,8 +68,16 @@ export class RetirementService {
     const preReturn = Number(profile.expectedReturnPreRetirementPercent) / 100;
     const postReturn = Number(profile.expectedReturnPostRetirementPercent) / 100;
 
-    const monthlyIncomeAtRetirement =
-      Number(profile.desiredMonthlyIncomeToday) * Math.pow(1 + inflation, yearsToRetirement);
+    // Rounded to the nearest cent immediately, and that rounded figure (not the raw
+    // float) is what every downstream calculation — pension offset, net income needed,
+    // corpus required — is derived from. This keeps the value byte-identical to what's
+    // actually returned in monthlyIncomeAtRetirement below, so a caller who reads that
+    // field back and does its own math with it (e.g. "30% of my monthly income at
+    // retirement as a pension offset") gets numbers that reconcile exactly rather than
+    // drifting by a fraction of a rupee against this service's own unrounded internals.
+    const monthlyIncomeAtRetirement = Number(
+      (Number(profile.desiredMonthlyIncomeToday) * Math.pow(1 + inflation, yearsToRetirement)).toFixed(2),
+    );
 
     // Pension/annuity offset (new). Unset or non-positive -> no offset, identical to
     // the original behavior.
