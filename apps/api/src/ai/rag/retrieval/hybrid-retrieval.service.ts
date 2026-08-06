@@ -155,7 +155,7 @@ export class HybridRetrievalService {
    * its place in the candidate pool without necessarily being independently similar
    * to the query text itself. */
   hasEvidence(scoredChunks: ScoredChunk[]): boolean {
-    return scoredChunks.some((c) => c.expansionReason === "seed" && c.semanticScore >= MIN_EVIDENCE_SIMILARITY);
+    return scoredChunks.some((c) => c.semanticScore >= MIN_EVIDENCE_SIMILARITY);
   }
 
   private scoreChunk(
