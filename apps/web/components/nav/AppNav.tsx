@@ -30,20 +30,27 @@ export function AppNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <header className="border-b border-line bg-surface">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        <Link href="/dashboard" className="font-display text-lg text-ink" onClick={() => setMobileOpen(false)}>
+    <header className="sticky top-0 z-30 border-b border-line bg-surface/95 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
+        <Link
+          href="/dashboard"
+          className="flex items-center gap-2 font-display text-lg tracking-tight text-ink"
+          onClick={() => setMobileOpen(false)}
+        >
+          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-ink text-xs font-semibold text-paper">
+            W
+          </span>
           WealthOS AI
         </Link>
 
-        <nav className="hidden gap-1 md:flex">
+        <nav className="hidden gap-0.5 lg:flex">
           {NAV_ITEMS.map((item) => {
             if (!item.enabled) {
               return (
                 <span
                   key={item.href}
                   title="Coming in a later phase"
-                  className="cursor-default rounded-sm px-3 py-1.5 text-sm text-ink-faint/60"
+                  className="cursor-default rounded-md px-3 py-1.5 text-sm text-ink-faint/60"
                 >
                   {item.label}
                 </span>
@@ -54,8 +61,8 @@ export function AppNav() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`rounded-sm px-3 py-1.5 text-sm ${
-                  active ? "bg-marigold-50 text-marigold-600" : "text-ink-soft hover:text-ink"
+                className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  active ? "bg-marigold-50 font-medium text-marigold-600" : "text-ink-soft hover:bg-surface-muted hover:text-ink"
                 }`}
               >
                 {item.label}
@@ -67,14 +74,17 @@ export function AppNav() {
         <div className="flex items-center gap-2 sm:gap-3">
           <AlertsBell />
           <span className="hidden text-sm text-ink-soft sm:inline">{user?.name ?? user?.email}</span>
-          <button onClick={() => logout()} className="hidden text-sm text-ink-faint hover:text-ink md:inline">
+          <button
+            onClick={() => logout()}
+            className="hidden rounded-md px-2 py-1.5 text-sm text-ink-faint transition-colors hover:bg-surface-muted hover:text-ink lg:inline"
+          >
             Log out
           </button>
           <button
             onClick={() => setMobileOpen((o) => !o)}
             aria-label={mobileOpen ? "Close menu" : "Open menu"}
             aria-expanded={mobileOpen}
-            className="flex h-11 w-11 items-center justify-center rounded-sm text-ink-soft hover:text-ink md:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded-md text-ink-soft hover:bg-surface-muted hover:text-ink lg:hidden"
           >
             {mobileOpen ? (
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -90,7 +100,7 @@ export function AppNav() {
       </div>
 
       {mobileOpen && (
-        <nav className="border-t border-line bg-surface md:hidden">
+        <nav className="border-t border-line bg-surface lg:hidden">
           {NAV_ITEMS.map((item) => {
             if (!item.enabled) {
               return (
@@ -105,7 +115,7 @@ export function AppNav() {
                 key={item.href}
                 href={item.href}
                 onClick={() => setMobileOpen(false)}
-                className={`block px-4 py-3 text-sm ${active ? "text-marigold-600" : "text-ink-soft"}`}
+                className={`block px-4 py-3 text-sm ${active ? "font-medium text-marigold-600" : "text-ink-soft"}`}
               >
                 {item.label}
               </Link>
