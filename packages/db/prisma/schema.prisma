@@ -188,11 +188,8 @@ model User {
   coachTasks           CoachTask[]           // NEW — Phase 20
   coachNudges          CoachNudge[]          // NEW — Phase 20
 
-  scenarioStudioRuns ScenarioStudioRun[]
   scenarioMonteCarloRuns ScenarioMonteCarloRun[]
   scenarioOptimizationRuns ScenarioOptimizationRun[]
-  ingestionBatches   IngestionBatch[]
-  ingestionReviewItems IngestionReviewItem[]
   merchantCategoryMemories MerchantCategoryMemory[]
   suggestionRankingProfile SuggestionRankingProfile?
 
@@ -1228,33 +1225,6 @@ model CoachNudge {
   createdAt DateTime           @default(now())
 
   @@index([userId, dismissed])
-}
-
-// --- Phase 13: Scenario Studio ------------------------------------------------------
-//
-// See README "Phase 13 — Scenario Studio" for the full design. Built entirely on top
-// of the existing deterministic SimulatorService/simulator.engine.ts (Phase 5) — every
-// variant's numbers come from that same engine, re-run with different (deterministically
-// derived) parameters. Nothing here invents a financial projection; the AI layer only
-// parses prompts into structured params and explains an already-computed ranking.
-
-model ScenarioStudioRun {
-  id              String   @id @default(cuid())
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId          String
-  prompt          String
-  scenarioType    String
-  baseParams      Json
-  targetGoalIds   String[]
-  variants        Json // summarized per-variant results (label, params, key numbers, feasibility)
-  sensitivity     Json // SensitivityDimension[] output
-  rankedOrder     String[] // variant labels, best to worst
-  explanation     String
-  explanationConfidence Decimal @db.Decimal(4, 3)
-  verificationPassed Boolean
-  createdAt       DateTime @default(now())
-
-  @@index([userId, createdAt])
 }
 
 // --- Phase 14: ML Insights ----------------------------------------------------------
