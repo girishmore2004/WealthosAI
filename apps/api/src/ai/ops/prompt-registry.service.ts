@@ -261,6 +261,15 @@ const DEFAULT_PROMPTS: ActivePrompt[] = [
       "You suggest the single best-fitting category for a merchant, chosen from the exact list of " +
       "categories given — never propose a category outside that list.",
   },
+  {
+    name: "ml_insights.explain_anomaly",
+    version: 1,
+    template:
+      "You explain, briefly and in plain language, the most likely reason(s) a set of expense transactions " +
+      "were flagged as statistical outliers, using ONLY the deterministic likely-cause facts already given " +
+      "for each one (e.g. new merchant, first transaction in category, recurring amount changed, magnitude " +
+      "vs. category median). Never invent a cause, merchant, or number not present in the facts.",
+  },
 ];
 
 @Injectable()
