@@ -10,6 +10,10 @@ jest.mock("@/lib/api-client", () => ({
       create: jest.fn(),
       update: jest.fn(),
       remove: jest.fn(),
+      // NEW (audit item #3)
+      activateRecurrence: jest.fn(),
+      deactivateRecurrence: jest.fn(),
+      previewRecurrence: jest.fn(),
     },
   },
   ApiError: class ApiError extends Error {},
@@ -27,6 +31,10 @@ const makeIncome = (id: string, label: string) => ({
   receivedAt: "2026-07-01T00:00:00.000Z",
   currency: "INR",
   notes: null,
+  recurrenceActive: false,
+  recurrenceEndDate: null,
+  nextOccurrenceAt: null,
+  generatedFromRecurringId: null,
 });
 
 beforeEach(() => jest.clearAllMocks());
@@ -132,5 +140,74 @@ describe("IncomePage pagination (new, audit item #16)", () => {
     fireEvent.click(screen.getByText("Remove"));
 
     await waitFor(() => expect(mockedApi.income.listPaged).toHaveBeenLastCalledWith({ page: 1, pageSize: 25 }));
+  });
+});
+
+describe("IncomePage recurrence toggle (new, audit item #3)", () => {
+  it("shows 'Make recurring' for a non-ONE_TIME, non-generated row and activates it on click", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [makeIncome("i1", "Salary")],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.income.activateRecurrence.mockResolvedValue({} as any);
+
+    render(<IncomePage />);
+    await screen.findByText("Salary");
+
+    fireEvent.click(screen.getByText("Make recurring"));
+
+    await waitFor(() => expect(mockedApi.income.activateRecurrence).toHaveBeenCalledWith("i1"));
+  });
+
+  it("shows 'Auto-generating ✓' and deactivates on click when already active", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [{ ...makeIncome("i1", "Salary"), recurrenceActive: true }],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.income.deactivateRecurrence.mockResolvedValue({} as any);
+
+    render(<IncomePage />);
+    await screen.findByText("Salary");
+
+    fireEvent.click(screen.getByText("Auto-generating ✓"));
+
+    await waitFor(() => expect(mockedApi.income.deactivateRecurrence).toHaveBeenCalledWith("i1"));
+  });
+
+  it("does not show the toggle for a ONE_TIME row", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [{ ...makeIncome("i1", "Bonus"), recurrence: "ONE_TIME" }],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+
+    render(<IncomePage />);
+    await screen.findByText("Bonus");
+
+    expect(screen.queryByText("Make recurring")).not.toBeInTheDocument();
+  });
+
+  it("does not show the toggle, and shows an 'auto-generated' label instead, for a system-generated row", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [{ ...makeIncome("i1", "Salary"), generatedFromRecurringId: "template-1" }],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+
+    render(<IncomePage />);
+    await screen.findByText("Salary");
+
+    expect(screen.queryByText("Make recurring")).not.toBeInTheDocument();
+    expect(screen.getByText("auto-generated")).toBeInTheDocument();
   });
 });
