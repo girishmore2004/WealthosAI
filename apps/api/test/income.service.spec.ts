@@ -15,6 +15,11 @@ describe("IncomeService", () => {
         deleteMany: jest.fn(),
         findUnique: jest.fn(),
       },
+      // NEW (audit item #4) — used by update()'s salary-history logging.
+      incomeHistory: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+      },
     },
   };
 
@@ -165,9 +170,17 @@ describe("IncomeService", () => {
   });
 
   describe("update", () => {
+    // NEW behavioral note (audit item #4): update() now reads the row FIRST (to
+    // compare its prior amount against any incoming amount change, for
+    // IncomeHistory logging) before performing the atomic, ownership-scoped
+    // updateMany(). The actual mutation is still scoped by { id, userId } exactly as
+    // before — this read adds an earlier, equally-strict ownership check (thrown
+    // before any write is attempted), it does not weaken the existing one.
     it("updates and returns the row when it exists and is owned by the caller", async () => {
+      mockPrisma.client.income.findUnique
+        .mockResolvedValueOnce({ id: "income-1", userId: "user-1", amount: 50000 }) // pre-update read
+        .mockResolvedValueOnce({ id: "income-1", label: "Updated" }); // post-update read
       mockPrisma.client.income.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.client.income.findUnique.mockResolvedValue({ id: "income-1", label: "Updated" });
 
       const result = await service.update("user-1", "income-1", { label: "Updated" });
 
@@ -176,13 +189,110 @@ describe("IncomeService", () => {
         data: { label: "Updated", receivedAt: undefined },
       });
       expect(result).toEqual({ id: "income-1", label: "Updated" });
+      // Editing only the label — no amount change, so no history entry.
+      expect(mockPrisma.client.incomeHistory.create).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException without leaking whether the id exists for another user", async () => {
-      mockPrisma.client.income.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.client.income.findUnique.mockResolvedValueOnce(null); // pre-update read finds nothing
 
       await expect(service.update("user-1", "not-mine", { label: "x" })).rejects.toThrow(NotFoundException);
-      expect(mockPrisma.client.income.findUnique).not.toHaveBeenCalled();
+      // The ownership check now happens on this initial read rather than via
+      // updateMany's count — so updateMany is never even attempted for a
+      // nonexistent/not-owned row.
+      expect(mockPrisma.client.income.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("throws NotFoundException when the row exists but belongs to another user", async () => {
+      mockPrisma.client.income.findUnique.mockResolvedValueOnce({ id: "income-1", userId: "someone-else", amount: 50000 });
+
+      await expect(service.update("user-1", "income-1", { label: "x" })).rejects.toThrow(NotFoundException);
+      expect(mockPrisma.client.income.updateMany).not.toHaveBeenCalled();
+    });
+
+    describe("salary/amount-change history logging (new, audit item #4)", () => {
+      it("logs an IncomeHistory entry when amount changes, with previous/new amounts", async () => {
+        mockPrisma.client.income.findUnique
+          .mockResolvedValueOnce({ id: "income-1", userId: "user-1", amount: 50000 })
+          .mockResolvedValueOnce({ id: "income-1", amount: 60000 });
+        mockPrisma.client.income.updateMany.mockResolvedValue({ count: 1 });
+        mockPrisma.client.incomeHistory.create.mockResolvedValue({ id: "hist-1" });
+
+        await service.update("user-1", "income-1", { amount: 60000 });
+
+        expect(mockPrisma.client.incomeHistory.create).toHaveBeenCalledWith({
+          data: {
+            userId: "user-1",
+            incomeId: "income-1",
+            previousAmount: 50000,
+            newAmount: 60000,
+            effectiveFrom: expect.any(Date),
+          },
+        });
+      });
+
+      it("does not log a history entry when amount is included but unchanged", async () => {
+        mockPrisma.client.income.findUnique
+          .mockResolvedValueOnce({ id: "income-1", userId: "user-1", amount: 50000 })
+          .mockResolvedValueOnce({ id: "income-1", amount: 50000 });
+        mockPrisma.client.income.updateMany.mockResolvedValue({ count: 1 });
+
+        await service.update("user-1", "income-1", { amount: 50000, label: "Same amount, new label" });
+
+        expect(mockPrisma.client.incomeHistory.create).not.toHaveBeenCalled();
+      });
+
+      it("uses the explicit effectiveFrom date when provided instead of 'now'", async () => {
+        mockPrisma.client.income.findUnique
+          .mockResolvedValueOnce({ id: "income-1", userId: "user-1", amount: 50000 })
+          .mockResolvedValueOnce({ id: "income-1", amount: 60000 });
+        mockPrisma.client.income.updateMany.mockResolvedValue({ count: 1 });
+        mockPrisma.client.incomeHistory.create.mockResolvedValue({ id: "hist-1" });
+
+        await service.update("user-1", "income-1", { amount: 60000, effectiveFrom: "2026-07-01" });
+
+        expect(mockPrisma.client.incomeHistory.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ effectiveFrom: new Date("2026-07-01") }),
+        });
+      });
+
+      it("never sends effectiveFrom through to the Income row's own updateMany call", async () => {
+        mockPrisma.client.income.findUnique
+          .mockResolvedValueOnce({ id: "income-1", userId: "user-1", amount: 50000 })
+          .mockResolvedValueOnce({ id: "income-1", amount: 60000 });
+        mockPrisma.client.income.updateMany.mockResolvedValue({ count: 1 });
+        mockPrisma.client.incomeHistory.create.mockResolvedValue({ id: "hist-1" });
+
+        await service.update("user-1", "income-1", { amount: 60000, effectiveFrom: "2026-07-01" });
+
+        const updateManyArgs = mockPrisma.client.income.updateMany.mock.calls[0][0];
+        expect(updateManyArgs.data).not.toHaveProperty("effectiveFrom");
+      });
+    });
+  });
+
+  describe("history (new, audit item #4)", () => {
+    it("returns the row's history, most-recent-first", async () => {
+      mockPrisma.client.income.findUnique.mockResolvedValue({ id: "income-1", userId: "user-1" });
+      mockPrisma.client.incomeHistory.findMany.mockResolvedValue([{ id: "hist-2" }, { id: "hist-1" }]);
+
+      const result = await service.history("user-1", "income-1");
+
+      expect(mockPrisma.client.incomeHistory.findMany).toHaveBeenCalledWith({
+        where: { incomeId: "income-1" },
+        orderBy: { effectiveFrom: "desc" },
+      });
+      expect(result).toEqual([{ id: "hist-2" }, { id: "hist-1" }]);
+    });
+
+    it("throws NotFoundException for an income row belonging to another user", async () => {
+      mockPrisma.client.income.findUnique.mockResolvedValue({ id: "income-1", userId: "someone-else" });
+      await expect(service.history("user-1", "income-1")).rejects.toThrow(NotFoundException);
+    });
+
+    it("throws NotFoundException for a nonexistent income row", async () => {
+      mockPrisma.client.income.findUnique.mockResolvedValue(null);
+      await expect(service.history("user-1", "missing")).rejects.toThrow(NotFoundException);
     });
   });
 
