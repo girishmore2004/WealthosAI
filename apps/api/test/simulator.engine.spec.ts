@@ -109,6 +109,53 @@ describe("simulator.engine (pure, deterministic)", () => {
     });
   });
 
+  describe("NEW_LOAN (audit item #8 — a new/expansion loan distinct from LOAN_PREPAYMENT/HOUSE_PURCHASE)", () => {
+    it("adds a real EMI to monthly cashflow and includes the new loan in amortization", () => {
+      const result = runScenario(
+        "NEW_LOAN",
+        { loanAmount: 1000000, annualRatePercent: 12, tenureMonths: 60, purpose: "business expansion" },
+        baseline,
+      );
+      expect(Number(result.monthlyCashflowDelta)).toBeLessThan(0); // EMI reduces cashflow
+      expect(result.assumptions.some((a) => a.includes("amortization"))).toBe(true);
+      expect(result.narrative).toContain("business expansion");
+    });
+
+    it("omits the purpose clause from the narrative when purpose isn't given", () => {
+      const result = runScenario("NEW_LOAN", { loanAmount: 500000, annualRatePercent: 10, tenureMonths: 36 }, baseline);
+      expect(result.narrative).not.toContain("undefined");
+      expect(result.narrative).toContain("₹500000");
+    });
+
+    it("flags when the new EMI alone would exceed current monthly surplus", () => {
+      const tightBaseline: ScenarioBaselineDTO = { ...baseline, monthlyIncome: 65000 }; // surplus = 5000
+      const result = runScenario(
+        "NEW_LOAN",
+        { loanAmount: 2000000, annualRatePercent: 14, tenureMonths: 36, purpose: "equipment" },
+        tightBaseline,
+      );
+      expect(result.goalImpact).toMatch(/exceed/i);
+    });
+
+    it("is net-zero at the moment of borrowing (no immediateNetWorthDelta), matching HOUSE_PURCHASE's documented precedent", () => {
+      // With a trivially small loan (tiny EMI, tiny principal), the 5-year net worth
+      // delta versus baseline should be close to zero — dominated by the (small) EMI
+      // cashflow drag, not a large one-time jump from an undocumented asset credit/debit.
+      const result = runScenario("NEW_LOAN", { loanAmount: 1, annualRatePercent: 10, tenureMonths: 12 }, baseline);
+      expect(Math.abs(Number(result.netWorthDeltaIn5Years))).toBeLessThan(100);
+    });
+
+    it("is included in the amortization alongside existing loans, not just as a flat EMI-as-expense adjustment", () => {
+      const result = runScenario(
+        "NEW_LOAN",
+        { loanAmount: 300000, annualRatePercent: 11, tenureMonths: 48 },
+        baselineWithLoan,
+      );
+      expect(result.assumptions.some((a) => a.includes("amortization"))).toBe(true);
+      expect(Number(result.monthlyCashflowDelta)).toBeLessThan(0);
+    });
+  });
+
   describe("LOAN_PREPAYMENT", () => {
     it("uses real amortization figures passed via context, not an approximation", () => {
       const result = runScenario(
