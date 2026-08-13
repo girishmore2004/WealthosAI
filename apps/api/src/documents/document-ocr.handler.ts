@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { AiQueueService } from "../ai/ops/ai-queue.service";
 import { RagAutoReindexService } from "../ai/ops/rag-auto-reindex.service";
+import { CopilotIngestionService } from "../ai/copilot-ingestion/copilot-ingestion.service";
 import { DocumentStorageAdapter } from "./adapters/document-storage.adapter";
 import { LocalDiskStorageAdapter } from "./adapters/local-disk-storage.adapter";
 import { OcrAdapter, OcrNotApplicableError } from "./adapters/ocr.adapter";
@@ -37,6 +38,7 @@ export class DocumentOcrHandler implements OnModuleInit {
     @Inject(LocalDiskStorageAdapter) private storage: DocumentStorageAdapter,
     @Inject(OCR_ADAPTER) private ocr: OcrAdapter,
     private ragAutoReindex: RagAutoReindexService,
+    private copilotIngestion: CopilotIngestionService,
   ) {}
 
   onModuleInit() {
@@ -63,6 +65,39 @@ export class DocumentOcrHandler implements OnModuleInit {
         where: { id: documentId },
         data: { ocrStatus: "DONE", ocrText: result.text, summary: result.summary },
       });
+
+      // NEW (audit item #6): "Documents and Copilot Ingestion are separate
+      // pipelines... a Document categorized SALARY_SLIP/INSURANCE_POLICY never runs
+      // through Copilot Ingestion's extraction... architecturally parallel, not
+      // integrated." This is the bridge — routes a successfully-OCR'd BANK_STATEMENT
+      // document into the exact same staged-review pipeline a directly-uploaded
+      // statement image or pasted statement text already goes through. Nothing here
+      // auto-creates an Expense — CopilotIngestionService.ingestFromDocumentText()
+      // produces a normal IngestionBatch/IngestionReviewItem[] a human still has to
+      // approve, per the master preservation rules.
+      //
+      // Best-effort by design: a failure here must never fail the document upload
+      // itself (the OCR result above is already saved regardless) — the document is
+      // still fully usable (viewable, searchable via RAG) even if this specific
+      // bridging step fails; only the "also route it into ingestion for review"
+      // convenience is lost, and the user can still paste the extracted text into
+      // Copilot Ingestion manually as a fallback.
+      if (category === "BANK_STATEMENT") {
+        try {
+          await this.copilotIngestion.ingestFromDocumentText(
+            userId,
+            `Bank statement — ${document.fileName}`,
+            result.text,
+            result.engineConfidence,
+            "BANK_TRANSFER",
+            documentId,
+          );
+        } catch (bridgeErr) {
+          this.logger.warn(
+            `Document-to-Ingestion bridge failed for document ${documentId}: ${(bridgeErr as Error).message}`,
+          );
+        }
+      }
 
       // NEW (audit item #7): "reindexing is exclusively user-triggered... nothing in
       // Documents... automatically calls it, so the index can and will go stale."
