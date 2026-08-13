@@ -188,6 +188,25 @@ export interface DashboardSummaryDTO {
   totalDebt: string;
   propertyValue: string;
   unreadAlertCount: number;
+  // NEW (audit item #18): cashBalance minus the current-amount of any Goal that isn't
+  // backed by a linked Investment — an approximation of cash that's already earmarked
+  // toward a savings goal rather than freely available. Deliberately labeled as an
+  // approximation (goal.currentAmount is user-entered and may or may not physically sit
+  // inside the same cash the app derives cashBalance from) — see emergencyFundBasis for
+  // the related, more concrete field.
+  uncommittedCash: string;
+  // NEW (audit item #2): which data source emergencyFundMonths (in healthScore.breakdown)
+  // and emergencyFundAmount below were actually computed from.
+  // "GOAL": at least one Goal with type EMERGENCY_FUND exists — the real fix, no longer
+  //   coupled to an Expense category literally named "Emergency Fund".
+  // "CATEGORY_LEGACY": no EMERGENCY_FUND goal exists yet, so the original category-name
+  //   match is used as a fallback for backward compatibility with any account already
+  //   relying on that behavior.
+  // "NONE": neither a goal nor a matching category expense was found this month.
+  emergencyFundBasis: "GOAL" | "CATEGORY_LEGACY" | "NONE";
+  // The liquid reserve amount emergencyFundMonths (in healthScore.breakdown) was derived
+  // from, in the currency's smallest display form (2dp string), regardless of basis.
+  emergencyFundAmount: string;
 }
 
 export interface InsightDTO {
