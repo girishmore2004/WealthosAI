@@ -23,6 +23,7 @@ import type {
   TaxEstimateDTO,
   RetirementProfileDTO,
   RetirementPlanDTO,
+  PagedResult,
   AlertDTO,
   UserSettingsDTO,
   PropertyDTO,
@@ -122,6 +123,19 @@ export const api = {
   },
   income: {
     list: () => request<IncomeDTO[]>("/income"),
+    // NEW (audit item #16): opt-in paginated variant, now actually used by the Income
+    // page's transaction table (see IncomePage) instead of only existing as an unused
+    // backend capability. list() above is untouched — still used wherever the full,
+    // unbounded set is genuinely needed (e.g. Dashboard/Reports aggregates).
+    listPaged: (params: { page?: number; pageSize?: number; from?: string; to?: string } = {}) => {
+      const qs = new URLSearchParams();
+      if (params.page) qs.set("page", String(params.page));
+      if (params.pageSize) qs.set("pageSize", String(params.pageSize));
+      if (params.from) qs.set("from", params.from);
+      if (params.to) qs.set("to", params.to);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      return request<PagedResult<IncomeDTO>>(`/income/paged${suffix}`);
+    },
     create: (data: { source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes?: string }) =>
       request<IncomeDTO>("/income", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/income/${id}`, { method: "DELETE" }),
@@ -130,6 +144,17 @@ export const api = {
   },
   expenses: {
     list: (month?: string) => request<ExpenseDTO[]>(`/expenses${month ? `?month=${month}` : ""}`),
+    // NEW (audit item #16): same rationale as income.listPaged() above.
+    listPaged: (params: { page?: number; pageSize?: number; categoryId?: string; from?: string; to?: string } = {}) => {
+      const qs = new URLSearchParams();
+      if (params.page) qs.set("page", String(params.page));
+      if (params.pageSize) qs.set("pageSize", String(params.pageSize));
+      if (params.categoryId) qs.set("categoryId", params.categoryId);
+      if (params.from) qs.set("from", params.from);
+      if (params.to) qs.set("to", params.to);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      return request<PagedResult<ExpenseDTO>>(`/expenses/paged${suffix}`);
+    },
     categories: () => request<CategoryDTO[]>("/categories"),
     create: (data: {
       categoryId: string;
