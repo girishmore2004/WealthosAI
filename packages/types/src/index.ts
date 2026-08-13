@@ -118,6 +118,18 @@ export interface IncomeDTO {
   generatedFromRecurringId: string | null;
 }
 
+// NEW (audit item #4): one entry per logged amount change on an Income row — see
+// IncomeService.update()'s doc comment for exactly when these are created.
+export interface IncomeHistoryDTO {
+  id: string;
+  userId: string;
+  incomeId: string;
+  previousAmount: string;
+  newAmount: string;
+  effectiveFrom: string;
+  createdAt: string;
+}
+
 export interface CategoryDTO {
   id: string;
   name: string;
