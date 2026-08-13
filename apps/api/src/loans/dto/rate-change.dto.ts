@@ -1,7 +1,7 @@
 import { IsInt, IsNumber, Max, Min } from "class-validator";
 
 // A single future rate reset for the floating-rate amortization simulation. See
-// LoansService's RateChange interface and computeSchedule() for how this is applied.
+// LoansService's RateChange interface and computeAmortizationSchedule() (common/finance-math) for how this is applied.
 export class RateChangeDto {
   @IsInt()
   @Min(1)
