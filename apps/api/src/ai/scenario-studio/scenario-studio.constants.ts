@@ -99,7 +99,7 @@ export const DEFAULT_MC_ITERATIONS = 2000;
 // fast/approximate. Callers wanting full fidelity should call the dedicated
 // POST /scenario-studio/simulate endpoint directly.
 export const BUILD_MC_PREVIEW_ITERATIONS = 500;
-// Same 600-month (50-year) safety cap LoansService.computeSchedule() already uses,
+// Same 600-month (50-year) safety cap computeAmortizationSchedule() (common/finance-math) already uses,
 // applied here for the same reason: a guard against a pathological horizon (e.g. a
 // RETIREMENT_AGE_SHIFT target decades away) making a single request loop forever.
 export const MC_HORIZON_MONTHS_CAP = 600;
