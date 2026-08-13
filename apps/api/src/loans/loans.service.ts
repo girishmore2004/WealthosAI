@@ -4,23 +4,14 @@ import { IncomeService } from "../income/income.service";
 import { CreateLoanDto } from "./dto/create-loan.dto";
 import { UpdateLoanDto } from "./dto/update-loan.dto";
 import { SimulateAmortizationDto } from "./dto/simulate-amortization.dto";
+import { computeAmortizationSchedule, AmortizationRow, RateChange } from "../common/finance-math/amortization";
 
-export interface AmortizationRow {
-  month: number;
-  emi: number;
-  interest: number;
-  principal: number;
-  balance: number;
-}
-
-// A future rate reset — e.g. an Indian floating-rate home loan's rate moving with
-// RBI repo-rate changes. `effectiveFromMonth` is 1-indexed against the schedule being
-// computed (month 1 = the first month of that particular simulation, not a calendar
-// month), matching how `computeSchedule()` already numbers its rows.
-export interface RateChange {
-  effectiveFromMonth: number;
-  newAnnualRatePercent: number;
-}
+// AmortizationRow/RateChange re-exported here for backward compatibility — every
+// existing import of `{ AmortizationRow } from "./loans.service"` (controllers, DTOs,
+// tests) keeps working unchanged. The actual computation now lives in the shared,
+// dependency-free finance-math module (audit item #15) so simulator.engine.ts can use
+// the identical math instead of its own hand-kept-in-sync copy.
+export type { AmortizationRow, RateChange };
 
 @Injectable()
 export class LoansService {
@@ -109,7 +100,7 @@ export class LoansService {
   // this is identical to before floating-rate support was added below.
   async amortizationSchedule(userId: string, loanId: string): Promise<AmortizationRow[]> {
     const loan = await this.getOwned(userId, loanId);
-    return this.computeSchedule(
+    return computeAmortizationSchedule(
       Number(loan.outstandingPrincipal),
       Number(loan.interestRateAnnual),
       Number(loan.emiAmount),
@@ -124,7 +115,7 @@ export class LoansService {
   // touching nothing any existing caller depends on.
   //
   // Modeling choice, stated explicitly: EMI is held constant across rate changes (the
-  // same "EMI-constant" philosophy computeSchedule() already uses everywhere) — a rate
+  // same "EMI-constant" philosophy computeAmortizationSchedule() already uses everywhere) — a rate
   // increase means more of each EMI goes to interest and the payoff takes longer (or, if
   // the new rate makes the EMI insufficient to cover interest at all, the existing
   // stuck-schedule safety branch reports that clearly, which is exactly the right signal
@@ -138,7 +129,7 @@ export class LoansService {
   ): Promise<AmortizationRow[]> {
     const loan = await this.getOwned(userId, loanId);
     const principal = Math.max(0, Number(loan.outstandingPrincipal) - (dto.lumpSumPrepayment ?? 0));
-    return this.computeSchedule(
+    return computeAmortizationSchedule(
       principal,
       Number(loan.interestRateAnnual),
       Number(loan.emiAmount),
@@ -165,7 +156,7 @@ export class LoansService {
   // caller (this feature's own GET /loans/:id/prepayment-impact controller route, and
   // critically SimulatorService's LOAN_PREPAYMENT scenario, which calls this with only 3
   // arguments) gets `rateChanges = []`, which produces byte-for-byte identical output to
-  // before this change (see computeSchedule() below — an empty rate-change list is a
+  // before this change (see computeAmortizationSchedule() in common/finance-math — an empty rate-change list is a
   // guaranteed no-op). The same future rate path is applied to BOTH the baseline and
   // with-prepayment schedules, so the comparison stays apples-to-apples: it isolates the
   // effect of the prepayment itself, answering "does prepaying still help if my rate also
@@ -176,8 +167,8 @@ export class LoansService {
     const rate = Number(loan.interestRateAnnual);
     const emi = Number(loan.emiAmount);
 
-    const baseline = this.computeSchedule(principal, rate, emi, rateChanges);
-    const withPrepayment = this.computeSchedule(Math.max(0, principal - lumpSum), rate, emi, rateChanges);
+    const baseline = computeAmortizationSchedule(principal, rate, emi, rateChanges);
+    const withPrepayment = computeAmortizationSchedule(Math.max(0, principal - lumpSum), rate, emi, rateChanges);
 
     const baselineInterest = baseline.reduce((sum, r) => sum + r.interest, 0);
     const newInterest = withPrepayment.reduce((sum, r) => sum + r.interest, 0);
@@ -188,69 +179,6 @@ export class LoansService {
       originalTenureMonths: baseline.length,
       newTenureMonths: withPrepayment.length,
     };
-  }
-
-  private computeSchedule(
-    principal: number,
-    annualRatePercent: number,
-    emi: number,
-    rateChanges: RateChange[] = [],
-  ): AmortizationRow[] {
-    // Sorted ascending once, up front, so applying changes during the simulation is a
-    // simple linear scan bounded by rateChanges.length — realistically a handful of
-    // resets over a loan's lifetime, not a performance concern. An empty array here
-    // (the default, and every pre-existing call site's effective input) means the `while`
-    // below never executes, so `currentRate` never changes from `annualRatePercent` —
-    // this is what guarantees zero behavioral drift for every caller that doesn't opt
-    // into this feature.
-    const sortedChanges = [...rateChanges].sort((a, b) => a.effectiveFromMonth - b.effectiveFromMonth);
-
-    const rows: AmortizationRow[] = [];
-    let balance = principal;
-    let month = 0;
-    let currentRate = annualRatePercent;
-    const maxMonths = 600; // safety cap (50 years) against a misconfigured EMI that never pays down principal
-
-    while (balance > 0 && month < maxMonths) {
-      month += 1;
-
-      // `while`, not `if`: if two rate changes were specified for the same month, the
-      // last one in array order wins (array order = intent order), rather than an
-      // arbitrary pick.
-      while (sortedChanges.length > 0 && sortedChanges[0].effectiveFromMonth <= month) {
-        currentRate = sortedChanges.shift()!.newAnnualRatePercent;
-      }
-
-      const monthlyRate = currentRate / 12 / 100;
-      const interest = balance * monthlyRate;
-      let principalPaid = emi - interest;
-      if (principalPaid <= 0) {
-        // EMI doesn't even cover interest — schedule cannot converge. Record this month
-        // (balance unchanged, the whole EMI is absorbed by interest) so callers always
-        // get a non-empty schedule reflecting the stuck state, then stop. This is also
-        // exactly what happens if a rate increase pushes interest above the fixed EMI —
-        // see the modeling note on simulateAmortization() above.
-        rows.push({
-          month,
-          emi: Number(emi.toFixed(2)),
-          interest: Number(interest.toFixed(2)),
-          principal: 0,
-          balance: Number(balance.toFixed(2)),
-        });
-        break;
-      }
-      if (principalPaid > balance) principalPaid = balance;
-      balance = Math.max(0, balance - principalPaid);
-      rows.push({
-        month,
-        emi: Number((principalPaid + interest).toFixed(2)),
-        interest: Number(interest.toFixed(2)),
-        principal: Number(principalPaid.toFixed(2)),
-        balance: Number(balance.toFixed(2)),
-      });
-    }
-
-    return rows;
   }
 
   private async getOwned(userId: string, loanId: string) {
