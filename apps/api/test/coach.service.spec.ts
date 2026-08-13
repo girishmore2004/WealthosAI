@@ -11,6 +11,7 @@ import { LoansService } from "../src/loans/loans.service";
 import { IncomeService } from "../src/income/income.service";
 import { DashboardService } from "../src/dashboard/dashboard.service";
 import { AlertsService } from "../src/alerts/alerts.service";
+import { RagAutoReindexService } from "../src/ai/ops/rag-auto-reindex.service";
 
 describe("CoachService.ask", () => {
   let service: CoachService;
@@ -31,6 +32,8 @@ describe("CoachService.ask", () => {
   const mockIncome = { list: jest.fn(), monthlyForecast: jest.fn() };
   const mockDashboard = { getSummary: jest.fn() };
   const mockAlerts = { list: jest.fn() };
+  // NEW (audit item #7)
+  const mockRagAutoReindex = { triggerFor: jest.fn().mockResolvedValue(undefined) };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -48,6 +51,7 @@ describe("CoachService.ask", () => {
         { provide: IncomeService, useValue: mockIncome },
         { provide: DashboardService, useValue: mockDashboard },
         { provide: AlertsService, useValue: mockAlerts },
+        { provide: RagAutoReindexService, useValue: mockRagAutoReindex },
       ],
     }).compile();
     service = moduleRef.get(CoachService);
@@ -159,5 +163,26 @@ describe("CoachService.ask", () => {
     expect(result.matchedIntent).toBe("RISK");
     expect(result.answer).toContain("aggressive");
     expect(result.answer).toContain("concentrated"); // 75% > 60% threshold
+  });
+
+  describe("RAG auto-reindex trigger (new, audit item #7)", () => {
+    it("triggers a reindex after a successfully-matched interaction", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "user-1", riskProfile: "AGGRESSIVE" });
+      mockInvestments.summary.mockResolvedValue({ allocation: [] });
+      mockLoans.debtSummary.mockResolvedValue({ debtStressScore: 5 });
+
+      await service.ask("user-1", "explain my risk level");
+
+      expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1");
+    });
+
+    it("still triggers a reindex even for a refused (unmatched) question", async () => {
+      await service.ask("user-1", "what is the meaning of life");
+
+      // A refused interaction is still a real, newly-created CoachInteraction row —
+      // the trigger doesn't distinguish, matching the roadmap's plain
+      // "post-interaction" instruction.
+      expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1");
+    });
   });
 });
