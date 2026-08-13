@@ -20,6 +20,7 @@ import {
 import {
   MonteCarloAssumptions,
   MonteCarloScenarioEffect,
+  MonteCarloTimeoutError,
   computePercentileSet,
   runMonteCarloSimulation,
 } from "./monte-carlo.engine";
@@ -79,7 +80,7 @@ export class MonteCarloSimulationService {
         overrides.propertyAppreciationStdDevPercent ?? DEFAULT_MC_ASSUMPTIONS.propertyAppreciationStdDevPercent,
     };
 
-    const raw = runMonteCarloSimulation({ scenarioType, horizonMonths, iterations, seed, assumptions, effect });
+    const raw = this.runBounded(scenarioType, horizonMonths, iterations, seed, assumptions, effect);
     const terminalPercentiles = computePercentileSet(raw.terminalNetWorths);
 
     const mean = raw.terminalNetWorths.reduce((s, v) => s + v, 0) / raw.terminalNetWorths.length;
@@ -111,6 +112,32 @@ export class MonteCarloSimulationService {
       assumptions: this.describeAssumptions(assumptions, horizonMonths / 12, iterations),
       config,
     };
+  }
+
+  // NEW (audit item #17): wraps runMonteCarloSimulation() to translate its
+  // MonteCarloTimeoutError (a wall-clock circuit breaker — see that error's own doc
+  // comment) into a clear, actionable BadRequestException instead of letting the raw
+  // engine error surface as an unhandled 500. This is genuinely expected to be rare in
+  // practice — iterations/horizonMonths are already clamped by MAX_MC_ITERATIONS/
+  // MC_HORIZON_MONTHS_CAP to values that comfortably finish well under the default
+  // time budget on a normal host — but a clear, typed failure path beats an unbounded
+  // hang if it ever does happen (an unusually slow/loaded host, for instance).
+  private runBounded(
+    scenarioType: ScenarioType,
+    horizonMonths: number,
+    iterations: number,
+    seed: number,
+    assumptions: MonteCarloAssumptions,
+    effect: MonteCarloScenarioEffect,
+  ) {
+    try {
+      return runMonteCarloSimulation({ scenarioType, horizonMonths, iterations, seed, assumptions, effect });
+    } catch (err) {
+      if (err instanceof MonteCarloTimeoutError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
   }
 
   private classifyRisk(coefficientOfVariation: number): MonteCarloRiskLevel {
