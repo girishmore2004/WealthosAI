@@ -5,12 +5,13 @@ import { ExpensesService } from "../expenses/expenses.service";
 import { InvestmentsService } from "../investments/investments.service";
 import { LoansService } from "../loans/loans.service";
 import { BusinessService } from "../business/business.service";
+import { FinancialFactsService } from "../common/financial-facts/financial-facts.service";
 import { currentFinancialYear, financialYearRange } from "../common/utils/financial-year.util";
+import { monthRange, validateMonthFormat, currentMonthString } from "../common/utils/financial-period.util";
 import { groupExpensesByCategory } from "../common/utils/report-aggregation.util";
 import { csvCell, csvRow } from "../common/utils/csv.util";
 import { MonthlyReportDTO, YearlyReportDTO } from "@wealthos/types";
 
-const MONTH_FORMAT = /^\d{4}-(0[1-9]|1[0-2])$/;
 const FINANCIAL_YEAR_FORMAT = /^\d{4}-\d{2}$/;
 
 // Report computation lives here, not in page components, so the numbers are guaranteed
@@ -24,52 +25,35 @@ export class ReportsService {
     private investmentsService: InvestmentsService,
     private loansService: LoansService,
     private businessService: BusinessService,
+    private financialFactsService: FinancialFactsService,
   ) {}
 
-  private monthRange(month: string) {
-    const start = new Date(`${month}-01T00:00:00.000Z`);
-    const end = new Date(start);
-    // UTC-safe on purpose: `start` is parsed as a UTC instant, so the boundary must be
-    // advanced in UTC too. The previous version used the local-time setMonth()/getMonth(),
-    // which is correct only when the server's TZ happens to be UTC — under a negative
-    // UTC-offset TZ (e.g. US Pacific), the local calendar date for a UTC midnight
-    // timestamp can roll back a day, silently shifting the whole month window.
-    end.setUTCMonth(end.getUTCMonth() + 1);
-    return { start, end };
-  }
-
-  // "YYYY-MM" only. An unvalidated month string (typo, wrong separator, out-of-range
-  // month like "2026-13") used to fall straight into `new Date(...)`, silently producing
-  // an Invalid Date and a report full of zeros instead of a clear error to the caller.
-  private validateMonth(month?: string): void {
-    if (month !== undefined && !MONTH_FORMAT.test(month)) {
-      throw new BadRequestException('"month" must be in YYYY-MM format, e.g. 2026-07');
-    }
-  }
-
-  // "YYYY-YY" (e.g. "2026-27"). Same rationale as validateMonth(): an invalid string used
-  // to silently pass through financialYearRange()'s Number() parsing, producing an
-  // Invalid Date range and a report that looks empty rather than erroring clearly.
+  // "YYYY-YY" (e.g. "2026-27"). Same rationale as validateMonthFormat(): an invalid
+  // string used to silently pass through financialYearRange()'s Number() parsing,
+  // producing an Invalid Date range and a report that looks empty rather than erroring
+  // clearly.
   private validateFinancialYear(financialYear?: string): void {
     if (financialYear !== undefined && !FINANCIAL_YEAR_FORMAT.test(financialYear)) {
       throw new BadRequestException('"financialYear" must be in YYYY-YY format, e.g. 2026-27');
     }
   }
 
+  // #1 fix (audit's highest-leverage finding): monthly income here now flows through
+  // FinancialFactsService.getActualMonthlyIncome(), the same canonical method Dashboard
+  // can call for the "actual" basis — instead of an inline filter+reduce that lived only
+  // in this file. The computed number is UNCHANGED (it's the identical date-range-filtered
+  // sum as before); what changes is that this is no longer an independent reimplementation
+  // that could silently drift from Dashboard's own income calculation.
   async monthlyReport(userId: string, month?: string): Promise<MonthlyReportDTO> {
-    this.validateMonth(month);
-    const targetMonth = month ?? new Date().toISOString().slice(0, 7);
-    const { start, end } = this.monthRange(targetMonth);
+    validateMonthFormat(month);
+    const targetMonth = month ?? currentMonthString();
 
-    const [incomes, expenses] = await Promise.all([
-      this.incomeService.list(userId),
+    const [incomeFact, expenses] = await Promise.all([
+      this.financialFactsService.getActualMonthlyIncome(userId, targetMonth),
       this.expensesService.list(userId, targetMonth),
     ]);
 
-    const monthIncome = incomes
-      .filter((i) => i.receivedAt >= start && i.receivedAt < end)
-      .reduce((sum, i) => sum + Number(i.amount), 0);
-
+    const monthIncome = Number(incomeFact.value);
     const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
     const expensesByCategory = groupExpensesByCategory(expenses, totalExpenses);
 
@@ -82,6 +66,12 @@ export class ReportsService {
       netCashflow: netCashflow.toFixed(2),
       savingsRate: monthIncome > 0 ? Number(((netCashflow / monthIncome) * 100).toFixed(1)) : 0,
       expensesByCategory,
+      // NEW (audit item #1): explicit basis labels so a caller never has to guess
+      // whether "income" here means the same thing Dashboard's monthlyIncome means.
+      // Reports has always used ACTUAL — this makes that fact machine-readable instead
+      // of only living in a code comment.
+      incomeBasis: "ACTUAL",
+      expensesBasis: "ACTUAL",
     };
   }
 
