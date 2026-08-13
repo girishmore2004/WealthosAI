@@ -36,6 +36,19 @@ export class PropertyController {
     return this.propertyService.remove(user.id, id);
   }
 
+  // NEW: closes the audit-flagged gap — rental income never automatically flowed into
+  // personal Income. A dedicated, explicit opt-in action — see
+  // PropertyService.enableRentIncomeSync()'s doc comment for why.
+  @Post(":id/sync-rent-to-income")
+  enableRentIncomeSync(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.propertyService.enableRentIncomeSync(user.id, id);
+  }
+
+  @Delete(":id/sync-rent-to-income")
+  disableRentIncomeSync(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.propertyService.disableRentIncomeSync(user.id, id);
+  }
+
   // NEW: closes the audit-flagged Tax-integration gap for this feature. Returns null
   // (not an error) when the property isn't Section-24-eligible (no linked HOME loan, or
   // not a residential property type) — that's a normal, expected outcome for most
