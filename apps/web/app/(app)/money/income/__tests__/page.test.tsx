@@ -14,6 +14,8 @@ jest.mock("@/lib/api-client", () => ({
       activateRecurrence: jest.fn(),
       deactivateRecurrence: jest.fn(),
       previewRecurrence: jest.fn(),
+      // NEW (audit item #4)
+      history: jest.fn(),
     },
   },
   ApiError: class ApiError extends Error {},
@@ -209,5 +211,67 @@ describe("IncomePage recurrence toggle (new, audit item #3)", () => {
 
     expect(screen.queryByText("Make recurring")).not.toBeInTheDocument();
     expect(screen.getByText("auto-generated")).toBeInTheDocument();
+  });
+});
+
+describe("IncomePage amount-change history (new, audit item #4)", () => {
+  it("fetches and displays history entries when 'History' is clicked", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [makeIncome("i1", "Salary")],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.income.history.mockResolvedValue([
+      { id: "h1", userId: "u1", incomeId: "i1", previousAmount: "50000", newAmount: "60000", effectiveFrom: "2026-07-01T00:00:00.000Z", createdAt: "2026-07-01T00:00:00.000Z" },
+    ]);
+
+    render(<IncomePage />);
+    await screen.findByText("Salary");
+
+    fireEvent.click(screen.getByText("History"));
+
+    await waitFor(() => expect(mockedApi.income.history).toHaveBeenCalledWith("i1"));
+    expect(await screen.findByText(/effective/i)).toBeInTheDocument();
+  });
+
+  it("shows a 'no changes logged' message for a row with an empty history", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [makeIncome("i1", "Salary")],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.income.history.mockResolvedValue([]);
+
+    render(<IncomePage />);
+    await screen.findByText("Salary");
+
+    fireEvent.click(screen.getByText("History"));
+
+    expect(await screen.findByText(/No amount changes logged/i)).toBeInTheDocument();
+  });
+
+  it("collapses the panel when 'History' is clicked again", async () => {
+    mockedApi.income.listPaged.mockResolvedValue({
+      items: [makeIncome("i1", "Salary")],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.income.history.mockResolvedValue([]);
+
+    render(<IncomePage />);
+    await screen.findByText("Salary");
+
+    fireEvent.click(screen.getByText("History"));
+    await screen.findByText(/No amount changes logged/i);
+
+    fireEvent.click(screen.getByText("History"));
+
+    expect(screen.queryByText(/No amount changes logged/i)).not.toBeInTheDocument();
   });
 });
