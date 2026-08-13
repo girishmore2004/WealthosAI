@@ -316,6 +316,11 @@ export const api = {
     remove: (id: string) => request<void>(`/property/${id}`, { method: "DELETE" }),
     update: (id: string, data: Partial<{ type: string; name: string; address: string; currentValue: number; purchasePrice: number; purchaseDate: string; isRented: boolean; monthlyRentalIncome: number; annualMaintenanceCost: number; annualPropertyTax: number; loanId: string; insurancePolicyId: string; notes: string }>) =>
       request<PropertyDTO>(`/property/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    // NEW (audit item #10): opt-in rent -> personal Income sync.
+    enableRentIncomeSync: (id: string) =>
+      request<{ propertyId: string; income: IncomeDTO }>(`/property/${id}/sync-rent-to-income`, { method: "POST" }),
+    disableRentIncomeSync: (id: string) =>
+      request<PropertyDTO>(`/property/${id}/sync-rent-to-income`, { method: "DELETE" }),
   },
   business: {
     list: () => request<BusinessDTO[]>("/business"),
@@ -340,6 +345,11 @@ export const api = {
       data: Partial<{ type: string; category: string; amount: number; occurredAt: string; description: string; isRecurring: boolean }>,
     ) => request<BusinessTransactionDTO>(`/business/transactions/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     removeTransaction: (id: string) => request<void>(`/business/transactions/${id}`, { method: "DELETE" }),
+    // NEW (audit item #9): opt-in owner-drawing -> personal Income sync.
+    syncDrawingToIncome: (id: string) =>
+      request<{ transactionId: string; income: IncomeDTO }>(`/business/transactions/${id}/sync-to-income`, { method: "POST" }),
+    unsyncDrawingFromIncome: (id: string) =>
+      request<BusinessTransactionDTO>(`/business/transactions/${id}/sync-to-income`, { method: "DELETE" }),
     obligations: (businessId: string) => request<BusinessObligationDTO[]>(`/business/${businessId}/obligations`),
     createObligation: (
       businessId: string,
