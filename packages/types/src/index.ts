@@ -1388,3 +1388,16 @@ export interface OptimizedScenarioDTO {
   riskAdjustedScore: number;
   constraintsApplied: OptimizationConstraintsDTO;
 }
+
+// NEW (audit item #16): shared shape for the previously backend-only, opt-in
+// listPaged() endpoints (Income/Expenses/Investments) — "paginated variants exist as
+// opt-in, additive methods only, not the default the UI actually calls." This type
+// lets the frontend api client and page components share one definition instead of
+// each inlining an ad-hoc paged-response shape.
+export interface PagedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
