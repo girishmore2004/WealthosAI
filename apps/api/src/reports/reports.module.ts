@@ -6,9 +6,10 @@ import { ExpensesModule } from "../expenses/expenses.module";
 import { InvestmentsModule } from "../investments/investments.module";
 import { LoansModule } from "../loans/loans.module";
 import { BusinessModule } from "../business/business.module";
+import { FinancialFactsModule } from "../common/financial-facts/financial-facts.module";
 
 @Module({
-  imports: [IncomeModule, ExpensesModule, InvestmentsModule, LoansModule, BusinessModule],
+  imports: [IncomeModule, ExpensesModule, InvestmentsModule, LoansModule, BusinessModule, FinancialFactsModule],
   controllers: [ReportsController],
   providers: [ReportsService],
   exports: [ReportsService],
