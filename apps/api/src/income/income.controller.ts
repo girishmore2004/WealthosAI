@@ -6,11 +6,16 @@ import { ListIncomeQueryDto } from "./dto/list-income-query.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
+import { RecurrenceGeneratorService } from "../common/recurrence/recurrence-generator.service";
+import { ActivateRecurrenceDto } from "../common/recurrence/dto/activate-recurrence.dto";
 
 @UseGuards(SessionAuthGuard)
 @Controller("income")
 export class IncomeController {
-  constructor(private incomeService: IncomeService) {}
+  constructor(
+    private incomeService: IncomeService,
+    private recurrenceGenerator: RecurrenceGeneratorService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: User) {
@@ -47,5 +52,25 @@ export class IncomeController {
   @Delete(":id")
   remove(@CurrentUser() user: User, @Param("id") id: string) {
     return this.incomeService.remove(user.id, id);
+  }
+
+  // NEW (audit item #3): explicit, opt-in recurring-generation controls for a single
+  // Income row. See RecurrenceGeneratorService for the actual generation logic — the
+  // scheduled daily job (RecurrenceWorker) is what performs generation in the
+  // background; these endpoints are for the user to turn that on/off per row and to
+  // preview what it would do before committing.
+  @Post(":id/recurrence/activate")
+  activateRecurrence(@CurrentUser() user: User, @Param("id") id: string, @Body() dto: ActivateRecurrenceDto) {
+    return this.recurrenceGenerator.activateIncomeRecurrence(user.id, id, dto.endDate);
+  }
+
+  @Post(":id/recurrence/deactivate")
+  deactivateRecurrence(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.recurrenceGenerator.deactivateIncomeRecurrence(user.id, id);
+  }
+
+  @Get(":id/recurrence/preview")
+  previewRecurrence(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.recurrenceGenerator.previewIncomeOccurrences(user.id, id);
   }
 }
