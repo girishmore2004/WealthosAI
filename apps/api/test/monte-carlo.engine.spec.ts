@@ -6,6 +6,7 @@ import {
   sampleNormal,
   MonteCarloAssumptions,
   MonteCarloScenarioEffect,
+  MonteCarloTimeoutError,
 } from "../src/ai/scenario-studio/monte-carlo/monte-carlo.engine";
 
 const FLAT_ASSUMPTIONS: MonteCarloAssumptions = {
@@ -239,5 +240,87 @@ describe("runMonteCarloSimulation", () => {
     for (let i = 1; i < result.yearlyBands.length; i++) {
       expect(result.yearlyBands[i].monthIndex).toBeGreaterThan(result.yearlyBands[i - 1].monthIndex);
     }
+  });
+});
+
+describe("runMonteCarloSimulation wall-clock circuit breaker (new, audit item #17)", () => {
+  it("completes normally within the default time budget for realistic inputs", () => {
+    // A realistic, bounded run should never come close to the default 8s budget —
+    // this is a sanity check that the guard doesn't false-positive on normal input.
+    expect(() =>
+      runMonteCarloSimulation({
+        scenarioType: "SIP_INCREASE",
+        horizonMonths: 60,
+        iterations: 500,
+        seed: 1,
+        assumptions: VOLATILE_ASSUMPTIONS,
+        effect: baseEffect(),
+      }),
+    ).not.toThrow();
+  });
+
+  it("throws MonteCarloTimeoutError when maxWallClockMs is exceeded", () => {
+    expect(() =>
+      runMonteCarloSimulation({
+        scenarioType: "SIP_INCREASE",
+        horizonMonths: 600, // MC_HORIZON_MONTHS_CAP
+        iterations: 5000, // MAX_MC_ITERATIONS
+        seed: 1,
+        assumptions: VOLATILE_ASSUMPTIONS,
+        effect: baseEffect(),
+        maxWallClockMs: -1, // any elapsed time (even 0ms, an edge case Date.now() granularity could
+        // otherwise produce) exceeds a negative budget, making this deterministic
+        // regardless of host speed
+      }),
+    ).toThrow(MonteCarloTimeoutError);
+  });
+
+  it("includes a clear, actionable message naming the fix (shorter horizon or fewer iterations)", () => {
+    try {
+      runMonteCarloSimulation({
+        scenarioType: "SIP_INCREASE",
+        horizonMonths: 600,
+        iterations: 5000,
+        seed: 1,
+        assumptions: VOLATILE_ASSUMPTIONS,
+        effect: baseEffect(),
+        maxWallClockMs: -1,
+      });
+      fail("expected runMonteCarloSimulation to throw");
+    } catch (err) {
+      expect((err as Error).message).toMatch(/shorter horizon or fewer iterations/i);
+    }
+  });
+
+  it("does not check the wall clock before the check interval — a run is never rejected before doing any work", () => {
+    // maxWallClockMs: -1 would trip on the very first check (any elapsed time exceeds
+    // a negative budget); with iterations below WALL_CLOCK_CHECK_INTERVAL_ITERATIONS
+    // (50), no check ever happens at all, so this completes despite the
+    // impossible-to-satisfy budget.
+    expect(() =>
+      runMonteCarloSimulation({
+        scenarioType: "SIP_INCREASE",
+        horizonMonths: 12,
+        iterations: 10, // fewer than WALL_CLOCK_CHECK_INTERVAL_ITERATIONS (50)
+        seed: 1,
+        assumptions: FLAT_ASSUMPTIONS,
+        effect: baseEffect(),
+        maxWallClockMs: -1,
+      }),
+    ).not.toThrow();
+  });
+
+  it("respects a custom maxWallClockMs generous enough to complete", () => {
+    expect(() =>
+      runMonteCarloSimulation({
+        scenarioType: "SIP_INCREASE",
+        horizonMonths: 60,
+        iterations: 200,
+        seed: 1,
+        assumptions: FLAT_ASSUMPTIONS,
+        effect: baseEffect(),
+        maxWallClockMs: 60000, // very generous — should never trip for this small a run
+      }),
+    ).not.toThrow();
   });
 });
