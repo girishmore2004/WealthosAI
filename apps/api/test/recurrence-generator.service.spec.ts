@@ -87,6 +87,11 @@ describe("RecurrenceGeneratorService", () => {
         data: { recurrence: "MONTHLY", recurrenceActive: true, recurrenceEndDate: null, nextOccurrenceAt: new Date("2026-01-01") },
       });
     });
+
+    it("rejects activating an expense with recurrence ONE_TIME", async () => {
+      await expect(service.activateExpenseRecurrence("user-1", "e1", "ONE_TIME")).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.expense.findUnique).not.toHaveBeenCalled();
+    });
   });
 
   describe("preview (dry-run)", () => {
