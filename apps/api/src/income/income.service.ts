@@ -157,13 +157,47 @@ export class IncomeService {
   //     — e.g. GET /ai/jobs/:id returns 404 for both "doesn't exist" and "belongs to
   //     someone else" specifically to avoid leaking which case occurred.
   async update(userId: string, id: string, dto: UpdateIncomeDto) {
+    // NEW (audit item #4): fetch the current row first — needed to detect an amount
+    // change for IncomeHistory logging below, which the previous atomic
+    // updateMany-only approach couldn't do (it never saw the "before" value). The
+    // actual write below is still scoped by { id, userId } in updateMany, so this read
+    // doesn't weaken the ownership check — it strictly adds an earlier one (thrown
+    // before any write is attempted), following the same read-then-atomic-mutate
+    // precedent already used elsewhere (e.g. PropertyService.remove()'s linked-Income
+    // cleanup).
+    const existing = await this.prisma.client.income.findUnique({ where: { id } });
+    if (!existing || existing.userId !== userId) {
+      throw new NotFoundException("Income not found");
+    }
+
+    // effectiveFrom is a history-only field (see UpdateIncomeDto) — it has no matching
+    // column on Income itself, so it must never reach this row's own update data.
+    const { effectiveFrom, ...incomeFields } = dto;
+
     const result = await this.prisma.client.income.updateMany({
       where: { id, userId },
-      data: { ...dto, receivedAt: dto.receivedAt ? new Date(dto.receivedAt) : undefined },
+      data: { ...incomeFields, receivedAt: dto.receivedAt ? new Date(dto.receivedAt) : undefined },
     });
 
     if (result.count === 0) {
       throw new NotFoundException("Income not found");
+    }
+
+    // "Income has no effective-dated salary history... a raise is a manual edit to
+    // the existing row's amount, with no historical record of what the salary was
+    // before." Only logs when `amount` actually changes value — editing just the
+    // label/notes/etc. doesn't touch salary history, keeping this table meaningful
+    // rather than a generic edit log.
+    if (dto.amount !== undefined && Number(existing.amount) !== dto.amount) {
+      await this.prisma.client.incomeHistory.create({
+        data: {
+          userId,
+          incomeId: id,
+          previousAmount: existing.amount,
+          newAmount: dto.amount,
+          effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : new Date(),
+        },
+      });
     }
 
     // updateMany() only returns a count, not the updated row(s); fetch the row to keep
@@ -171,6 +205,21 @@ export class IncomeService {
     // frontend's income page currently ignores this response body entirely and re-fetches
     // via list() after every mutation, but other/future consumers may not).
     return this.prisma.client.income.findUnique({ where: { id } });
+  }
+
+  // "Add effective-dated salary/income history" — returns every logged amount change
+  // for a single Income row, most-recent-first, so a user (or the AI Coach) can answer
+  // "when did my salary last change, and from what to what" without having to infer it
+  // from AuditLog's generic before/after diffs.
+  async history(userId: string, incomeId: string) {
+    const income = await this.prisma.client.income.findUnique({ where: { id: incomeId } });
+    if (!income || income.userId !== userId) {
+      throw new NotFoundException("Income not found");
+    }
+    return this.prisma.client.incomeHistory.findMany({
+      where: { incomeId },
+      orderBy: { effectiveFrom: "desc" },
+    });
   }
 
   // Same atomic-ownership approach as update(), and here it's also a genuine round-trip
