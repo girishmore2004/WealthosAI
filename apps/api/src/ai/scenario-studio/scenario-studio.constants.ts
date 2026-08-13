@@ -35,6 +35,12 @@ export const SCENARIO_FIELD_CONFIG: Record<ScenarioType, FieldConfig> = {
   RETIREMENT_AGE_SHIFT: { field: "newRetirementAge", direction: "optimistic", isDiscretionarySpend: false, isAge: true },
   EMERGENCY_EXPENSE: { field: "amount", direction: "pessimistic", isDiscretionarySpend: false },
   GOAL_DELAY: { field: "delayMonths", direction: "pessimistic", isDiscretionarySpend: false },
+  // NEW (audit item #8): loanAmount is the primary sweep field — bigger loan is the
+  // "pessimistic" direction (more EMI burden), same treatment as HOUSE_PURCHASE's
+  // propertyValue. isDiscretionarySpend: true so the "constrained" variant gets a real
+  // EMI-affordability cap (see ScenarioExpanderService.applyAffordabilityCap()) rather
+  // than just echoing the base value.
+  NEW_LOAN: { field: "loanAmount", direction: "pessimistic", isDiscretionarySpend: true },
 };
 
 // best/worst multipliers applied to the primary field's magnitude, direction-aware —
@@ -142,7 +148,11 @@ export const RISK_LEVEL_COV_THRESHOLDS = { low: 0.15, medium: 0.35 } as const;
 // HOUSE_PURCHASE has four interacting fields (property value, down payment %, rate,
 // tenure), which a single-variable grid search can't responsibly recommend without a
 // real multi-variable solver (a documented scope limit, not an oversight — see
-// scenario-optimizer.service.ts).
+// scenario-optimizer.service.ts). NEW_LOAN is excluded for the same reason as
+// HOUSE_PURCHASE — its "how much to borrow" decision doesn't have a clear risk/reward
+// trade-off the way SIP_INCREASE's "how much to save" does (a bigger loan isn't simply
+// better up to an affordability ceiling; what the money is used for matters, and that's
+// not modeled) — a documented scope limit, not an oversight.
 export const OPTIMIZABLE_SCENARIO_TYPES: ScenarioType[] = [
   "SIP_INCREASE",
   "LOAN_PREPAYMENT",
