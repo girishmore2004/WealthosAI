@@ -316,6 +316,15 @@ export default function TaxPage() {
               <p className="mt-1 text-xs text-ink-faint">
                 Taxable income: <span className="money">{formatINR(estimate.oldRegime.taxableIncome)}</span>
               </p>
+              {/* NEW (audit item #14): surcharge + marginal-relief disclosure — only
+                  shown once income actually crosses the ₹50L surcharge threshold, so
+                  this stays invisible for the vast majority of users below it. */}
+              {Number(estimate.oldRegime.surcharge) > 0 && (
+                <p className="mt-1 text-xs text-ink-faint">
+                  Surcharge: <span className="money">{formatINR(estimate.oldRegime.surcharge)}</span>
+                  {estimate.oldRegime.marginalReliefApplied && " (marginal relief applied)"}
+                </p>
+              )}
             </div>
             <div className={`rounded-md border p-4 ${estimate.recommendedRegime === "NEW" ? "border-marigold-500" : "border-line"}`}>
               <p className="stat-label">New regime</p>
@@ -323,6 +332,12 @@ export default function TaxPage() {
               <p className="mt-1 text-xs text-ink-faint">
                 Taxable income: <span className="money">{formatINR(estimate.newRegime.taxableIncome)}</span>
               </p>
+              {Number(estimate.newRegime.surcharge) > 0 && (
+                <p className="mt-1 text-xs text-ink-faint">
+                  Surcharge: <span className="money">{formatINR(estimate.newRegime.surcharge)}</span>
+                  {estimate.newRegime.marginalReliefApplied && " (marginal relief applied)"}
+                </p>
+              )}
             </div>
           </div>
           <p className="mt-4 text-sm text-ink">
