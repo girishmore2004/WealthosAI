@@ -211,7 +211,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
-import type { InsurancePolicyDTO, CoverageGapDTO, InsuranceType, Recurrence } from "@wealthos/types";
+import type { InsurancePolicyDTO, CoverageGapDTO, InsuranceType, Recurrence, DependentDTO } from "@wealthos/types";
 import { api, ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -231,18 +231,38 @@ const TYPES: InsuranceType[] = [
 ];
 const FREQUENCIES: Recurrence[] = ["MONTHLY", "QUARTERLY", "YEARLY"];
 
-const EDIT_FIELDS: EditField[] = [
-  { key: "type", label: "Type", type: "select", options: TYPES.map((t) => ({ value: t, label: t })) },
-  { key: "provider", label: "Provider" },
-  { key: "premiumAmount", label: "Premium (₹)", type: "number", money: true },
-  { key: "premiumFrequency", label: "Premium frequency", type: "select", options: FREQUENCIES.map((f) => ({ value: f, label: f })) },
-  { key: "coverageAmount", label: "Coverage (₹)", type: "number", money: true },
-  { key: "renewalDate", label: "Renewal date", type: "date" },
-];
+// NEW (audit item #13): nominee fields, added alongside the pre-existing ones. Options
+// for nomineeDependentId are populated dynamically from the household's dependents at
+// render time (see buildEditFields below), since EDIT_FIELDS itself can't know that
+// list statically.
+function buildEditFields(dependents: DependentDTO[]): EditField[] {
+  return [
+    { key: "type", label: "Type", type: "select", options: TYPES.map((t) => ({ value: t, label: t })) },
+    { key: "provider", label: "Provider" },
+    { key: "premiumAmount", label: "Premium (₹)", type: "number", money: true },
+    { key: "premiumFrequency", label: "Premium frequency", type: "select", options: FREQUENCIES.map((f) => ({ value: f, label: f })) },
+    { key: "coverageAmount", label: "Coverage (₹)", type: "number", money: true },
+    { key: "renewalDate", label: "Renewal date", type: "date" },
+    { key: "nomineeName", label: "Nominee name (free text)" },
+    {
+      key: "nomineeDependentId",
+      label: "Or link to a household dependent",
+      type: "select",
+      options: [
+        { value: "", label: "— not linked —" },
+        ...dependents.map((d) => ({ value: d.id, label: `${d.name} (${d.relation})` })),
+      ],
+    },
+  ];
+}
 
 export default function ProtectPage() {
   const [items, setItems] = useState<InsurancePolicyDTO[]>([]);
   const [gaps, setGaps] = useState<CoverageGapDTO[]>([]);
+  // NEW (audit item #13): household dependents, used to populate the nominee-link
+  // dropdown and to resolve a linked policy's nomineeDependentId back to a display
+  // name in the read-only list view below.
+  const [dependents, setDependents] = useState<DependentDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -252,15 +272,18 @@ export default function ProtectPage() {
   const [premiumFrequency, setPremiumFrequency] = useState<Recurrence>("YEARLY");
   const [coverageAmount, setCoverageAmount] = useState("");
   const [renewalDate, setRenewalDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [nomineeName, setNomineeName] = useState("");
+  const [nomineeDependentId, setNomineeDependentId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.insurance.list(), api.insurance.gapAnalysis()])
-      .then(([list, gaps]) => {
+    Promise.all([api.insurance.list(), api.insurance.gapAnalysis(), api.household.get()])
+      .then(([list, gaps, household]) => {
         setItems(list);
         setGaps(gaps);
+        setDependents(household.dependents);
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load policies."))
       .finally(() => setLoading(false));
@@ -280,10 +303,14 @@ export default function ProtectPage() {
         premiumFrequency,
         coverageAmount: parseFloat(coverageAmount),
         renewalDate: new Date(renewalDate).toISOString(),
+        nomineeName: nomineeName.trim() || undefined,
+        nomineeDependentId: nomineeDependentId || undefined,
       });
       setProvider("");
       setPremiumAmount("");
       setCoverageAmount("");
+      setNomineeName("");
+      setNomineeDependentId("");
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save this policy.");
@@ -305,6 +332,12 @@ export default function ProtectPage() {
       premiumFrequency: values.premiumFrequency as string,
       coverageAmount: parseFloat(values.coverageAmount as string),
       renewalDate: new Date(values.renewalDate as string).toISOString(),
+      nomineeName: (values.nomineeName as string) || undefined,
+      // "" is the select's "— not linked —" sentinel — send it through as an explicit
+      // null (not undefined) so choosing it actually clears an existing link, rather
+      // than being silently dropped from the PATCH body and leaving the old link in
+      // place.
+      nomineeDependentId: (values.nomineeDependentId as string) || null,
     });
     setEditingId(null);
     load();
@@ -355,6 +388,21 @@ export default function ProtectPage() {
             ))}
           </select>
           <Input type="number" min="0" placeholder="Coverage amount (₹)" value={coverageAmount} onChange={(e) => setCoverageAmount(e.target.value)} required className="money" />
+          <Input placeholder="Nominee name (optional)" value={nomineeName} onChange={(e) => setNomineeName(e.target.value)} />
+          {dependents.length > 0 && (
+            <select
+              value={nomineeDependentId}
+              onChange={(e) => setNomineeDependentId(e.target.value)}
+              className="rounded-md border border-line bg-surface px-3 py-2.5 text-sm text-ink transition-colors focus:border-marigold-500 focus:ring-1 focus:ring-marigold-500/30"
+            >
+              <option value="">Or link nominee to a household dependent (optional)</option>
+              {dependents.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} ({d.relation})
+                </option>
+              ))}
+            </select>
+          )}
           <Button type="submit" disabled={submitting}>
             {submitting ? "Saving…" : "Add policy"}
           </Button>
@@ -373,7 +421,7 @@ export default function ProtectPage() {
               <li key={item.id} className={`py-2 text-sm ${i !== items.length - 1 ? "ledger-rule" : ""}`}>
                 {editingId === item.id ? (
                   <InlineEditForm
-                    fields={EDIT_FIELDS}
+                    fields={buildEditFields(dependents)}
                     initialValues={{
                       type: item.type,
                       provider: item.provider,
@@ -381,6 +429,8 @@ export default function ProtectPage() {
                       premiumFrequency: item.premiumFrequency,
                       coverageAmount: item.coverageAmount,
                       renewalDate: item.renewalDate.slice(0, 10),
+                      nomineeName: item.nomineeName ?? "",
+                      nomineeDependentId: item.nomineeDependentId ?? "",
                     }}
                     onSave={(values) => onUpdate(item.id, values)}
                     onCancel={() => setEditingId(null)}
@@ -391,6 +441,19 @@ export default function ProtectPage() {
                       <p className="text-ink">{item.provider}</p>
                       <p className="text-xs text-ink-faint">
                         {item.type.replace("_", " ").toLowerCase()} · renews {new Date(item.renewalDate).toLocaleDateString("en-IN")}
+                      </p>
+                      {/* NEW (audit item #13): nominee display — prefers the linked
+                          Dependent's name (resolved from household state) over the
+                          free-text nomineeName, since a linked nominee's name is the
+                          household's own source of truth and could have drifted from
+                          whatever was typed into nomineeName when the policy was
+                          first added. */}
+                      <p className="mt-0.5 text-xs text-ink-faint">
+                        {item.nomineeDependentId
+                          ? `Nominee: ${dependents.find((d) => d.id === item.nomineeDependentId)?.name ?? "linked dependent"} (linked)`
+                          : item.nomineeName
+                            ? `Nominee: ${item.nomineeName}`
+                            : "No nominee on file"}
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
