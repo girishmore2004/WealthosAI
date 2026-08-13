@@ -14,6 +14,7 @@ import { AiCacheService } from "./ops/ai-cache.service";
 import { AiQueueService } from "./ops/ai-queue.service";
 import { AiQueueProcessor } from "./ops/ai-queue.processor";
 import { HealthSelfTestHandler } from "./ops/health-self-test.handler";
+import { RagAutoReindexService } from "./ops/rag-auto-reindex.service";
 import { AiHealthController } from "./controllers/ai-health.controller";
 import { AiJobsController } from "./controllers/ai-jobs.controller";
 
@@ -28,6 +29,12 @@ import { AiJobsController } from "./controllers/ai-jobs.controller";
 // gateway-internal collaborators (dynamic routing signal, exact cost accounting, and
 // grounding/hallucination scoring respectively) — not exported, since nothing outside
 // AiGatewayService is expected to call them directly today.
+//
+// RagAutoReindexService (audit item #7) is a thin wrapper over AiQueueService for
+// triggering an incremental RAG reindex after a relevant write — exported here rather
+// than living inside RagModule so DocumentsModule/CopilotIngestionModule/CoachModule
+// can depend on it without importing the (much heavier) full RagModule, which none of
+// them otherwise need.
 @Module({
   controllers: [AiHealthController, AiJobsController],
   providers: [
@@ -46,7 +53,8 @@ import { AiJobsController } from "./controllers/ai-jobs.controller";
     AiQueueService,
     AiQueueProcessor,
     HealthSelfTestHandler,
+    RagAutoReindexService,
   ],
-  exports: [AiGatewayService, AiQueueService, AiCacheService, PromptRegistryService],
+  exports: [AiGatewayService, AiQueueService, AiCacheService, PromptRegistryService, RagAutoReindexService],
 })
 export class AiModule {}
