@@ -14,6 +14,7 @@ import { currentFinancialYear } from "../common/utils/financial-year.util";
 import { matchIntent, COACH_INTENTS } from "./coach.intents";
 import { CoachInteractionDTO } from "@wealthos/types";
 import { formatINR } from "../common/utils/currency.util";
+import { RagAutoReindexService } from "../ai/ops/rag-auto-reindex.service";
 
 interface GroundedAnswer {
   answer: string;
@@ -40,6 +41,7 @@ export class CoachService {
     private incomeService: IncomeService,
     private dashboardService: DashboardService,
     private alertsService: AlertsService,
+    private ragAutoReindex: RagAutoReindexService,
   ) {}
 
   async ask(userId: string, question: string): Promise<CoachInteractionDTO> {
@@ -62,6 +64,14 @@ export class CoachService {
         wasRefused: intent === null || grounded.insufficientData === true,
       },
     });
+
+    // NEW (audit item #7): CoachInteraction rows are indexed into RAG as a
+    // COACH_INTERACTION source (per the audit — "Coach history is indexed... subject
+    // to the same manual-reindex gap"). Triggered here, per-interaction, so a coach
+    // answer becomes searchable via AI Search without the user manually reindexing —
+    // RagAutoReindexService's hourly idempotency scoping keeps this cheap even for a
+    // user asking many questions in a row.
+    await this.ragAutoReindex.triggerFor(userId);
 
     return { ...interaction, createdAt: this.toIsoString(interaction.createdAt) };
   }
