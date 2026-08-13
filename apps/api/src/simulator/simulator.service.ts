@@ -29,6 +29,9 @@ const REQUIRED_FIELDS: Record<ScenarioType, string[]> = {
   RETIREMENT_AGE_SHIFT: ["newRetirementAge"],
   EMERGENCY_EXPENSE: ["amount"],
   GOAL_DELAY: ["goalId", "delayMonths"],
+  // NEW (audit item #8). "purpose" deliberately omitted — optional, free-text,
+  // narrative-only, never validated as a number.
+  NEW_LOAN: ["loanAmount", "annualRatePercent", "tenureMonths"],
 };
 
 @Injectable()
