@@ -1,6 +1,7 @@
-import { Injectable, ForbiddenException, NotFoundException } from "@nestjs/common";
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { LoansService } from "../loans/loans.service";
+import { IncomeService } from "../income/income.service";
 import { CreatePropertyDto } from "./dto/create-property.dto";
 import { UpdatePropertyDto } from "./dto/update-property.dto";
 import { PropertyMetricsDTO, PropertyPortfolioSummaryDTO } from "@wealthos/types";
@@ -36,6 +37,7 @@ export class PropertyService {
   constructor(
     private prisma: PrismaService,
     private loans: LoansService,
+    private incomeService: IncomeService,
   ) {}
 
   list(userId: string) {
@@ -74,9 +76,24 @@ export class PropertyService {
       throw new NotFoundException("Property not found");
     }
 
+    const updated = await this.prisma.client.property.findUnique({ where: { id } });
+
+    // NEW (audit item #10 follow-through): if this property's rent is already synced
+    // to an Income row and monthlyRentalIncome was part of this update, keep that
+    // Income row's amount in sync rather than letting the two silently drift apart —
+    // the whole point of syncing was "Dashboard/Reports reflect the real rent
+    // figure," which would quietly stop being true the next time the rent changed
+    // (rent renewal, tenant change) if this weren't kept aligned.
+    if (updated?.rentSyncedIncomeId && dto.monthlyRentalIncome !== undefined) {
+      await this.prisma.client.income.updateMany({
+        where: { id: updated.rentSyncedIncomeId, userId },
+        data: { amount: dto.monthlyRentalIncome },
+      });
+    }
+
     // updateMany() only returns a count; fetch the row to keep returning the updated
     // record, matching the original method's contract.
-    return this.prisma.client.property.findUnique({ where: { id } });
+    return updated;
   }
 
   // Same atomic-ownership approach, and a genuine round-trip reduction: one
@@ -85,13 +102,81 @@ export class PropertyService {
   // page (api.property.remove(id)'s response is never read; it always re-fetches the
   // list afterward) before making this change.
   async remove(userId: string, id: string) {
+    // Read first (not just deleteMany) specifically to know whether a linked
+    // rentSyncedIncomeId needs cleaning up — deleting the property must not silently
+    // orphan the Income row it was feeding.
+    const property = await this.prisma.client.property.findUnique({ where: { id } });
+
     const result = await this.prisma.client.property.deleteMany({ where: { id, userId } });
 
     if (result.count === 0) {
       throw new NotFoundException("Property not found");
     }
 
+    if (property?.rentSyncedIncomeId) {
+      await this.prisma.client.income.deleteMany({ where: { id: property.rentSyncedIncomeId, userId } });
+    }
+
     return { id };
+  }
+
+  // NEW: closes the audit-flagged gap — "Property.monthlyRentalIncome never
+  // auto-creates an Income row... the user must separately log rent in Income for it
+  // to reach the dashboard/reports total." Deliberately an explicit, opt-in action
+  // (not automatic when monthlyRentalIncome is set) — same reasoning as
+  // BusinessService.syncDrawingToIncome(): silently auto-creating a recurring Income
+  // row the moment a rent figure is entered could double-count for anyone who already
+  // has the habit of logging rent manually. Creates a MONTHLY-recurrence Income row
+  // (not ONE_TIME, unlike the drawing sync) since rent is inherently a recurring
+  // figure, and update() above keeps its amount aligned if monthlyRentalIncome
+  // changes later.
+  async enableRentIncomeSync(userId: string, propertyId: string) {
+    const property = await this.prisma.client.property.findUnique({ where: { id: propertyId } });
+    if (!property || property.userId !== userId) {
+      throw new NotFoundException("Property not found");
+    }
+    if (!property.isRented || !property.monthlyRentalIncome || Number(property.monthlyRentalIncome) <= 0) {
+      throw new BadRequestException("Property must be marked as rented with a positive monthlyRentalIncome to sync.");
+    }
+    if (property.rentSyncedIncomeId) {
+      throw new BadRequestException("This property's rent is already synced to Income.");
+    }
+
+    const income = await this.incomeService.create(userId, {
+      source: "RENT",
+      label: `Rental income — ${property.name}`,
+      amount: Number(property.monthlyRentalIncome),
+      recurrence: "MONTHLY",
+      receivedAt: new Date().toISOString(),
+      notes: property.address ?? undefined,
+    });
+
+    await this.prisma.client.property.update({
+      where: { id: propertyId },
+      data: { rentSyncedIncomeId: income.id },
+    });
+
+    return { propertyId, income };
+  }
+
+  // Reverses enableRentIncomeSync() — deletes the linked recurring Income row and
+  // clears the link. Same reversibility rationale as
+  // BusinessService.unsyncDrawingFromIncome().
+  async disableRentIncomeSync(userId: string, propertyId: string) {
+    const property = await this.prisma.client.property.findUnique({ where: { id: propertyId } });
+    if (!property || property.userId !== userId) {
+      throw new NotFoundException("Property not found");
+    }
+    if (!property.rentSyncedIncomeId) {
+      throw new BadRequestException("This property's rent was never synced to Income.");
+    }
+
+    await this.prisma.client.income.deleteMany({ where: { id: property.rentSyncedIncomeId, userId } });
+
+    return this.prisma.client.property.update({
+      where: { id: propertyId },
+      data: { rentSyncedIncomeId: null },
+    });
   }
 
   // Left arithmetically unchanged from the original implementation — consumed directly
