@@ -7,9 +7,18 @@ import { InvestmentsModule } from "../investments/investments.module";
 import { LoansModule } from "../loans/loans.module";
 import { AlertsModule } from "../alerts/alerts.module";
 import { PropertyModule } from "../property/property.module";
+import { FinancialFactsModule } from "../common/financial-facts/financial-facts.module";
 
 @Module({
-  imports: [IncomeModule, ExpensesModule, InvestmentsModule, LoansModule, AlertsModule, PropertyModule],
+  imports: [
+    IncomeModule,
+    ExpensesModule,
+    InvestmentsModule,
+    LoansModule,
+    AlertsModule,
+    PropertyModule,
+    FinancialFactsModule,
+  ],
   controllers: [DashboardController],
   providers: [DashboardService],
   exports: [DashboardService],
