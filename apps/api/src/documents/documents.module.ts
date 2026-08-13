@@ -8,16 +8,22 @@ import { TesseractOcrAdapter } from "./adapters/tesseract-ocr.adapter";
 import { OCR_ADAPTER, ocrAdapterFactory } from "./adapters/ocr-adapter.factory";
 import { DocumentOcrHandler } from "./document-ocr.handler";
 import { AiModule } from "../ai/ai.module";
+import { CopilotIngestionModule } from "../ai/copilot-ingestion/copilot-ingestion.module";
 
 @Module({
-  // AiModule import is new — required so DocumentOcrHandler can inject AiQueueService,
-  // the same shared, generic job-queue infrastructure the AI layer's own health
-  // self-test and RAG indexing already register handlers with (AiModule's own doc
-  // comment explicitly invites this: "Every future ... module is expected to import
-  // AiModule and depend on ... AiQueueService"). No file under apps/api/src/ai is
-  // modified to support this — purely a DI wiring addition on the Documents side, the
-  // same pattern already used for Property -> Loans and Insurance -> Income.
-  imports: [AiModule],
+  // AiModule import: required so DocumentOcrHandler can inject AiQueueService, the
+  // same shared, generic job-queue infrastructure the AI layer's own health self-test
+  // and RAG indexing already register handlers with (AiModule's own doc comment
+  // explicitly invites this: "Every future ... module is expected to import AiModule
+  // and depend on ... AiQueueService"). No file under apps/api/src/ai is modified to
+  // support this — purely a DI wiring addition on the Documents side, the same
+  // pattern already used for Property -> Loans and Insurance -> Income.
+  // CopilotIngestionModule import: NEW, required so DocumentOcrHandler can inject
+  // CopilotIngestionService for the Document -> Copilot Ingestion bridge (audit item
+  // #6). CopilotIngestionModule doesn't import DocumentsModule (confirmed, no
+  // circular dependency) — the two feature modules were previously architecturally
+  // unaware of each other, exactly the gap this bridge closes.
+  imports: [AiModule, CopilotIngestionModule],
   controllers: [DocumentsController],
   providers: [
     DocumentsService,
