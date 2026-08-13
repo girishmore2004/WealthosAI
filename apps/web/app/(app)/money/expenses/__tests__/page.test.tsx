@@ -12,6 +12,10 @@ jest.mock("@/lib/api-client", () => ({
       update: jest.fn(),
       remove: jest.fn(),
       breakdown: jest.fn(),
+      // NEW (audit item #3)
+      activateRecurrence: jest.fn(),
+      deactivateRecurrence: jest.fn(),
+      previewRecurrence: jest.fn(),
     },
   },
   ApiError: class ApiError extends Error {},
@@ -34,6 +38,11 @@ const makeExpense = (id: string, merchant: string) => ({
   paymentMethod: "UPI",
   isRecurring: false,
   notes: null,
+  recurrence: null,
+  recurrenceActive: false,
+  recurrenceEndDate: null,
+  nextOccurrenceAt: null,
+  generatedFromRecurringId: null,
 });
 
 beforeEach(() => {
@@ -106,5 +115,59 @@ describe("ExpensesPage pagination (new, audit item #16)", () => {
     render(<ExpensesPage />);
 
     expect(await screen.findByTestId("chart-stub")).toBeInTheDocument();
+  });
+});
+
+describe("ExpensesPage recurrence toggle (new, audit item #3)", () => {
+  it("activates with a default MONTHLY cadence when no recurrence is set yet", async () => {
+    mockedApi.expenses.listPaged.mockResolvedValue({
+      items: [makeExpense("e1", "Netflix")],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.expenses.activateRecurrence.mockResolvedValue({} as any);
+
+    render(<ExpensesPage />);
+    await screen.findByText("Netflix");
+
+    fireEvent.click(screen.getByText("Make recurring"));
+
+    await waitFor(() => expect(mockedApi.expenses.activateRecurrence).toHaveBeenCalledWith("e1", "MONTHLY"));
+  });
+
+  it("deactivates on click when already active", async () => {
+    mockedApi.expenses.listPaged.mockResolvedValue({
+      items: [{ ...makeExpense("e1", "Netflix"), recurrenceActive: true, recurrence: "MONTHLY" }],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+    mockedApi.expenses.deactivateRecurrence.mockResolvedValue({} as any);
+
+    render(<ExpensesPage />);
+    await screen.findByText("Netflix");
+
+    fireEvent.click(screen.getByText("Auto-generating ✓"));
+
+    await waitFor(() => expect(mockedApi.expenses.deactivateRecurrence).toHaveBeenCalledWith("e1"));
+  });
+
+  it("does not show the toggle, and shows an 'auto-generated' label instead, for a system-generated row", async () => {
+    mockedApi.expenses.listPaged.mockResolvedValue({
+      items: [{ ...makeExpense("e1", "Netflix"), generatedFromRecurringId: "template-1" }],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      totalPages: 1,
+    });
+
+    render(<ExpensesPage />);
+    await screen.findByText("Netflix");
+
+    expect(screen.queryByText("Make recurring")).not.toBeInTheDocument();
+    expect(screen.getByText("auto-generated")).toBeInTheDocument();
   });
 });
