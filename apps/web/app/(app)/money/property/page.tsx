@@ -308,6 +308,21 @@ export default function PropertyPage() {
     load();
   };
 
+  // NEW (audit item #10): explicit, opt-in rent -> personal Income sync. Reversible,
+  // same toggle-style affordance as the Business page's drawing sync.
+  const onToggleRentSync = async (p: { id: string; rentSyncedIncomeId: string | null }) => {
+    try {
+      if (p.rentSyncedIncomeId) {
+        await api.property.disableRentIncomeSync(p.id);
+      } else {
+        await api.property.enableRentIncomeSync(p.id);
+      }
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not update this property's Income sync.");
+    }
+  };
+
   const onUpdate = async (id: string, values: Record<string, string | boolean>) => {
     await api.property.update(id, {
       type: values.type as string,
@@ -413,6 +428,19 @@ export default function PropertyPage() {
                         <p className="text-xs text-ink-faint">{p.type.toLowerCase()} · purchased {new Date(p.purchaseDate).toLocaleDateString("en-IN")}</p>
                       </div>
                       <div className="flex items-center gap-3">
+                        {p.isRented && p.monthlyRentalIncome && (
+                          <button
+                            onClick={() => onToggleRentSync(p)}
+                            className={`text-xs hover:underline ${p.rentSyncedIncomeId ? "text-ink-faint" : "text-marigold-600"}`}
+                            title={
+                              p.rentSyncedIncomeId
+                                ? "This property's rent is recorded as personal Income — click to un-sync"
+                                : "Record this property's rent as personal Income"
+                            }
+                          >
+                            {p.rentSyncedIncomeId ? "Synced to Income ✓" : "Sync rent to Income"}
+                          </button>
+                        )}
                         <button onClick={() => setEditingId(p.id)} className="text-xs text-ink-faint hover:text-marigold-600">
                           Edit
                         </button>
