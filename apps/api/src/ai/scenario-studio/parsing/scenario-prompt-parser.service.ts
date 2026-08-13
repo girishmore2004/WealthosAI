@@ -13,6 +13,7 @@ const SCENARIO_TYPES: [ScenarioType, ...ScenarioType[]] = [
   "RETIREMENT_AGE_SHIFT",
   "EMERGENCY_EXPENSE",
   "GOAL_DELAY",
+  "NEW_LOAN",
 ];
 
 // Shown to the model so it knows which fields to populate for whichever scenarioType
@@ -32,6 +33,8 @@ const SCENARIO_FIELD_HINTS: Record<ScenarioType, string> = {
   RETIREMENT_AGE_SHIFT: "newRetirementAge (number, years)",
   EMERGENCY_EXPENSE: "amount (number, ₹)",
   GOAL_DELAY: "delayMonths (number) — goalId cannot be guessed from text, leave it out",
+  NEW_LOAN:
+    "loanAmount (number, ₹), annualRatePercent (number), tenureMonths (number), purpose (string, optional) — use this for a NEW loan not tied to buying a house (business expansion, equipment, a personal loan, etc.); do not use LOAN_PREPAYMENT (that's for paying down an EXISTING loan) or HOUSE_PURCHASE (that's specifically for buying property) for these",
 };
 
 const parseSchema = z.object({
