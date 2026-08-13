@@ -8,6 +8,49 @@ import { InvestmentsService } from "../src/investments/investments.service";
 import { LoansService } from "../src/loans/loans.service";
 import { AlertsService } from "../src/alerts/alerts.service";
 import { PropertyService } from "../src/property/property.service";
+import { FinancialFactsService } from "../src/common/financial-facts/financial-facts.service";
+
+// DashboardService now delegates the #2 emergency-fund calculation to
+// FinancialFactsService.getEmergencyFundStatus() instead of computing it inline — see
+// financial-facts.service.spec.ts for that method's own dedicated unit tests. Here it's
+// mocked with a faithful reimplementation of the same algorithm (rather than a bare
+// jest.fn() returning a fixed value) so these DashboardService tests keep exercising
+// real end-to-end behavior through getSummary(), matching how the two services actually
+// interact in production.
+function makeMockFinancialFactsService() {
+  return {
+    getEmergencyFundStatus: jest.fn(
+      async (
+        _userId: string,
+        monthlyExpenseTotal: number,
+        prefetched?: {
+          emergencyFundGoals?: { currentAmount: unknown }[];
+          monthExpenses?: { amount: unknown; category: { name: string } }[];
+        },
+      ) => {
+        const emergencyFundGoals = prefetched?.emergencyFundGoals ?? [];
+        const monthExpenses = prefetched?.monthExpenses ?? [];
+
+        let amount = 0;
+        let basis: "GOAL" | "CATEGORY_LEGACY" | "NONE" = "NONE";
+
+        if (emergencyFundGoals.length > 0) {
+          amount = emergencyFundGoals.reduce((sum, g) => sum + Number(g.currentAmount), 0);
+          basis = "GOAL";
+        } else {
+          const legacy = monthExpenses.find((e) => e.category.name === "Emergency Fund");
+          if (legacy) {
+            amount = Number(legacy.amount);
+            basis = "CATEGORY_LEGACY";
+          }
+        }
+
+        const monthsOfCoverage = monthlyExpenseTotal > 0 && amount > 0 ? amount / (monthlyExpenseTotal / 12) : 0;
+        return { amount, basis, monthsOfCoverage };
+      },
+    ),
+  };
+}
 
 describe("DashboardService.computeHealthScore (via getSummary)", () => {
   let service: DashboardService;
@@ -32,6 +75,7 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
   const mockPropertyService = {
     totalCurrentValue: jest.fn().mockResolvedValue(0),
   };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
   // Was a bare `{}` — getSummary() now also reads budgets via
   // this.prisma.client.budget.findMany(). Defaulted to "no budgets configured" so all
   // 4 pre-existing tests below (none of which ever mention budgets) keep computing the
@@ -67,6 +111,7 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
         { provide: LoansService, useValue: mockLoansService },
         { provide: AlertsService, useValue: mockAlertsService },
         { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
       ],
     }).compile();
 
@@ -155,6 +200,7 @@ describe("DashboardService budget-aware health score (new)", () => {
   };
   const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
   const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
   const mockPrisma = {
     client: {
       budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() },
@@ -183,6 +229,7 @@ describe("DashboardService budget-aware health score (new)", () => {
         { provide: LoansService, useValue: mockLoansService },
         { provide: AlertsService, useValue: mockAlertsService },
         { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
       ],
     }).compile();
     service = moduleRef.get(DashboardService);
@@ -257,6 +304,7 @@ describe("DashboardService budget CRUD (new)", () => {
         { provide: LoansService, useValue: noop },
         { provide: AlertsService, useValue: noop },
         { provide: PropertyService, useValue: noop },
+        { provide: FinancialFactsService, useValue: noop },
       ],
     }).compile();
     service = moduleRef.get(DashboardService);
@@ -313,6 +361,7 @@ describe("DashboardService emergency fund via Goal + uncommitted cash (new, audi
   };
   const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
   const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
   const mockPrisma = {
     client: {
       budget: { findMany: jest.fn().mockResolvedValue([]) },
@@ -344,6 +393,7 @@ describe("DashboardService emergency fund via Goal + uncommitted cash (new, audi
         { provide: LoansService, useValue: mockLoansService },
         { provide: AlertsService, useValue: mockAlertsService },
         { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
       ],
     }).compile();
     service = moduleRef.get(DashboardService);
