@@ -201,7 +201,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
-import type { IncomeDTO, IncomeSource, Recurrence } from "@wealthos/types";
+import type { IncomeDTO, IncomeSource, Recurrence, IncomeHistoryDTO } from "@wealthos/types";
 import { api, ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -253,6 +253,30 @@ export default function IncomePage() {
   const [receivedAt, setReceivedAt] = useState(() => new Date().toISOString().slice(0, 10));
   const [submitting, setSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // NEW (audit item #4): which row's history is currently expanded, and its fetched
+  // entries. Null historyRows means "not yet fetched" — distinguishes from an
+  // already-fetched empty array (a row with no logged amount changes).
+  const [historyOpenId, setHistoryOpenId] = useState<string | null>(null);
+  const [historyRows, setHistoryRows] = useState<IncomeHistoryDTO[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const onToggleHistory = async (id: string) => {
+    if (historyOpenId === id) {
+      setHistoryOpenId(null);
+      return;
+    }
+    setHistoryOpenId(id);
+    setHistoryRows(null);
+    setHistoryLoading(true);
+    try {
+      const rows = await api.income.history(id);
+      setHistoryRows(rows);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not load this row's history.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const load = (targetPage: number = page) => {
     setLoading(true);
@@ -438,10 +462,33 @@ export default function IncomePage() {
                       <button onClick={() => setEditingId(item.id)} className="text-xs text-ink-faint hover:text-marigold-600">
                         Edit
                       </button>
+                      <button onClick={() => onToggleHistory(item.id)} className="text-xs text-ink-faint hover:text-marigold-600">
+                        History
+                      </button>
                       <button onClick={() => onDelete(item.id)} className="text-xs text-ink-faint hover:text-loss">
                         Remove
                       </button>
                     </div>
+                  </div>
+                )}
+                {/* NEW (audit item #4): expandable amount-change history panel. */}
+                {historyOpenId === item.id && (
+                  <div className="mt-2 rounded-md bg-surface-muted px-3 py-2 text-xs">
+                    {historyLoading ? (
+                      <p className="text-ink-faint">Loading history…</p>
+                    ) : !historyRows || historyRows.length === 0 ? (
+                      <p className="text-ink-faint">No amount changes logged for this entry yet.</p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {historyRows.map((h) => (
+                          <li key={h.id} className="text-ink-faint">
+                            <span className="money">{formatINR(h.previousAmount)}</span> →{" "}
+                            <span className="money text-ink">{formatINR(h.newAmount)}</span>, effective{" "}
+                            {new Date(h.effectiveFrom).toLocaleDateString("en-IN")}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
               </li>
