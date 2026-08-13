@@ -66,6 +66,22 @@ describe("SimulatorService", () => {
       const { result } = await service.run("user-1", "LOAN_PREPAYMENT", { loanId: "loan-abc", lumpSum: 50000 });
       expect(result.scenarioType).toBe("LOAN_PREPAYMENT");
     });
+
+    it("rejects NEW_LOAN missing any of loanAmount/annualRatePercent/tenureMonths (audit item #8)", async () => {
+      await expect(service.run("user-1", "NEW_LOAN", { loanAmount: 500000 })).rejects.toThrow(
+        /annualRatePercent.*tenureMonths|tenureMonths.*annualRatePercent/,
+      );
+    });
+
+    it("accepts NEW_LOAN with all required fields plus the optional non-numeric purpose", async () => {
+      const { result } = await service.run("user-1", "NEW_LOAN", {
+        loanAmount: 500000,
+        annualRatePercent: 11,
+        tenureMonths: 36,
+        purpose: "business expansion",
+      });
+      expect(result.scenarioType).toBe("NEW_LOAN");
+    });
   });
 
   describe("run — DB-backed baseline", () => {
