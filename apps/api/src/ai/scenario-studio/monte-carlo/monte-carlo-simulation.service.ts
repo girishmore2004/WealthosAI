@@ -239,6 +239,22 @@ export class MonteCarloSimulationService {
         // simulator.engine.ts's own documented behavior for this scenario type.
         return base;
       }
+      case "NEW_LOAN": {
+        // Same modeling choice as simulator.engine.ts's deterministic NEW_LOAN case:
+        // immediateNetWorthDelta stays 0 (base) — the borrowed amount is assumed
+        // spent/deployed immediately on something not tracked as an ongoing asset, so
+        // only the new loan's amortization (via `loans`) and its EMI's drag on monthly
+        // cashflow show up in the simulated trajectory.
+        const p = params as ScenarioParamsByType["NEW_LOAN"];
+        const emi = calculateEmi(p.loanAmount, p.annualRatePercent, p.tenureMonths);
+        const newLoan = {
+          id: "__new_loan__",
+          principal: p.loanAmount,
+          annualRatePercent: p.annualRatePercent,
+          emi,
+        };
+        return { ...base, loans: [...loans, newLoan] };
+      }
       default: {
         const _exhaustive: never = scenarioType;
         throw new BadRequestException(`Unsupported scenario type for Monte Carlo simulation: ${String(_exhaustive)}`);
