@@ -1,5 +1,5 @@
 import { Test } from "@nestjs/testing";
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, BadRequestException } from "@nestjs/common";
 import { InsuranceService } from "../src/insurance/insurance.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { IncomeService } from "../src/income/income.service";
@@ -189,10 +189,15 @@ describe("InsuranceService CRUD hardening", () => {
   let service: InsuranceService;
   const mockPrisma = {
     client: {
-      insurancePolicy: { findMany: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() },
+      insurancePolicy: { findMany: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn(), create: jest.fn() },
       user: { findUnique: jest.fn() },
       property: { findMany: jest.fn() },
       business: { findMany: jest.fn() },
+      // dependent added for the nominee-link ownership check below (audit item #13) —
+      // the pre-existing tests in this block never set nomineeDependentId, so
+      // assertDependentOwnership() short-circuits before touching this mock, and every
+      // existing assertion is unaffected.
+      dependent: { findUnique: jest.fn() },
     },
   };
   const mockIncome = { monthlyForecast: jest.fn() };
@@ -245,6 +250,123 @@ describe("InsuranceService CRUD hardening", () => {
     it("throws NotFoundException when the id doesn't exist or isn't owned by the caller", async () => {
       mockPrisma.client.insurancePolicy.deleteMany.mockResolvedValue({ count: 0 });
       await expect(service.remove("user-1", "not-mine")).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("nominee-dependent linking (new, audit item #13)", () => {
+    it("allows linking a nominee to a dependent in the caller's own household", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "user-1", householdId: "h1" });
+      mockPrisma.client.dependent.findUnique.mockResolvedValue({ id: "dep-1", householdId: "h1" });
+      mockPrisma.client.insurancePolicy.create.mockResolvedValue({ id: "p1", nomineeDependentId: "dep-1" });
+
+      await service.create("user-1", {
+        type: "TERM",
+        provider: "HDFC Ergo",
+        premiumAmount: 10000,
+        premiumFrequency: "YEARLY",
+        coverageAmount: 5000000,
+        renewalDate: "2027-01-01",
+        nomineeDependentId: "dep-1",
+      } as any);
+
+      expect(mockPrisma.client.insurancePolicy.create).toHaveBeenCalled();
+    });
+
+    it("rejects linking a nominee to a dependent in a different household", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "user-1", householdId: "h1" });
+      mockPrisma.client.dependent.findUnique.mockResolvedValue({ id: "dep-1", householdId: "someone-elses-household" });
+
+      await expect(
+        service.create("user-1", {
+          type: "TERM",
+          provider: "HDFC Ergo",
+          premiumAmount: 10000,
+          premiumFrequency: "YEARLY",
+          coverageAmount: 5000000,
+          renewalDate: "2027-01-01",
+          nomineeDependentId: "dep-1",
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.insurancePolicy.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects linking a nominee to a dependent that doesn't exist", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "user-1", householdId: "h1" });
+      mockPrisma.client.dependent.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.update("user-1", "p1", { nomineeDependentId: "missing-dep" } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.insurancePolicy.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects linking a nominee when the caller has no household at all", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "user-1", householdId: null });
+      mockPrisma.client.dependent.findUnique.mockResolvedValue({ id: "dep-1", householdId: "h1" });
+
+      await expect(
+        service.update("user-1", "p1", { nomineeDependentId: "dep-1" } as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("skips the ownership check entirely when nomineeDependentId isn't part of the request", async () => {
+      mockPrisma.client.insurancePolicy.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.client.insurancePolicy.findUnique.mockResolvedValue({ id: "p1" });
+
+      await service.update("user-1", "p1", { provider: "New Provider" } as any);
+
+      expect(mockPrisma.client.user.findUnique).not.toHaveBeenCalled();
+      expect(mockPrisma.client.dependent.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("allows explicitly un-linking a nominee (nomineeDependentId: null) without triggering the ownership check", async () => {
+      mockPrisma.client.insurancePolicy.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.client.insurancePolicy.findUnique.mockResolvedValue({ id: "p1", nomineeDependentId: null });
+
+      await service.update("user-1", "p1", { nomineeDependentId: null } as any);
+
+      expect(mockPrisma.client.dependent.findUnique).not.toHaveBeenCalled();
+      expect(mockPrisma.client.insurancePolicy.updateMany).toHaveBeenCalledWith({
+        where: { id: "p1", userId: "user-1" },
+        data: expect.objectContaining({ nomineeDependentId: null }),
+      });
+    });
+  });
+
+  describe("nomineeSummary (audit item #13 follow-through)", () => {
+    it("counts a policy with only a linked dependent (no free-text name) as having a nominee", async () => {
+      mockPrisma.client.insurancePolicy.findMany.mockResolvedValue([
+        { id: "p1", provider: "A", type: "TERM", nomineeName: null, nomineeDependentId: "dep-1" },
+      ]);
+
+      const summary = await service.nomineeSummary("user-1");
+
+      expect(summary.withNominee).toBe(1);
+      expect(summary.missingNominee).toHaveLength(0);
+      expect(summary.linkedToDependent).toBe(1);
+    });
+
+    it("still flags a policy with neither a name nor a link as missing a nominee", async () => {
+      mockPrisma.client.insurancePolicy.findMany.mockResolvedValue([
+        { id: "p1", provider: "A", type: "TERM", nomineeName: null, nomineeDependentId: null },
+      ]);
+
+      const summary = await service.nomineeSummary("user-1");
+
+      expect(summary.withNominee).toBe(0);
+      expect(summary.missingNominee).toHaveLength(1);
+      expect(summary.linkedToDependent).toBe(0);
+    });
+
+    it("counts free-text-only nominees as having a nominee but not linked", async () => {
+      mockPrisma.client.insurancePolicy.findMany.mockResolvedValue([
+        { id: "p1", provider: "A", type: "TERM", nomineeName: "Jane Doe", nomineeDependentId: null },
+      ]);
+
+      const summary = await service.nomineeSummary("user-1");
+
+      expect(summary.withNominee).toBe(1);
+      expect(summary.linkedToDependent).toBe(0);
     });
   });
 });
