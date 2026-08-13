@@ -439,6 +439,47 @@ export function runScenario<T extends ScenarioType>(
       );
     }
 
+    // NEW (audit item #8): a new/expansion loan not tied to purchasing a house —
+    // business expansion, a personal loan, equipment financing, etc. Modeling choice,
+    // stated explicitly (mirroring HOUSE_PURCHASE's own documented choice above):
+    // immediateNetWorthDelta is 0 — the borrowed cash is assumed spent/deployed
+    // immediately on something this model doesn't track as an ongoing asset (e.g.
+    // business inventory, equipment, working capital), and the model doesn't credit or
+    // debit that spend explicitly. The ONLY effect this scenario has on the projection
+    // is the new loan's own amortization (via `loans`) and its EMI's drag on monthly
+    // cashflow — i.e. "buying" the loan's use is a wash at the moment of borrowing, same
+    // as HOUSE_PURCHASE's undocumented house-value credit/down-payment debit, and only
+    // the ongoing financing cost compounds afterward.
+    case "NEW_LOAN": {
+      const p = params as ScenarioParamsByType["NEW_LOAN"];
+      const emi = calculateEmi(p.loanAmount, p.annualRatePercent, p.tenureMonths);
+      const newLoan: LoanAmortizationInput = {
+        id: "__new_loan__",
+        principal: p.loanAmount,
+        annualRatePercent: p.annualRatePercent,
+        emi,
+      };
+      const purposeSuffix = p.purpose ? ` for ${p.purpose}` : "";
+      return buildResult(
+        scenarioType,
+        baseline,
+        months,
+        {
+          loans: [...loans, newLoan],
+          monthlyEmiDelta: emi,
+        },
+        `Taking on a new ₹${p.loanAmount.toFixed(0)} loan${purposeSuffix} at ${p.annualRatePercent}%/year over ${p.tenureMonths} months adds a ₹${emi.toFixed(0)}/month EMI.`,
+        emi > baseline.monthlyIncome - baseline.monthlyExpenses
+          ? "The new EMI alone would exceed current monthly surplus — other goals would likely need to pause."
+          : "Other goal contributions may need to shrink to accommodate the new EMI.",
+        [
+          `New loan: ₹${p.loanAmount.toFixed(0)} at ${p.annualRatePercent}%/year over ${p.tenureMonths} months`,
+          "The new loan is included alongside your existing loans in the month-by-month amortization, so the projection reflects its principal actually being paid down, not a static balance",
+          "The borrowed amount is modeled as spent/deployed immediately (e.g. business expansion, equipment, working capital) rather than held as a tracked asset — like HOUSE_PURCHASE, there's no offsetting asset value credited, so the net effect at the moment of borrowing is a wash and only the ongoing EMI cost shows up over time",
+        ],
+      );
+    }
+
     default: {
       const _exhaustive: never = scenarioType;
       throw new Error(`Unsupported scenario type: ${_exhaustive}`);
