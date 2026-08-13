@@ -5,6 +5,7 @@ import {
   ScenarioResultDTO,
   ScenarioType,
 } from "@wealthos/types";
+import { amortizeOneMonth } from "../common/finance-math/amortization";
 
 // PURE MODULE — no Prisma, no service calls, no I/O of any kind. Every function here
 // takes plain data in and returns plain data out, so the same inputs always produce the
@@ -45,14 +46,13 @@ export function calculateEmi(principal: number, annualRatePercent: number, tenur
 // naturally, without introducing a second, divergent shape.
 export type LoanAmortizationInput = ScenarioLoanSnapshotDTO;
 
-// Advances every loan's balance by exactly one month using the same EMI-constant,
-// reducing-balance math as LoansService's private computeSchedule() (interest =
-// balance × monthlyRate; principalPaid = emi − interest; a loan whose EMI doesn't even
-// cover interest is held flat rather than diverging into negative-amortization, mirroring
-// that method's "stuck schedule" safety branch). Intentionally duplicated here — this
-// pure, I/O-free engine cannot import LoansService (a Nest-injectable with its own DB
-// dependency) — following the same "small, localized duplication over exposing
-// internals" precedent already used for goal-delay math in SimulatorService.buildContext().
+// Advances every loan's balance by exactly one month using the same shared,
+// EMI-constant, reducing-balance step (amortizeOneMonth(), in common/finance-math) that
+// LoansService's amortization schedule uses — previously this was a hand-copied
+// reimplementation of that same math, kept in sync manually (audit item #15). Behavior
+// is unchanged: a loan whose EMI doesn't even cover interest is held flat rather than
+// diverging into negative amortization, exactly matching amortizeOneMonth()'s "stuck"
+// branch.
 //
 // Mutates `balances` in place (parallel array to `loans`) and returns the total cash
 // actually paid out across all loans this month: exactly each loan's EMI in every month
@@ -66,20 +66,18 @@ function stepLoansOneMonth(balances: number[], loans: LoanAmortizationInput[]): 
     const balance = balances[i];
     if (balance <= 0) continue;
 
-    const monthlyRate = loans[i].annualRatePercent / 12 / 100;
-    const interest = balance * monthlyRate;
-    let principalPaid = loans[i].emi - interest;
+    const step = amortizeOneMonth(balance, loans[i].annualRatePercent, loans[i].emi);
 
-    if (principalPaid <= 0) {
-      // EMI doesn't cover interest — stuck, same safety branch as computeSchedule().
-      // The borrower still pays the EMI in cash; the balance just doesn't shrink.
+    if (step.stuck) {
+      // EMI doesn't cover interest — stuck, same safety branch as
+      // computeAmortizationSchedule(). The borrower still pays the EMI in cash; the
+      // balance just doesn't shrink.
       totalOutflow += loans[i].emi;
       continue;
     }
 
-    if (principalPaid > balance) principalPaid = balance; // final, partial month
-    balances[i] = balance - principalPaid;
-    totalOutflow += principalPaid + interest;
+    balances[i] = step.newBalance;
+    totalOutflow += step.principalPaid + step.interest;
   }
   return totalOutflow;
 }
