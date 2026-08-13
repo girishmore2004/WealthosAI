@@ -227,12 +227,26 @@ export default function ExpensesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const load = () => {
+  // NEW (audit item #16): same rationale as the Income page — the transaction list
+  // now fetches via the paginated endpoint instead of the previously-unbounded list().
+  // The ExpenseBreakdownChart (fed by refreshKey, not by `items`) is unaffected — it
+  // has always computed its own category totals from expenses.breakdown(), not from
+  // this list, so switching this list to a bounded page doesn't change what the chart
+  // shows.
+  const PAGE_SIZE = 25;
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+
+  const load = (targetPage: number = page) => {
     setLoading(true);
     setRefreshKey((k) => k + 1);
-    Promise.all([api.expenses.list(), api.expenses.categories()])
+    Promise.all([api.expenses.listPaged({ page: targetPage, pageSize: PAGE_SIZE }), api.expenses.categories()])
       .then(([expenses, cats]) => {
-        setItems(expenses);
+        setItems(expenses.items);
+        setPage(expenses.page);
+        setTotalPages(expenses.totalPages);
+        setTotal(expenses.total);
         setCategories(cats);
         if (!categoryId && cats.length > 0) setCategoryId(cats[0].id);
       })
@@ -241,7 +255,7 @@ export default function ExpensesPage() {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, []);
+  useEffect(() => load(1), []);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -257,7 +271,7 @@ export default function ExpensesPage() {
       });
       setMerchant("");
       setAmount("");
-      load();
+      load(1); // newest-first ordering — the new entry lands on page 1
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save this expense.");
     } finally {
@@ -267,7 +281,7 @@ export default function ExpensesPage() {
 
   const onDelete = async (id: string) => {
     await api.expenses.remove(id);
-    load();
+    load(items.length === 1 && page > 1 ? page - 1 : page);
   };
 
   const onUpdate = async (id: string, values: Record<string, string | boolean>) => {
@@ -279,7 +293,7 @@ export default function ExpensesPage() {
       paymentMethod: values.paymentMethod as string,
     });
     setEditingId(null);
-    load();
+    load(page);
   };
 
   const editFields: EditField[] = [
@@ -351,7 +365,8 @@ export default function ExpensesPage() {
         ) : items.length === 0 ? (
           <p className="text-sm text-ink-faint">No expenses logged yet. Add your first entry above.</p>
         ) : (
-          <ul>
+          <>
+            <ul>
             {items.map((item, i) => (
               <li key={item.id} className={`py-2 text-sm ${i !== items.length - 1 ? "ledger-rule" : ""}`}>
                 {editingId === item.id ? (
@@ -389,7 +404,30 @@ export default function ExpensesPage() {
                 )}
               </li>
             ))}
-          </ul>
+            </ul>
+            {/* NEW (audit item #16): Previous/Next controls for the paginated view. */}
+            <div className="mt-4 flex items-center justify-between text-xs text-ink-faint">
+              <span>
+                Page {page} of {totalPages} · {total} total
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => load(page - 1)}
+                  disabled={page <= 1 || loading}
+                  className="rounded-md border border-line px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => load(page + 1)}
+                  disabled={page >= totalPages || loading}
+                  className="rounded-md border border-line px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </Card>
     </div>
