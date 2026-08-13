@@ -677,7 +677,9 @@ export type DocumentCategory =
   | "BUSINESS_DOCUMENT"
   | "RECEIPT"
   | "BILL"
-  | "OTHER";
+  | "OTHER"
+  // NEW (audit item #6): routing target for the Document -> Copilot Ingestion bridge.
+  | "BANK_STATEMENT";
 
 export type OcrStatus = "NOT_APPLICABLE" | "PENDING" | "DONE" | "FAILED";
 
@@ -1299,6 +1301,8 @@ export interface IngestionReviewItemDTO {
   resolvedAt: string | null;
 }
 
+export type IngestionSourceType = "TEXT" | "OCR_IMAGE" | "DOCUMENT_OCR";
+
 export interface IngestionBatchDTO {
   id: string;
   sourceLabel: string;
@@ -1308,6 +1312,16 @@ export interface IngestionBatchDTO {
   unparsedCount: number;
   items: IngestionReviewItemDTO[];
   createdAt: string;
+  // Below were already present on the actual API response (the service returns the
+  // raw Prisma row) but missing from this type — added now alongside the genuinely
+  // new sourceDocumentId field for a type that actually matches the wire shape.
+  ingestionSource: IngestionSourceType;
+  ocrExtractionConfidence: string | null;
+  // NEW (audit item #6): set only for a batch created automatically via the
+  // Document -> Copilot Ingestion bridge (ingestionSource: "DOCUMENT_OCR") — the id
+  // of the Document this batch's text was extracted from. Null for every batch
+  // created via a pasted-text import or a direct statement-image upload.
+  sourceDocumentId: string | null;
 }
 
 export interface IngestionBatchSummaryDTO {
