@@ -7,11 +7,16 @@ import { ListExpensesQueryDto } from "./dto/list-expenses-query.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
+import { RecurrenceGeneratorService } from "../common/recurrence/recurrence-generator.service";
+import { ActivateExpenseRecurrenceDto } from "../common/recurrence/dto/activate-expense-recurrence.dto";
 
 @UseGuards(SessionAuthGuard)
 @Controller()
 export class ExpensesController {
-  constructor(private expensesService: ExpensesService) {}
+  constructor(
+    private expensesService: ExpensesService,
+    private recurrenceGenerator: RecurrenceGeneratorService,
+  ) {}
 
   @Get("categories")
   listCategories() {
@@ -60,5 +65,24 @@ export class ExpensesController {
   @Get("expenses/subscriptions")
   subscriptions(@CurrentUser() user: User) {
     return this.expensesService.detectSubscriptions(user.id);
+  }
+
+  // NEW (audit item #3): same opt-in recurring-generation controls as Income, applied
+  // to a single Expense row. Unlike Income, activation requires supplying the
+  // cadence (Expense had no recurrence field to reuse before this change) — see
+  // ActivateExpenseRecurrenceDto.
+  @Post("expenses/:id/recurrence/activate")
+  activateRecurrence(@CurrentUser() user: User, @Param("id") id: string, @Body() dto: ActivateExpenseRecurrenceDto) {
+    return this.recurrenceGenerator.activateExpenseRecurrence(user.id, id, dto.recurrence, dto.endDate);
+  }
+
+  @Post("expenses/:id/recurrence/deactivate")
+  deactivateRecurrence(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.recurrenceGenerator.deactivateExpenseRecurrence(user.id, id);
+  }
+
+  @Get("expenses/:id/recurrence/preview")
+  previewRecurrence(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.recurrenceGenerator.previewExpenseOccurrences(user.id, id);
   }
 }
