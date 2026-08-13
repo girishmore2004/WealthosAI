@@ -335,6 +335,25 @@ export interface InvestmentSummaryDTO {
   allocation: { type: InvestmentType; value: number; percent: number }[];
 }
 
+// NEW (audit item #11): one row per explicit, user-recorded sale/disposal — created
+// only via InvestmentsService.recordSale(), never inferred automatically. See
+// capital-gains.util.ts (backend) for what gainCategory values mean.
+export interface RealizedGainEventDTO {
+  id: string;
+  userId: string;
+  investmentId: string;
+  investmentType: InvestmentType;
+  saleDate: string;
+  proceeds: string;
+  costBasisPortion: string;
+  gainAmount: string; // negative means a loss
+  holdingPeriodDays: number;
+  gainCategory: "EQUITY_SHORT_TERM" | "EQUITY_LONG_TERM" | "CRYPTO" | "OTHER_SHORT_TERM" | "OTHER_LONG_TERM";
+  financialYear: string;
+  notes: string | null;
+  createdAt: string;
+}
+
 export type RebalanceActionKind = "BUY" | "SELL" | "HOLD";
 
 export interface RebalanceActionDTO {
@@ -484,6 +503,32 @@ export interface TaxDeductionDTO {
   financialYear: string;
 }
 
+// NEW (audit item #11): capital gains from explicitly-recorded investment sales for a
+// given financial year. See capital-gains.util.ts (backend) for the full LTCG/STCG
+// rule documentation this is computed from.
+export interface CapitalGainsSummaryDTO {
+  financialYear: string;
+  equityShortTermGain: string;
+  equityLongTermGain: string;
+  equityLongTermExemptionUsed: string;
+  // Only positive crypto gains — crypto losses cannot offset anything (a real rule,
+  // not a simplification) and are tracked separately below instead.
+  cryptoGain: string;
+  cryptoLossDisallowed: string;
+  otherShortTermGain: string;
+  otherLongTermGain: string;
+  equityShortTermTax: string;
+  equityLongTermTax: string;
+  cryptoTax: string;
+  // Computed at the marginal slab rate (added to the old regime's taxable income) —
+  // see TaxService.capitalGainsSummary()'s own doc comment for the disclosed
+  // old-regime-only simplification.
+  otherShortTermTax: string;
+  otherLongTermTax: string;
+  totalCapitalGainsTax: string;
+  isProjectionOnly: true;
+}
+
 export interface TaxEstimateDTO {
   financialYear: string;
   grossAnnualIncome: string;
@@ -503,6 +548,12 @@ export interface TaxEstimateDTO {
   savingsFromRecommendedRegime: string;
   deductionsBySection: { section: TaxSection; used: string; limit: string; remainingRoom: string }[];
   yearEndChecklist: string[];
+  // NEW (audit item #11): a separate line item, not folded into oldRegime/
+  // newRegime.taxPayable above — most capital gains (equity/crypto/other-LTCG) are
+  // taxed at flat rates that don't depend on the chosen regime. Add
+  // capitalGains.totalCapitalGainsTax to whichever regime's taxPayable you're
+  // comparing to get that regime's full liability.
+  capitalGains: CapitalGainsSummaryDTO;
   isProjectionOnly: true;
   // NEW: which financial year's slab configuration was actually used to compute this
   // estimate, and whether it had to be approximated from the latest available year
