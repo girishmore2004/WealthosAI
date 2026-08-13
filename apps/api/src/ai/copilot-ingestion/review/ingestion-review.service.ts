@@ -4,6 +4,7 @@ import { ExpensesService } from "../../../expenses/expenses.service";
 import { PaymentMethod } from "@wealthos/db";
 import { MerchantMemoryService } from "../merchant/merchant-memory.service";
 import { CategoryRankingModel, SuggestionSource } from "../scoring/category-ranking.model";
+import { RagAutoReindexService } from "../../ops/rag-auto-reindex.service";
 
 export interface ApprovalEdits {
   categoryId?: string;
@@ -25,6 +26,7 @@ export class IngestionReviewService {
     private expenses: ExpensesService,
     private merchantMemory: MerchantMemoryService,
     private ranking: CategoryRankingModel,
+    private ragAutoReindex: RagAutoReindexService,
   ) {}
 
   async approve(userId: string, itemId: string, edits: ApprovalEdits = {}, duplicateResolution?: DuplicateResolution) {
@@ -69,6 +71,9 @@ export class IngestionReviewService {
         throw new NotFoundException("Expense not found");
       }
       await this.recordLearningFeedback(userId, item, categoryId);
+      // NEW (audit item #7): the underlying expense's content just changed (category/
+      // amount/merchant/etc. from this approval) — worth reflecting in AI Search.
+      await this.ragAutoReindex.triggerFor(userId);
       return this.prisma.client.ingestionReviewItem.update({
         where: { id: itemId },
         data: { status: "APPROVED", duplicateResolution, resolvedExpenseId: updated.id, resolvedAt: new Date() },
@@ -86,6 +91,12 @@ export class IngestionReviewService {
     });
 
     await this.recordLearningFeedback(userId, item, categoryId);
+
+    // NEW (audit item #7): a new Expense just came into existence from this approval
+    // — "route extracted text into a staged review process" was already true, but
+    // nothing told AI Search a new expense now exists until the user manually
+    // reindexed.
+    await this.ragAutoReindex.triggerFor(userId);
 
     return this.prisma.client.ingestionReviewItem.update({
       where: { id: itemId },
