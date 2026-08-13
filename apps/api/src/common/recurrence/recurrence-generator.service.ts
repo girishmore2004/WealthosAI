@@ -63,7 +63,10 @@ export class RecurrenceGeneratorService {
     return this.prisma.client.income.findUnique({ where: { id: incomeId } });
   }
 
-  async activateExpenseRecurrence(userId: string, expenseId: string, recurrence: Exclude<Recurrence, "ONE_TIME">, endDate?: string) {
+  async activateExpenseRecurrence(userId: string, expenseId: string, recurrence: Recurrence, endDate?: string) {
+    if (recurrence === "ONE_TIME") {
+      throw new BadRequestException("ONE_TIME is not a valid recurrence cadence to activate.");
+    }
     const expense = await this.prisma.client.expense.findUnique({ where: { id: expenseId } });
     if (!expense || expense.userId !== userId) throw new NotFoundException("Expense record not found");
     return this.prisma.client.expense.update({
