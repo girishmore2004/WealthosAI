@@ -368,6 +368,10 @@ export interface InsurancePolicyDTO {
   coverageAmount: string;
   renewalDate: string;
   nomineeName: string | null;
+  // NEW (audit item #13): optional link to a household Dependent record, alongside
+  // (not replacing) nomineeName above — null for every pre-existing policy and for
+  // any policy naming a non-household nominee.
+  nomineeDependentId: string | null;
   notes: string | null;
 }
 
