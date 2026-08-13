@@ -124,6 +124,15 @@ export class ScenarioExpanderService {
       if (downPaymentFraction >= 1) return maxPrincipal; // 100% down payment — no loan, propertyValue == principal budget
       return maxPrincipal / (1 - downPaymentFraction);
     }
+    if (field === "loanAmount") {
+      // NEW_LOAN: cap the loan principal at what the user can actually afford the EMI
+      // for, given the rate/tenure they specified — same EMI-affordability inversion as
+      // HOUSE_PURCHASE, minus a down-payment fraction since a NEW_LOAN isn't tied to a
+      // partially-cash-funded purchase (the full amount is borrowed).
+      const rate = Number(baseParams.annualRatePercent);
+      const tenure = Number(baseParams.tenureMonths);
+      return maxAffordablePrincipal(surplus, rate, tenure);
+    }
     return proposedValue;
   }
 
@@ -174,6 +183,14 @@ export class ScenarioExpanderService {
       const downPaymentPercent = Number(baseParams.downPaymentPercent);
       const principal = value * (1 - downPaymentPercent / 100);
       const emi = calculateEmi(principal, rate, tenure);
+      return emi <= surplus
+        ? { feasible: true, note: `Estimated EMI of ₹${emi.toFixed(0)}/month fits within your current surplus of ₹${surplus.toFixed(0)}.` }
+        : { feasible: false, note: `Estimated EMI of ₹${emi.toFixed(0)}/month would exceed your current monthly surplus of ₹${surplus.toFixed(0)}.` };
+    }
+    if (scenarioType === "NEW_LOAN") {
+      const rate = Number(baseParams.annualRatePercent);
+      const tenure = Number(baseParams.tenureMonths);
+      const emi = calculateEmi(value, rate, tenure);
       return emi <= surplus
         ? { feasible: true, note: `Estimated EMI of ₹${emi.toFixed(0)}/month fits within your current surplus of ₹${surplus.toFixed(0)}.` }
         : { feasible: false, note: `Estimated EMI of ₹${emi.toFixed(0)}/month would exceed your current monthly surplus of ₹${surplus.toFixed(0)}.` };
