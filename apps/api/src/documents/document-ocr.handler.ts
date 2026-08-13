@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { AiQueueService } from "../ai/ops/ai-queue.service";
+import { RagAutoReindexService } from "../ai/ops/rag-auto-reindex.service";
 import { DocumentStorageAdapter } from "./adapters/document-storage.adapter";
 import { LocalDiskStorageAdapter } from "./adapters/local-disk-storage.adapter";
 import { OcrAdapter, OcrNotApplicableError } from "./adapters/ocr.adapter";
@@ -35,6 +36,7 @@ export class DocumentOcrHandler implements OnModuleInit {
     private prisma: PrismaService,
     @Inject(LocalDiskStorageAdapter) private storage: DocumentStorageAdapter,
     @Inject(OCR_ADAPTER) private ocr: OcrAdapter,
+    private ragAutoReindex: RagAutoReindexService,
   ) {}
 
   onModuleInit() {
@@ -61,6 +63,17 @@ export class DocumentOcrHandler implements OnModuleInit {
         where: { id: documentId },
         data: { ocrStatus: "DONE", ocrText: result.text, summary: result.summary },
       });
+
+      // NEW (audit item #7): "reindexing is exclusively user-triggered... nothing in
+      // Documents... automatically calls it, so the index can and will go stale."
+      // Triggered here — not at upload time — because this is the point where
+      // genuinely new indexable content (ocrText) actually exists; an upload-time
+      // trigger would risk being suppressed by this one under RagAutoReindexService's
+      // hourly idempotency key if both fired within the same hour (a very likely
+      // scenario, since OCR typically completes within seconds of upload), leaving
+      // the OCR'd text unindexed until the next hour boundary or a manual reindex.
+      await this.ragAutoReindex.triggerFor(userId);
+
       return { ocrStatus: "DONE" };
     } catch (err) {
       if (err instanceof OcrNotApplicableError) {
@@ -68,6 +81,10 @@ export class DocumentOcrHandler implements OnModuleInit {
           where: { id: documentId },
           data: { ocrStatus: "NOT_APPLICABLE", summary: err.message },
         });
+        // Still triggered: even without extracted text, the document's metadata
+        // (filename, category, tags, and this NOT_APPLICABLE summary) is new,
+        // genuinely indexable content that wasn't present at upload time.
+        await this.ragAutoReindex.triggerFor(userId);
         return { ocrStatus: "NOT_APPLICABLE" };
       }
 
