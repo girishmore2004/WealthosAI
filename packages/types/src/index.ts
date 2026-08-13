@@ -207,6 +207,12 @@ export interface DashboardSummaryDTO {
   // The liquid reserve amount emergencyFundMonths (in healthScore.breakdown) was derived
   // from, in the currency's smallest display form (2dp string), regardless of basis.
   emergencyFundAmount: string;
+  // NEW (audit item #1): monthlyIncome above has always been recurrence-normalized
+  // FORECAST income (IncomeService.monthlyForecast()), not date-filtered actual
+  // transactions like Reports' monthlyReport().income uses — this makes that basis
+  // explicit rather than only documented in a code comment, so a user comparing the two
+  // pages (or the AI Coach explaining the difference) has a concrete field to point to.
+  monthlyIncomeBasis: "FORECAST";
 }
 
 export interface InsightDTO {
@@ -648,6 +654,13 @@ export interface MonthlyReportDTO {
   netCashflow: string;
   savingsRate: number;
   expensesByCategory: { category: string; amount: string; percentOfTotal: number }[];
+  // NEW (audit item #1): Reports has always computed both figures from actual,
+  // date-filtered transactions — this makes that basis explicit and machine-readable
+  // rather than only documented in a code comment, and lets the frontend/AI Coach
+  // explain to a user why this figure can differ from Dashboard's forecast-based
+  // monthlyIncome for the same month.
+  incomeBasis: "ACTUAL";
+  expensesBasis: "ACTUAL";
 }
 
 export interface YearlyReportDTO {
@@ -659,6 +672,26 @@ export interface YearlyReportDTO {
   totalDebtOutstanding: string;
   businessProfit: string | null;
   expensesByCategory: { category: string; amount: string; percentOfTotal: number }[];
+}
+
+// --- FinancialFactsService (audit item #1) ----------------------------------------
+// A canonical, explicitly-basis-labeled way to ask "what's this user's monthly income"
+// (etc.) that Dashboard, Reports, Tax, Retirement, Simulator, and the Coach can all
+// consume instead of each independently re-deriving the same figure with a different,
+// undocumented basis. See FinancialFactsService for the actual computation.
+
+export type FinancialFactBasis = "ACTUAL" | "FORECAST" | "PROJECTED";
+export type FinancialFactConfidence = "HIGH" | "MEDIUM" | "LOW";
+
+export interface FinancialFactDTO {
+  metric: string;
+  value: string;
+  currency: string;
+  basis: FinancialFactBasis;
+  asOf: string;
+  sourceTypes: string[];
+  confidence: FinancialFactConfidence;
+  explanationKey: string;
 }
 
 // --- Phase 5: AI Coach, What-If Simulator, Household views -----------------------
