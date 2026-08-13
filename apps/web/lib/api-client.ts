@@ -207,9 +207,12 @@ export const api = {
     gapAnalysis: () => request<CoverageGapDTO[]>("/insurance/gap-analysis"),
     renewals: (withinDays?: number) => request<InsurancePolicyDTO[]>(`/insurance/renewals${withinDays ? `?withinDays=${withinDays}` : ""}`),
     nomineeSummary: () =>
-      request<{ totalPolicies: number; withNominee: number; missingNominee: { id: string; provider: string; type: string }[] }>(
-        "/insurance/nominee-summary",
-      ),
+      request<{
+        totalPolicies: number;
+        withNominee: number;
+        missingNominee: { id: string; provider: string; type: string }[];
+        linkedToDependent: number;
+      }>("/insurance/nominee-summary"),
     create: (data: {
       type: string;
       provider: string;
@@ -219,6 +222,7 @@ export const api = {
       coverageAmount: number;
       renewalDate: string;
       nomineeName?: string;
+      nomineeDependentId?: string;
       notes?: string;
     }) => request<InsurancePolicyDTO>("/insurance", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/insurance/${id}`, { method: "DELETE" }),
@@ -233,6 +237,10 @@ export const api = {
         coverageAmount: number;
         renewalDate: string;
         nomineeName: string;
+        // string | null (not just string): null explicitly clears an existing link —
+        // see ProtectPage.onUpdate() for why this needs to be distinguishable from
+        // "field omitted, don't touch."
+        nomineeDependentId: string | null;
         notes: string;
       }>,
     ) => request<InsurancePolicyDTO>(`/insurance/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
