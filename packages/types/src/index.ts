@@ -548,6 +548,10 @@ export interface PropertyDTO {
   annualPropertyTax: string;
   loanId: string | null;
   insurancePolicyId: string | null;
+  // NEW (audit item #10): set once PropertyService.enableRentIncomeSync() has been
+  // called — the id of the recurring Income row this property's rent is synced to,
+  // or null if not synced (the default, and every pre-existing property's state).
+  rentSyncedIncomeId: string | null;
   notes: string | null;
 }
 
@@ -591,6 +595,10 @@ export interface BusinessTransactionDTO {
   occurredAt: string;
   description: string | null;
   isRecurring: boolean;
+  // NEW (audit item #9): set once BusinessService.syncDrawingToIncome() has been
+  // called on this (OWNER_DRAWING) transaction — the id of the personal Income row
+  // it's synced to, or null (the default, and every non-drawing transaction's state).
+  syncedIncomeId: string | null;
 }
 
 export interface BusinessObligationDTO {
