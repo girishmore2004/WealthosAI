@@ -235,6 +235,17 @@ export default function IncomePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // NEW (audit item #16): the page now fetches via the paginated endpoint instead of
+  // the previously-unbounded list(), which returned every income row in one response
+  // regardless of account age/history size. PAGE_SIZE chosen to keep a page's worth of
+  // rows readable without excessive scrolling; page state resets to 1 after any
+  // mutation below so a newly-added or edited row is always visible without the user
+  // needing to navigate back manually.
+  const PAGE_SIZE = 25;
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+
   const [source, setSource] = useState<IncomeSource>("SALARY");
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState("");
@@ -243,16 +254,21 @@ export default function IncomePage() {
   const [submitting, setSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const load = () => {
+  const load = (targetPage: number = page) => {
     setLoading(true);
     api.income
-      .list()
-      .then(setItems)
+      .listPaged({ page: targetPage, pageSize: PAGE_SIZE })
+      .then((result) => {
+        setItems(result.items);
+        setPage(result.page);
+        setTotalPages(result.totalPages);
+        setTotal(result.total);
+      })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load income."))
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, []);
+  useEffect(() => load(1), []);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -268,7 +284,7 @@ export default function IncomePage() {
       });
       setLabel("");
       setAmount("");
-      load();
+      load(1); // newest-first ordering — the new entry lands on page 1
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save this income entry.");
     } finally {
@@ -278,7 +294,10 @@ export default function IncomePage() {
 
   const onDelete = async (id: string) => {
     await api.income.remove(id);
-    load();
+    // If this was the only row on a page beyond the first, step back a page rather
+    // than reloading into an empty page that still shows a "Next" control leading
+    // nowhere.
+    load(items.length === 1 && page > 1 ? page - 1 : page);
   };
 
   const onUpdate = async (id: string, values: Record<string, string | boolean>) => {
@@ -290,7 +309,7 @@ export default function IncomePage() {
       receivedAt: new Date(values.receivedAt as string).toISOString(),
     });
     setEditingId(null);
-    load();
+    load(page);
   };
 
   return (
@@ -349,7 +368,8 @@ export default function IncomePage() {
         ) : items.length === 0 ? (
           <p className="text-sm text-ink-faint">No income logged yet. Add your first entry above.</p>
         ) : (
-          <ul>
+          <>
+            <ul>
             {items.map((item, i) => (
               <li
                 key={item.id}
@@ -390,7 +410,30 @@ export default function IncomePage() {
                 )}
               </li>
             ))}
-          </ul>
+            </ul>
+            {/* NEW (audit item #16): Previous/Next controls for the paginated view. */}
+            <div className="mt-4 flex items-center justify-between text-xs text-ink-faint">
+              <span>
+                Page {page} of {totalPages} · {total} total
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => load(page - 1)}
+                  disabled={page <= 1 || loading}
+                  className="rounded-md border border-line px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => load(page + 1)}
+                  disabled={page >= totalPages || loading}
+                  className="rounded-md border border-line px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </Card>
     </div>
