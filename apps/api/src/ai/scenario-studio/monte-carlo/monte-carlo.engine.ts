@@ -135,7 +135,7 @@ export function computePercentileSet(values: number[]): PercentileSet {
 
 // Mirrors simulator.engine.ts's stepLoansOneMonth exactly: EMI-constant,
 // reducing-balance amortization; a loan whose EMI doesn't cover interest is held flat
-// (the same "stuck schedule" safety branch as LoansService.computeSchedule()) rather
+// (the same "stuck schedule" safety branch as computeAmortizationSchedule() (common/finance-math)) rather
 // than diverging into negative amortization. Mutates `balances` in place and returns
 // total cash outflow across all loans this month.
 function stepLoansOneMonth(balances: number[], loans: StochasticLoanInput[]): number {
