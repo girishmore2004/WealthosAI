@@ -24,39 +24,95 @@ export function applySlabs(income: number, slabs: TaxSlabBracket[]): number {
 
 // Surcharge is NOT slab-wise like income tax itself: once total (taxable) income
 // crosses a threshold, the single matching rate applies to the ENTIRE base tax amount,
-// not just the portion above the threshold. Returns the surcharge RATE (e.g. 0.10 for
-// 10%), not an amount — callers multiply the base tax by (1 + rate). Exported for
-// direct, precise unit testing of the rate table in isolation (see
-// test/tax.service.spec.ts) rather than only indirectly through estimate()'s full
-// pipeline.
-export function findSurchargeRate(taxableIncome: number, slabs: TaxSlabBracket[]): number {
-  for (const { from, to, rate } of slabs) {
-    if (taxableIncome > from && taxableIncome <= to) return rate;
+// not just the portion above the threshold. Returns the matched bracket (or null if
+// income doesn't cross any surcharge threshold), not just the rate — findSurchargeRate
+// below is a thin wrapper for backward compatibility; applyMarginalRelief() needs the
+// bracket's own `from` value (the threshold) to compute relief.
+function findSurchargeBracket(taxableIncome: number, slabs: TaxSlabBracket[]): TaxSlabBracket | null {
+  for (const bracket of slabs) {
+    if (taxableIncome > bracket.from && taxableIncome <= bracket.to) return bracket;
   }
-  return 0;
+  return null;
+}
+
+// Returns the surcharge RATE (e.g. 0.10 for 10%), not an amount — callers multiply the
+// base tax by (1 + rate). Exported for direct, precise unit testing of the rate table
+// in isolation (see test/tax.service.spec.ts) rather than only indirectly through
+// estimate()'s full pipeline. Unchanged signature/behavior — now implemented via
+// findSurchargeBracket() above so applyMarginalRelief() below shares the exact same
+// bracket-matching logic rather than a second, independently-maintained copy of it.
+export function findSurchargeRate(taxableIncome: number, slabs: TaxSlabBracket[]): number {
+  return findSurchargeBracket(taxableIncome, slabs)?.rate ?? 0;
+}
+
+// NEW (audit item #14): the marginal-relief provision — previously "explicitly left
+// unapplied and disclosed... figures for taxable income right at a surcharge
+// threshold may overstate actual liability slightly as a result." This is that
+// implementation.
+//
+// Marginal relief caps how much crossing a surcharge threshold can increase total tax
+// (base tax + surcharge, BEFORE cess — cess is applied afterward by the caller, on top
+// of whatever this function returns) versus someone whose income sits exactly at the
+// threshold: total tax (pre-cess) can never exceed "what you'd owe exactly at the
+// threshold, plus every rupee you earned past it." Without this, a taxpayer earning
+// ₹1 over a threshold could owe thousands of rupees more than someone earning exactly
+// the threshold amount — a cliff, not a smooth transition — which is exactly the
+// distortion this statutory provision exists to prevent.
+//
+// Formula (the standard, CBDT-prescribed mechanism):
+//   totalAtThreshold = taxAtThreshold × (1 + rateApplicableAtThreshold)
+//   maxAllowedTotal  = totalAtThreshold + (income − threshold)
+//   if (taxAtIncome × (1 + currentRate)) > maxAllowedTotal:
+//     surcharge is reduced so base tax + surcharge == maxAllowedTotal exactly
+//
+// rateApplicableAtThreshold is deliberately computed via findSurchargeRate(threshold,
+// ...) — the rate that applies AT the threshold value itself is the PREVIOUS (lower)
+// bracket's rate, since findSurchargeBracket's `income > from` condition means the
+// threshold value itself belongs to the bracket below it (0% for the very first
+// threshold, since nothing surcharges below ₹50L).
+function applyMarginalRelief(
+  taxableIncome: number,
+  slabs: TaxSlabBracket[],
+  surchargeSlabs: TaxSlabBracket[],
+): { baseTax: number; surcharge: number; reliefApplied: boolean } {
+  const baseTax = applySlabs(taxableIncome, slabs);
+  const bracket = findSurchargeBracket(taxableIncome, surchargeSlabs);
+  if (!bracket) {
+    return { baseTax, surcharge: 0, reliefApplied: false }; // below every surcharge threshold — nothing to relieve
+  }
+
+  const surcharge = baseTax * bracket.rate;
+  const totalAtIncome = baseTax + surcharge;
+
+  const threshold = bracket.from;
+  const baseTaxAtThreshold = applySlabs(threshold, slabs);
+  const rateAtThreshold = findSurchargeRate(threshold, surchargeSlabs);
+  const totalAtThreshold = baseTaxAtThreshold * (1 + rateAtThreshold);
+  const maxAllowedTotal = totalAtThreshold + (taxableIncome - threshold);
+
+  if (totalAtIncome <= maxAllowedTotal) {
+    return { baseTax, surcharge, reliefApplied: false }; // comfortably past the threshold — no relief needed
+  }
+
+  // Relief reduces the SURCHARGE component specifically — base tax itself is never
+  // touched, matching how the actual provision works (it's called "relief on
+  // surcharge," not a general tax cap).
+  const reliefAdjustedSurcharge = Math.max(0, maxAllowedTotal - baseTax);
+  return { baseTax, surcharge: reliefAdjustedSurcharge, reliefApplied: true };
 }
 
 // Computes { taxPayable, surcharge } for one regime: base slab tax -> surcharge (on the
-// base tax) -> cess (on tax + surcharge). Deliberately does NOT implement marginal
-// relief — the provision that caps how much surcharge can increase your total tax
-// versus someone just below the threshold, so that crossing a surcharge boundary by ₹1
-// doesn't cost you far more than ₹1 in extra tax. This is a genuinely fiddly,
-// easy-to-get-subtly-wrong calculation; rather than risk an incorrect implementation,
-// it's explicitly left unapplied and disclosed via isProjectionOnly and this comment —
-// figures for taxable income right at a surcharge threshold may overstate actual
-// liability slightly as a result. Everywhere else (well below/above any threshold),
-// this omission has no effect at all.
+// base tax, marginal-relief-adjusted at a threshold crossing — see
+// applyMarginalRelief()) -> cess (on tax + surcharge).
 function computeRegimeTax(
   taxableIncome: number,
   slabs: TaxSlabBracket[],
   surchargeSlabs: TaxSlabBracket[],
   cessRate: number,
-): { taxPayable: number; surcharge: number } {
-  const baseTax = applySlabs(taxableIncome, slabs);
-  const surchargeRate = findSurchargeRate(taxableIncome, surchargeSlabs);
-  const surcharge = baseTax * surchargeRate;
+): { taxPayable: number; surcharge: number; marginalReliefApplied: boolean } {
+  const { baseTax, surcharge, reliefApplied } = applyMarginalRelief(taxableIncome, slabs, surchargeSlabs);
   const taxPayable = (baseTax + surcharge) * (1 + cessRate);
-  return { taxPayable, surcharge };
+  return { taxPayable, surcharge, marginalReliefApplied: reliefApplied };
 }
 
 function oldRegimeTax(taxableIncome: number, config: TaxYearConfig) {
@@ -68,7 +124,7 @@ function newRegimeTax(taxableIncome: number, config: TaxYearConfig) {
   // what the slab math alone would produce (and therefore surcharge/cess never apply
   // either, since there's no base tax for them to act on).
   if (taxableIncome <= config.newRegimeRebateThreshold) {
-    return { taxPayable: 0, surcharge: 0 };
+    return { taxPayable: 0, surcharge: 0, marginalReliefApplied: false };
   }
   return computeRegimeTax(taxableIncome, config.newRegimeSlabs, config.newRegimeSurchargeSlabs, config.cessRate);
 }
@@ -158,11 +214,13 @@ export class TaxService {
         taxableIncome: oldTaxableIncome.toFixed(2),
         taxPayable: oldResult.taxPayable.toFixed(2),
         surcharge: oldResult.surcharge.toFixed(2),
+        marginalReliefApplied: oldResult.marginalReliefApplied,
       },
       newRegime: {
         taxableIncome: newTaxableIncome.toFixed(2),
         taxPayable: newResult.taxPayable.toFixed(2),
         surcharge: newResult.surcharge.toFixed(2),
+        marginalReliefApplied: newResult.marginalReliefApplied,
       },
       recommendedRegime,
       savingsFromRecommendedRegime: Math.abs(oldResult.taxPayable - newResult.taxPayable).toFixed(2),
