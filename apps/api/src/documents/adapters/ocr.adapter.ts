@@ -1,6 +1,15 @@
 export interface OcrResult {
   text: string;
   summary: string;
+  // NEW (audit item #6): Tesseract's own reported mean confidence for this
+  // recognition, 0-1 (converted from Tesseract's native 0-100 scale). Optional —
+  // MockOcrAdapter and any future adapter aren't required to report one — but
+  // TesseractOcrAdapter always does, so the Document-Ingestion bridge
+  // (DocumentOcrHandler -> CopilotIngestionService.ingestFromDocumentText()) has a
+  // real quality signal to feed OcrQualityEstimationService, the same one
+  // StatementOcrAdapter already provides for directly-uploaded statement images —
+  // rather than fabricating a placeholder value.
+  engineConfidence?: number;
 }
 
 // Abstracts text extraction + summarization for an uploaded document. Swap the
