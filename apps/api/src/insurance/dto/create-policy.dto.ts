@@ -53,6 +53,14 @@ export class CreatePolicyDto {
   @MaxLength(120)
   nomineeName?: string;
 
+  // NEW (audit item #13): optional link to a household Dependent, alongside (not
+  // replacing) nomineeName above. Ownership/household-membership is verified in
+  // InsuranceService (a plain string id here can't itself prove the dependent belongs
+  // to the caller's household — see assertDependentOwnership()).
+  @IsOptional()
+  @IsString()
+  nomineeDependentId?: string;
+
   @IsOptional()
   @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
   @IsString()
