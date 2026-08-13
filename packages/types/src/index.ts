@@ -715,7 +715,11 @@ export type ScenarioType =
   | "LOAN_PREPAYMENT"
   | "RETIREMENT_AGE_SHIFT"
   | "EMERGENCY_EXPENSE"
-  | "GOAL_DELAY";
+  | "GOAL_DELAY"
+  // NEW (audit item #8): a new/expansion loan not tied to purchasing a house — personal
+  // loan, business expansion, equipment financing, etc. Previously such prompts had no
+  // matching type and were forced into LOAN_PREPAYMENT or HOUSE_PURCHASE.
+  | "NEW_LOAN";
 
 export interface ScenarioParamsByType {
   SALARY_HIKE: { percentIncrease: number };
@@ -727,6 +731,10 @@ export interface ScenarioParamsByType {
   RETIREMENT_AGE_SHIFT: { newRetirementAge: number };
   EMERGENCY_EXPENSE: { amount: number };
   GOAL_DELAY: { goalId: string; delayMonths: number };
+  // `purpose` is optional, free-text, and purely for the narrative — never validated or
+  // used in the numeric projection (see SimulatorService's REQUIRED_FIELDS, which only
+  // requires loanAmount/annualRatePercent/tenureMonths).
+  NEW_LOAN: { loanAmount: number; annualRatePercent: number; tenureMonths: number; purpose?: string };
 }
 
 // Per-loan snapshot (real rate + EMI, not just the aggregate outstanding figure) so the
