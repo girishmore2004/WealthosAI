@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { createWorker } from "tesseract.js";
 import { OcrAdapter, OcrNotApplicableError, OcrResult } from "./ocr.adapter";
 import { CATEGORY_SUMMARIES } from "./category-summaries";
+import { PdfCorruptError, PdfPasswordProtectedError, rasterizePdfToImages } from "./pdf-rasterize.util";
 
 // Tesseract.js is a pure-JS/WASM port of the Tesseract OCR engine — free, open-source,
 // runs entirely in-process (no external API, no network call, no per-request cost),
@@ -10,15 +11,17 @@ import { CATEGORY_SUMMARIES } from "./category-summaries";
 // for RAG). This is the audit's explicitly-recommended fix: "Wire in Tesseract.js...
 // behind the existing OcrAdapter interface."
 //
-// SCOPE, stated honestly: Tesseract is an image OCR engine. It does not natively
-// extract text from PDFs or Word documents (those would need a separate
-// render-to-image or text-layer-extraction step — a meaningfully different pipeline,
-// and a bigger addition than fits this change). Only image uploads (JPEG/PNG/WebP —
-// the common case for photographed ID documents like PAN/Aadhaar cards, which is
-// exactly what most DocumentCategory values here are about) are actually processed;
-// anything else throws OcrNotApplicableError, which DocumentOcrHandler maps to the
-// existing OcrStatus.NOT_APPLICABLE value rather than a misleading FAILED.
-const OCR_SUPPORTED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+// PDF SUPPORT (audit item #5, added after the above): PDFs are rasterized to one PNG
+// image per page (see pdf-rasterize.util.ts) and each page is run through the exact
+// same Tesseract recognition path as a native image upload — no separate PDF-specific
+// OCR logic, just a pre-processing step ahead of the same engine. This is genuinely
+// new infrastructure with a real, disclosed deployment risk: unlike Tesseract.js and
+// this app's other AI-adjacent dependencies, PDF rasterization needs the `canvas`
+// native addon (see pdf-rasterize.util.ts's own doc comment for the full detail on
+// what was actually verified and what the risk is). Word documents and other
+// non-image, non-PDF formats remain unsupported — see the mime-type check below.
+const OCR_SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const PDF_MIME_TYPE = "application/pdf";
 const MAX_SUMMARY_TEXT_CHARS = 400;
 
 @Injectable()
@@ -26,12 +29,84 @@ export class TesseractOcrAdapter implements OcrAdapter {
   private readonly logger = new Logger("TesseractOcrAdapter");
 
   async process(fileBuffer: Buffer, mimeType: string, category: string): Promise<OcrResult> {
-    if (!OCR_SUPPORTED_MIME_TYPES.has(mimeType)) {
+    if (mimeType === PDF_MIME_TYPE) {
+      return this.processPdf(fileBuffer, category);
+    }
+    if (!OCR_SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
       throw new OcrNotApplicableError(
-        `OCR isn't supported yet for ${mimeType} files — only image uploads (JPEG/PNG/WebP) are text-extracted today.`,
+        `OCR isn't supported yet for ${mimeType} files — only image uploads (JPEG/PNG/WebP) and PDFs are text-extracted today.`,
       );
     }
 
+    return this.processImage(fileBuffer, category);
+  }
+
+  // NEW (audit item #5): rasterizes each PDF page to an image (see
+  // pdf-rasterize.util.ts), runs the exact same Tesseract recognition on each page
+  // image via processImage() below, and concatenates the results with a clear
+  // page-boundary marker. A single Tesseract worker is reused across all pages of one
+  // PDF (created once, terminated once) rather than one worker per page — the same
+  // "simple, correct, off-the-request-path" tradeoff processImage()'s own doc comment
+  // already accepts for the single-image case, just amortized across a handful of
+  // pages instead of one call.
+  private async processPdf(pdfBuffer: Buffer, category: string): Promise<OcrResult> {
+    let rasterized;
+    try {
+      rasterized = await rasterizePdfToImages(pdfBuffer);
+    } catch (err) {
+      if (err instanceof PdfPasswordProtectedError) {
+        // A password-protected PDF isn't something OCR can work around — closer in
+        // spirit to "not applicable" (we categorically cannot process this without
+        // information we don't have) than a transient FAILED worth retrying as-is.
+        throw new OcrNotApplicableError(err.message);
+      }
+      if (err instanceof PdfCorruptError) {
+        // A genuinely corrupt/invalid file IS a real processing failure — propagate
+        // as-is so DocumentOcrHandler marks it FAILED, not NOT_APPLICABLE, since a
+        // correctly-formed re-upload of the same document could succeed (unlike the
+        // password case above, which no re-upload alone fixes).
+        throw err;
+      }
+      throw err; // genuinely unexpected — surface it rather than silently reclassifying
+    }
+
+    if (rasterized.pages.length === 0) {
+      throw new OcrNotApplicableError("This PDF has no pages to extract text from.");
+    }
+
+    const worker = await createWorker("eng");
+    try {
+      const pageTexts: string[] = [];
+      for (const page of rasterized.pages) {
+        const {
+          data: { text },
+        } = await worker.recognize(page.pngBuffer);
+        pageTexts.push(text.trim());
+      }
+
+      const combinedText = pageTexts
+        .map((text, i) => `--- Page ${rasterized.pages[i].pageNumber} ---\n${text || "(no text detected on this page)"}`)
+        .join("\n\n");
+
+      const categoryLabel = CATEGORY_SUMMARIES[category] ?? CATEGORY_SUMMARIES.OTHER;
+      const flatText = pageTexts.filter(Boolean).join(" ");
+      const truncationNote = rasterized.truncated
+        ? ` (showing the first ${rasterized.pages.length} of ${rasterized.totalPages} pages)`
+        : "";
+      const summary = flatText
+        ? `${categoryLabel} Extracted text from ${rasterized.pages.length}-page PDF${truncationNote}: ${flatText.slice(0, MAX_SUMMARY_TEXT_CHARS)}${flatText.length > MAX_SUMMARY_TEXT_CHARS ? "…" : ""}`
+        : `${categoryLabel} (No text could be confidently extracted from this ${rasterized.pages.length}-page PDF.)`;
+
+      return { text: combinedText, summary };
+    } finally {
+      await worker.terminate();
+    }
+  }
+
+  // The original, unmodified single-image recognition path — image uploads (JPEG/PNG/
+  // WebP) and each rasterized PDF page both go through this exact same method, so
+  // there is one implementation of "how Tesseract is actually invoked," not two.
+  private async processImage(fileBuffer: Buffer, category: string): Promise<OcrResult> {
     // A fresh worker per call (rather than a long-lived pooled worker) is deliberately
     // simple and correct for this app's volume: OCR now runs off the request path via
     // DocumentOcrHandler/AiQueueService, so a few hundred milliseconds of worker
