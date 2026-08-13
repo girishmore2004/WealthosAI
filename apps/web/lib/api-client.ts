@@ -9,6 +9,7 @@ import type {
   CategoryBreakdownDTO,
   DetectedSubscriptionDTO,
   IncomeDTO,
+  IncomeHistoryDTO,
   CategoryDTO,
   UserDTO,
   InvestmentDTO,
@@ -139,13 +140,15 @@ export const api = {
     create: (data: { source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes?: string }) =>
       request<IncomeDTO>("/income", { method: "POST", body: JSON.stringify(data) }),
     remove: (id: string) => request<void>(`/income/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes: string }>) =>
+    update: (id: string, data: Partial<{ source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes: string; effectiveFrom: string }>) =>
       request<IncomeDTO>(`/income/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     // NEW (audit item #3): opt-in recurring-generation controls.
     activateRecurrence: (id: string, endDate?: string) =>
       request<IncomeDTO>(`/income/${id}/recurrence/activate`, { method: "POST", body: JSON.stringify({ endDate }) }),
     deactivateRecurrence: (id: string) => request<IncomeDTO>(`/income/${id}/recurrence/deactivate`, { method: "POST" }),
     previewRecurrence: (id: string) => request<{ occurrenceDate: string }[]>(`/income/${id}/recurrence/preview`),
+    // NEW (audit item #4): effective-dated salary/amount-change history.
+    history: (id: string) => request<IncomeHistoryDTO[]>(`/income/${id}/history`),
   },
   expenses: {
     list: (month?: string) => request<ExpenseDTO[]>(`/expenses${month ? `?month=${month}` : ""}`),
