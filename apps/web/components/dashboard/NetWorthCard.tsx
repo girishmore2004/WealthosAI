@@ -40,6 +40,7 @@ export function NetWorthCard({ summary }: { summary: DashboardSummaryDTO }) {
   const rows = [
     { label: "Net worth", value: summary.netWorth, emphasis: true },
     { label: "Cash balance", value: summary.cashBalance },
+    { label: "Uncommitted cash", value: summary.uncommittedCash },
     { label: "Investments", value: summary.investmentsValue },
     { label: "Total debt", value: summary.totalDebt },
     { label: "Income this month", value: summary.monthlyIncome },
@@ -66,6 +67,21 @@ export function NetWorthCard({ summary }: { summary: DashboardSummaryDTO }) {
         <p className="text-xs text-ink-faint">Savings rate</p>
         <p className="money text-sm font-semibold text-gain">{formatPercent(summary.savingsRate)}</p>
       </div>
+      <p className="mt-3 text-xs text-ink-faint">
+        Uncommitted cash is cash balance minus money already earmarked toward savings goals — an
+        approximation, not a bank-verified figure.
+        {summary.emergencyFundBasis === "CATEGORY_LEGACY" && (
+          <>
+            {" "}
+            Your emergency-fund score is currently based on an expense logged under an
+            &quot;Emergency Fund&quot; category — create a dedicated Emergency Fund goal for a more
+            accurate figure.
+          </>
+        )}
+        {summary.emergencyFundBasis === "NONE" && (
+          <> Set up an Emergency Fund goal to have it reflected in your health score.</>
+        )}
+      </p>
     </div>
   );
 }
