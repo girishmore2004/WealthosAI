@@ -24,7 +24,7 @@ import { LoanType } from "@wealthos/db";
 // equivalent guards already added to Income/Expenses/Investments' DTOs.)
 export const MAX_LOAN_AMOUNT = 999999999999.99;
 
-// Matches computeSchedule()'s own 600-month (50-year) safety cap in loans.service.ts.
+// Matches computeAmortizationSchedule()'s own 600-month (50-year) safety cap in common/finance-math/amortization.ts.
 // A loan created with a longer stated tenure than the engine will ever actually simulate
 // would silently have its amortization schedule truncated/misrepresented without this
 // guard — better to reject an unrealistic tenure at creation than produce a schedule
