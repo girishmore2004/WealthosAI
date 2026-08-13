@@ -238,10 +238,20 @@ const TYPES: GoalType[] = [
 ];
 
 const STATUS_BADGE: Record<GoalDTO["probabilityOfSuccess"], { tone: "success" | "warning" | "critical"; label: string }> = {
+  // NEW (audit item #12): "probabilityOfSuccess" is a pace-comparison heuristic
+  // (monthly contribution vs. the pace required to hit the target date), not a
+  // modeled statistical probability — the field name predates that distinction and is
+  // kept for backward compatibility (see GoalDTO.isPaceHeuristic's own doc comment).
+  // These labels were already careful to avoid stating a percentage or "chance," but a
+  // title attribute is added on each badge below so the disclosure is available
+  // in-context without cluttering the card with an extra sentence on every single one.
   ON_TRACK: { tone: "success", label: "On track" },
   AT_RISK: { tone: "warning", label: "At risk" },
   OFF_TRACK: { tone: "critical", label: "Off track" },
 };
+
+const STATUS_TOOLTIP =
+  "Based on your contribution pace versus the pace needed to hit this goal's target date — a simple comparison, not a statistically modeled probability.";
 
 const PROGRESS_BAR: Record<GoalDTO["probabilityOfSuccess"], string> = {
   ON_TRACK: "bg-gain",
@@ -382,9 +392,11 @@ export default function GoalsPage() {
                         {goal.type.replace(/_/g, " ").toLowerCase()} · by {new Date(goal.targetDate).toLocaleDateString("en-IN")}
                       </p>
                     </div>
-                    <Badge tone={STATUS_BADGE[goal.probabilityOfSuccess].tone}>
-                      {STATUS_BADGE[goal.probabilityOfSuccess].label}
-                    </Badge>
+                    <span title={STATUS_TOOLTIP}>
+                      <Badge tone={STATUS_BADGE[goal.probabilityOfSuccess].tone}>
+                        {STATUS_BADGE[goal.probabilityOfSuccess].label}
+                      </Badge>
+                    </span>
                   </div>
                   <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-line">
                     <div
@@ -399,6 +411,13 @@ export default function GoalsPage() {
                   <p className="mt-2 text-xs text-ink-faint">
                     Needs about <span className="money">{formatINR(goal.requiredMonthlyContribution)}</span>/month to stay on track
                     (currently contributing <span className="money">{formatINR(goal.monthlyContribution)}</span>).
+                  </p>
+                  {/* NEW (audit item #12): surfaces the honest underlying number
+                      (contributionPaceRatio) instead of leaving "On track"/"At risk"/
+                      "Off track" to imply a modeled probability on its own. */}
+                  <p className="mt-1 text-[11px] text-ink-faint">
+                    Contributing at {Math.round(goal.contributionPaceRatio * 100)}% of the pace needed — a pace comparison, not a
+                    modeled probability of success.
                   </p>
                   <div className="mt-3 flex gap-4">
                     <button onClick={() => setEditingId(goal.id)} className="text-xs text-ink-faint hover:text-marigold-600">
