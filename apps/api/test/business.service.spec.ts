@@ -1,7 +1,8 @@
 import { Test } from "@nestjs/testing";
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, BadRequestException } from "@nestjs/common";
 import { BusinessService } from "../src/business/business.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { IncomeService } from "../src/income/income.service";
 
 describe("BusinessService.monthlySummary", () => {
   let service: BusinessService;
@@ -24,7 +25,7 @@ describe("BusinessService.monthlySummary", () => {
     jest.clearAllMocks();
     mockPrisma.client.business.findUnique.mockResolvedValue({ id: "b1", userId: "user-1", name: "Sunil Studio" });
     const moduleRef = await Test.createTestingModule({
-      providers: [BusinessService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [BusinessService, { provide: PrismaService, useValue: mockPrisma }, { provide: IncomeService, useValue: {} }],
     }).compile();
     service = moduleRef.get(BusinessService);
   });
@@ -85,7 +86,7 @@ describe("BusinessService update/remove flows (atomic ownership hardening)", () 
   beforeEach(async () => {
     jest.clearAllMocks();
     const moduleRef = await Test.createTestingModule({
-      providers: [BusinessService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [BusinessService, { provide: PrismaService, useValue: mockPrisma }, { provide: IncomeService, useValue: {} }],
     }).compile();
     service = moduleRef.get(BusinessService);
   });
@@ -240,7 +241,7 @@ describe("BusinessService.markObligationPaid (new — recurring obligation auto-
     jest.clearAllMocks();
     mockPrisma.client.business.findUnique.mockResolvedValue({ id: "b1", userId: "user-1" });
     const moduleRef = await Test.createTestingModule({
-      providers: [BusinessService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [BusinessService, { provide: PrismaService, useValue: mockPrisma }, { provide: IncomeService, useValue: {} }],
     }).compile();
     service = moduleRef.get(BusinessService);
   });
@@ -348,5 +349,125 @@ describe("BusinessService.markObligationPaid (new — recurring obligation auto-
   it("throws NotFoundException for an obligation that doesn't exist", async () => {
     mockPrisma.client.businessObligation.findUnique.mockResolvedValue(null);
     await expect(service.markObligationPaid("user-1", "missing")).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe("BusinessService.syncDrawingToIncome / unsyncDrawingFromIncome (new, audit item #9)", () => {
+  let service: BusinessService;
+
+  const mockPrisma = {
+    client: {
+      businessTransaction: { findUnique: jest.fn(), update: jest.fn() },
+      income: { deleteMany: jest.fn() },
+    },
+  };
+  const mockIncomeService = { create: jest.fn() };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BusinessService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: mockIncomeService },
+      ],
+    }).compile();
+    service = moduleRef.get(BusinessService);
+  });
+
+  describe("syncDrawingToIncome", () => {
+    it("creates a ONE_TIME BUSINESS-source Income row and links it back to the transaction", async () => {
+      mockPrisma.client.businessTransaction.findUnique.mockResolvedValue({
+        id: "t1",
+        businessId: "b1",
+        type: "OWNER_DRAWING",
+        amount: 25000,
+        occurredAt: new Date("2026-07-10"),
+        description: "July drawing",
+        syncedIncomeId: null,
+        business: { id: "b1", userId: "user-1", name: "Sunil Studio" },
+      });
+      mockIncomeService.create.mockResolvedValue({ id: "income-1", amount: 25000 });
+      mockPrisma.client.businessTransaction.update.mockResolvedValue({ id: "t1", syncedIncomeId: "income-1" });
+
+      const result = await service.syncDrawingToIncome("user-1", "t1");
+
+      expect(mockIncomeService.create).toHaveBeenCalledWith(
+        "user-1",
+        expect.objectContaining({ source: "BUSINESS", recurrence: "ONE_TIME", amount: 25000, label: expect.stringContaining("Sunil Studio") }),
+      );
+      expect(mockPrisma.client.businessTransaction.update).toHaveBeenCalledWith({
+        where: { id: "t1" },
+        data: { syncedIncomeId: "income-1" },
+      });
+      expect(result.income.id).toBe("income-1");
+    });
+
+    it("rejects syncing a REVENUE or EXPENSE transaction — only OWNER_DRAWING is eligible", async () => {
+      mockPrisma.client.businessTransaction.findUnique.mockResolvedValue({
+        id: "t1",
+        type: "REVENUE",
+        syncedIncomeId: null,
+        business: { id: "b1", userId: "user-1", name: "Sunil Studio" },
+      });
+
+      await expect(service.syncDrawingToIncome("user-1", "t1")).rejects.toThrow(BadRequestException);
+      expect(mockIncomeService.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects syncing a transaction that's already synced (idempotency)", async () => {
+      mockPrisma.client.businessTransaction.findUnique.mockResolvedValue({
+        id: "t1",
+        type: "OWNER_DRAWING",
+        syncedIncomeId: "income-existing",
+        business: { id: "b1", userId: "user-1", name: "Sunil Studio" },
+      });
+
+      await expect(service.syncDrawingToIncome("user-1", "t1")).rejects.toThrow(BadRequestException);
+      expect(mockIncomeService.create).not.toHaveBeenCalled();
+    });
+
+    it("throws NotFoundException for a transaction belonging to another user's business", async () => {
+      mockPrisma.client.businessTransaction.findUnique.mockResolvedValue({
+        id: "t1",
+        type: "OWNER_DRAWING",
+        syncedIncomeId: null,
+        business: { id: "b1", userId: "someone-else", name: "Sunil Studio" },
+      });
+
+      await expect(service.syncDrawingToIncome("user-1", "t1")).rejects.toThrow(NotFoundException);
+      expect(mockIncomeService.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("unsyncDrawingFromIncome", () => {
+    it("deletes the linked Income row and clears syncedIncomeId", async () => {
+      mockPrisma.client.businessTransaction.findUnique.mockResolvedValue({
+        id: "t1",
+        syncedIncomeId: "income-1",
+        business: { id: "b1", userId: "user-1", name: "Sunil Studio" },
+      });
+      mockPrisma.client.income.deleteMany.mockResolvedValue({ count: 1 });
+      mockPrisma.client.businessTransaction.update.mockResolvedValue({ id: "t1", syncedIncomeId: null });
+
+      await service.unsyncDrawingFromIncome("user-1", "t1");
+
+      expect(mockPrisma.client.income.deleteMany).toHaveBeenCalledWith({ where: { id: "income-1", userId: "user-1" } });
+      expect(mockPrisma.client.businessTransaction.update).toHaveBeenCalledWith({
+        where: { id: "t1" },
+        data: { syncedIncomeId: null },
+      });
+    });
+
+    it("rejects unsyncing a transaction that was never synced", async () => {
+      mockPrisma.client.businessTransaction.findUnique.mockResolvedValue({
+        id: "t1",
+        syncedIncomeId: null,
+        business: { id: "b1", userId: "user-1", name: "Sunil Studio" },
+      });
+
+      await expect(service.unsyncDrawingFromIncome("user-1", "t1")).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.client.income.deleteMany).not.toHaveBeenCalled();
+    });
   });
 });
