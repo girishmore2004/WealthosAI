@@ -585,6 +585,23 @@ export default function BusinessPage() {
     if (selectedId) loadBusinessData(selectedId);
   };
 
+  // NEW (audit item #9): explicit, opt-in owner-drawing -> personal Income sync.
+  // Reversible — calling it again with the transaction already synced un-syncs it
+  // (deletes the linked Income row), matching the toggle-style affordance a user would
+  // expect from a single button rather than two separately-worded actions.
+  const onToggleDrawingSync = async (t: BusinessTransactionDTO) => {
+    try {
+      if (t.syncedIncomeId) {
+        await api.business.unsyncDrawingFromIncome(t.id);
+      } else {
+        await api.business.syncDrawingToIncome(t.id);
+      }
+      if (selectedId) loadBusinessData(selectedId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not update this transaction's Income sync.");
+    }
+  };
+
   const onAddObligation = async (e: FormEvent) => {
     e.preventDefault();
     if (!selectedId || !obligationTitle.trim() || !obligationDue) return;
@@ -803,6 +820,19 @@ export default function BusinessPage() {
                       </span>
                       <span className="flex items-center gap-3">
                         <span className={`money ${t.type === "REVENUE" ? "text-gain" : "text-loss"}`}>{formatINR(t.amount)}</span>
+                        {t.type === "OWNER_DRAWING" && (
+                          <button
+                            onClick={() => onToggleDrawingSync(t)}
+                            className={`text-xs hover:underline ${t.syncedIncomeId ? "text-ink-faint" : "text-marigold-600"}`}
+                            title={
+                              t.syncedIncomeId
+                                ? "This drawing is recorded as personal Income — click to un-sync"
+                                : "Record this drawing as personal Income"
+                            }
+                          >
+                            {t.syncedIncomeId ? "Synced to Income ✓" : "Sync to Income"}
+                          </button>
+                        )}
                         <button onClick={() => setEditingTxnId(t.id)} className="text-xs text-marigold-600 hover:underline">
                           Edit
                         </button>
