@@ -7,11 +7,12 @@ import { ExpensesService } from "../src/expenses/expenses.service";
 import { InvestmentsService } from "../src/investments/investments.service";
 import { LoansService } from "../src/loans/loans.service";
 import { BusinessService } from "../src/business/business.service";
+import { FinancialFactsService } from "../src/common/financial-facts/financial-facts.service";
 
 describe("ReportsService", () => {
   let service: ReportsService;
 
-  const mockPrisma = { client: { expense: { findMany: jest.fn() } } };
+  const mockPrisma = { client: { expense: { findMany: jest.fn() }, goal: { findMany: jest.fn() } } };
   const mockIncomeService = { list: jest.fn() };
   const mockExpensesService = { list: jest.fn() };
   const mockInvestmentsService = { summary: jest.fn() };
@@ -29,6 +30,13 @@ describe("ReportsService", () => {
         { provide: InvestmentsService, useValue: mockInvestmentsService },
         { provide: LoansService, useValue: mockLoansService },
         { provide: BusinessService, useValue: mockBusinessService },
+        // Real FinancialFactsService (audit item #1), not a mock — monthlyReport() now
+        // delegates its income figure to FinancialFactsService.getActualMonthlyIncome(),
+        // which itself is built on the same mockIncomeService/mockPrisma above. Using
+        // the real class here (rather than re-mocking its output) keeps this an
+        // end-to-end test of the actual delegation, not just an assertion that a mock
+        // was called.
+        FinancialFactsService,
       ],
     }).compile();
     service = moduleRef.get(ReportsService);
@@ -51,6 +59,10 @@ describe("ReportsService", () => {
       expect(report.expenses).toBe("50000.00");
       expect(report.netCashflow).toBe("40000.00");
       expect(report.savingsRate).toBeCloseTo((40000 / 90000) * 100, 1);
+      // NEW (audit item #1): explicit basis labels so a caller never has to guess
+      // whether this figure means the same thing as Dashboard's forecast-based one.
+      expect(report.incomeBasis).toBe("ACTUAL");
+      expect(report.expensesBasis).toBe("ACTUAL");
 
       const totalPercent = report.expensesByCategory.reduce((sum, c) => sum + c.percentOfTotal, 0);
       expect(totalPercent).toBeCloseTo(100, 0);
