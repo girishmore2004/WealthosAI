@@ -59,6 +59,19 @@ export class BusinessController {
     return this.businessService.removeTransaction(user.id, id);
   }
 
+  // NEW: closes the audit-flagged gap — business drawings never automatically flowed
+  // into personal Income. A dedicated, explicit opt-in action (not a side effect of
+  // create/update) — see BusinessService.syncDrawingToIncome()'s doc comment for why.
+  @Post("transactions/:id/sync-to-income")
+  syncDrawingToIncome(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.businessService.syncDrawingToIncome(user.id, id);
+  }
+
+  @Delete("transactions/:id/sync-to-income")
+  unsyncDrawingFromIncome(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.businessService.unsyncDrawingFromIncome(user.id, id);
+  }
+
   @Get(":businessId/obligations")
   listObligations(@CurrentUser() user: User, @Param("businessId") businessId: string) {
     return this.businessService.listObligations(user.id, businessId);
