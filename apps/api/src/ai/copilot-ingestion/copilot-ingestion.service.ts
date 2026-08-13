@@ -90,7 +90,7 @@ export class CopilotIngestionService {
   ) {}
 
   async ingest(userId: string, sourceLabel: string, rawText: string, defaultPaymentMethod: PaymentMethod) {
-    return this.ingestParsedText(userId, sourceLabel, rawText, defaultPaymentMethod, "TEXT", null);
+    return this.ingestParsedText(userId, sourceLabel, rawText, defaultPaymentMethod, "TEXT", null, null);
   }
 
   /** Statement-image ingestion: runs the raw image through a self-contained Tesseract
@@ -113,7 +113,50 @@ export class CopilotIngestionService {
       deterministicallyParsedLines: deterministicallyParsed.length,
     });
 
-    return this.ingestParsedText(userId, sourceLabel, ocrResult.text, defaultPaymentMethod, "OCR_IMAGE", quality.extractionConfidence);
+    return this.ingestParsedText(userId, sourceLabel, ocrResult.text, defaultPaymentMethod, "OCR_IMAGE", quality.extractionConfidence, null);
+  }
+
+  // NEW (audit item #6): the actual Document <-> Copilot Ingestion bridge. Called by
+  // DocumentOcrHandler after a Document categorized BANK_STATEMENT successfully
+  // completes OCR — closes the audit-flagged gap that "the two pipelines are
+  // architecturally parallel, not integrated." Deliberately does NOT re-run OCR (the
+  // Documents module's TesseractOcrAdapter already extracted the text) — this method
+  // starts from that already-extracted text and engineConfidence, and reuses the
+  // exact same deterministic-parse → AI-fallback → suggestion pipeline every other
+  // ingestion path shares. Result is a normal, staged IngestionBatch — nothing is
+  // auto-approved into an Expense; a human still reviews it via the existing
+  // IngestionReviewService flow, per the master preservation rules ("never auto-create
+  // financial records from uncertain OCR").
+  async ingestFromDocumentText(
+    userId: string,
+    sourceLabel: string,
+    ocrText: string,
+    engineConfidence: number | undefined,
+    defaultPaymentMethod: PaymentMethod,
+    sourceDocumentId: string,
+  ) {
+    const { parsed: deterministicallyParsed } = parseStatementText(ocrText);
+    const totalLines = ocrText.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+
+    const quality = this.ocrQuality.estimate({
+      // TesseractOcrAdapter always reports a real engineConfidence; MockOcrAdapter
+      // (test/CI only — see ocr-adapter.factory.ts) doesn't. 0.5 is a neutral,
+      // honestly-labeled "unknown" stand-in for that one specific case — never used
+      // against real OCR output in production, where the adapter is Tesseract.
+      engineConfidence: engineConfidence ?? 0.5,
+      totalLines,
+      deterministicallyParsedLines: deterministicallyParsed.length,
+    });
+
+    return this.ingestParsedText(
+      userId,
+      sourceLabel,
+      ocrText,
+      defaultPaymentMethod,
+      "DOCUMENT_OCR",
+      quality.extractionConfidence,
+      sourceDocumentId,
+    );
   }
 
   private async ingestParsedText(
@@ -121,8 +164,9 @@ export class CopilotIngestionService {
     sourceLabel: string,
     rawText: string,
     defaultPaymentMethod: PaymentMethod,
-    ingestionSource: "TEXT" | "OCR_IMAGE",
+    ingestionSource: "TEXT" | "OCR_IMAGE" | "DOCUMENT_OCR",
     ocrExtractionConfidence: number | null,
+    sourceDocumentId: string | null,
   ) {
     const { parsed: deterministicallyParsed, unparsedLines } = parseStatementText(rawText);
 
@@ -173,6 +217,7 @@ export class CopilotIngestionService {
         totalLines: rawText.split(/\r?\n/).filter((l) => l.trim().length > 0).length,
         parsedCount: allParsed.length,
         unparsedCount: stillUnparsedCount,
+        sourceDocumentId,
         items: {
           create: items.map((item) => ({
             userId,
