@@ -101,6 +101,7 @@ function humanDimensionLabel(scenarioType: ScenarioType): string {
     RETIREMENT_AGE_SHIFT: "Retirement age",
     EMERGENCY_EXPENSE: "Emergency expense size",
     GOAL_DELAY: "Goal delay length",
+    NEW_LOAN: "New loan amount",
   };
   return labels[scenarioType];
 }
