@@ -349,6 +349,12 @@ const SCENARIO_FIELDS: Record<ScenarioType, FieldDef[]> = {
     { key: "goalId", label: "Goal", lookup: "goals" },
     { key: "delayMonths", label: "Delay by (months)" },
   ],
+  NEW_LOAN: [
+    { key: "loanAmount", label: "Loan amount (₹)" },
+    { key: "annualRatePercent", label: "Interest rate (%/yr)" },
+    { key: "tenureMonths", label: "Loan tenure (months)" },
+    { key: "purpose", label: "Purpose (optional)" },
+  ],
 };
 
 const SCENARIO_LABELS: Record<ScenarioType, string> = {
@@ -361,6 +367,7 @@ const SCENARIO_LABELS: Record<ScenarioType, string> = {
   RETIREMENT_AGE_SHIFT: "Shift retirement age",
   EMERGENCY_EXPENSE: "Emergency expense",
   GOAL_DELAY: "Delay a goal",
+  NEW_LOAN: "Take a new loan",
 };
 
 export default function SimulatorPage() {
@@ -390,7 +397,15 @@ export default function SimulatorPage() {
     const params: Record<string, unknown> = {};
     for (const field of SCENARIO_FIELDS[scenarioType]) {
       const raw = fieldValues[field.key];
-      params[field.key] = field.key === "loanId" || field.key === "goalId" ? raw : parseFloat(raw ?? "0");
+      if (field.key === "loanId" || field.key === "goalId") {
+        params[field.key] = raw;
+      } else if (field.key === "purpose") {
+        // Optional, free-text, narrative-only (NEW_LOAN) — omit entirely when blank
+        // rather than sending an empty string or trying to parseFloat it.
+        if (raw && raw.trim().length > 0) params[field.key] = raw.trim();
+      } else {
+        params[field.key] = parseFloat(raw ?? "0");
+      }
     }
     return params;
   };
@@ -510,8 +525,8 @@ export default function SimulatorPage() {
                   placeholder={field.label}
                   value={fieldValues[field.key] ?? ""}
                   onChange={(e) => setFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                  className="money"
-                  required
+                  className={field.key === "purpose" ? undefined : "money"}
+                  required={field.key !== "purpose"}
                 />
               );
             })}
