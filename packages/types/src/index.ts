@@ -491,8 +491,14 @@ export interface TaxEstimateDTO {
   // `surcharge` is new on both regime objects — the surcharge amount actually applied
   // (in rupees, already included in taxPayable), so the UI can show it as its own line
   // item. Zero for any income below the ₹50L threshold, matching every existing case.
-  oldRegime: { taxableIncome: string; taxPayable: string; surcharge: string };
-  newRegime: { taxableIncome: string; taxPayable: string; surcharge: string };
+  // `marginalReliefApplied` (audit item #14): true when the surcharge above was
+  // reduced by marginal relief — the provision that caps how much crossing a
+  // surcharge threshold can increase total tax, so earning ₹1 over a threshold never
+  // costs thousands more than earning exactly the threshold amount. false for every
+  // income that doesn't cross a threshold closely enough for relief to matter
+  // (including every income below ₹50L, matching every existing case).
+  oldRegime: { taxableIncome: string; taxPayable: string; surcharge: string; marginalReliefApplied: boolean };
+  newRegime: { taxableIncome: string; taxPayable: string; surcharge: string; marginalReliefApplied: boolean };
   recommendedRegime: "OLD" | "NEW";
   savingsFromRecommendedRegime: string;
   deductionsBySection: { section: TaxSection; used: string; limit: string; remainingRoom: string }[];
