@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { IncomeService } from "../income/income.service";
 import { CreateBusinessDto } from "./dto/create-business.dto";
 import { UpdateBusinessDto } from "./dto/update-business.dto";
 import { CreateTransactionDto } from "./dto/create-transaction.dto";
@@ -39,7 +40,10 @@ function advanceDueDate(current: Date, recurrence: Recurrence): Date {
 
 @Injectable()
 export class BusinessService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private incomeService: IncomeService,
+  ) {}
 
   listBusinesses(userId: string) {
     return this.prisma.client.business.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
@@ -128,6 +132,81 @@ export class BusinessService {
     }
 
     return { id: transactionId };
+  }
+
+  // NEW: closes the audit-flagged gap — "no code path anywhere in business.service.ts
+  // creates an Income row from BusinessTransaction/OWNER_DRAWING — business profit and
+  // drawings still do not automatically flow into personal Income, Dashboard, or Tax."
+  //
+  // Deliberately an explicit, opt-in action per transaction (not automatic on
+  // creation) — see the master preservation rules: business P&L and the owner's
+  // personal taxable income are related but distinct, and auto-merging them risks
+  // silently double-counting money (annualProfitForUser() above is intentionally NOT
+  // folded into personal Income for the same reason). Only OWNER_DRAWING transactions
+  // are eligible — REVENUE/EXPENSE describe the business's own books, not money that
+  // moved to the owner personally.
+  //
+  // Idempotent by construction: once a transaction has a syncedIncomeId, a second call
+  // throws rather than creating a duplicate Income row.
+  async syncDrawingToIncome(userId: string, transactionId: string) {
+    const transaction = await this.prisma.client.businessTransaction.findUnique({
+      where: { id: transactionId },
+      include: { business: true },
+    });
+    if (!transaction || transaction.business.userId !== userId) {
+      throw new NotFoundException("Transaction not found");
+    }
+    if (transaction.type !== "OWNER_DRAWING") {
+      throw new BadRequestException("Only OWNER_DRAWING transactions can be synced to personal Income.");
+    }
+    if (transaction.syncedIncomeId) {
+      throw new BadRequestException("This transaction has already been synced to Income.");
+    }
+
+    const income = await this.incomeService.create(userId, {
+      source: "BUSINESS",
+      label: `Owner drawing — ${transaction.business.name}`,
+      amount: Number(transaction.amount),
+      recurrence: "ONE_TIME",
+      receivedAt: transaction.occurredAt.toISOString(),
+      notes: transaction.description ?? undefined,
+    });
+
+    await this.prisma.client.businessTransaction.update({
+      where: { id: transactionId },
+      data: { syncedIncomeId: income.id },
+    });
+
+    return { transactionId, income };
+  }
+
+  // Reverses syncDrawingToIncome() — deletes the linked Income row and clears the
+  // link, so a user who synced a drawing by mistake (or is cleaning up a duplicate)
+  // isn't stuck with an orphaned Income row they have to find and delete manually
+  // themselves. Every new automated financial write in this batch is reversible, per
+  // the master preservation rules.
+  async unsyncDrawingFromIncome(userId: string, transactionId: string) {
+    const transaction = await this.prisma.client.businessTransaction.findUnique({
+      where: { id: transactionId },
+      include: { business: true },
+    });
+    if (!transaction || transaction.business.userId !== userId) {
+      throw new NotFoundException("Transaction not found");
+    }
+    if (!transaction.syncedIncomeId) {
+      throw new BadRequestException("This transaction was never synced to Income.");
+    }
+
+    // Ownership-scoped delete (not a bare deleteMany by id alone) — the Income row
+    // belongs to the user via userId directly (Income has no businessId), so this is
+    // the same atomic, ownership-scoped pattern used everywhere else in this codebase,
+    // not a second unchecked round-trip.
+    await this.prisma.client.income.deleteMany({ where: { id: transaction.syncedIncomeId, userId } });
+
+    return this.prisma.client.businessTransaction.update({
+      where: { id: transactionId },
+      data: { syncedIncomeId: null },
+    });
   }
 
   async listObligations(userId: string, businessId: string) {
