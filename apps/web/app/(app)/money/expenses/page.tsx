@@ -284,6 +284,24 @@ export default function ExpensesPage() {
     load(items.length === 1 && page > 1 ? page - 1 : page);
   };
 
+  // NEW (audit item #3): explicit, opt-in recurring-generation toggle, mirroring the
+  // Income page's equivalent. Defaults the cadence to MONTHLY on activation (the
+  // common case for recurring expenses — subscriptions, rent, EMI-style bills) rather
+  // than prompting for a cadence inline; a user who needs a different cadence can
+  // still get there via Edit once the field is populated.
+  const onToggleRecurrence = async (item: ExpenseDTO) => {
+    try {
+      if (item.recurrenceActive) {
+        await api.expenses.deactivateRecurrence(item.id);
+      } else {
+        await api.expenses.activateRecurrence(item.id, item.recurrence ?? "MONTHLY");
+      }
+      load(page);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not update this row's recurrence setting.");
+    }
+  };
+
   const onUpdate = async (id: string, values: Record<string, string | boolean>) => {
     await api.expenses.update(id, {
       categoryId: values.categoryId as string,
@@ -385,7 +403,12 @@ export default function ExpensesPage() {
                 ) : (
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-ink">{item.merchant || item.category?.name}</p>
+                      <p className="text-ink">
+                        {item.merchant || item.category?.name}
+                        {item.generatedFromRecurringId && (
+                          <span className="ml-2 text-[10px] uppercase tracking-wide text-ink-faint">auto-generated</span>
+                        )}
+                      </p>
                       <p className="text-xs text-ink-faint">
                         {item.category?.name} · {item.paymentMethod.toLowerCase()} ·{" "}
                         {new Date(item.spentAt).toLocaleDateString("en-IN")}
@@ -393,6 +416,19 @@ export default function ExpensesPage() {
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="money text-loss">-{formatINR(item.amount)}</span>
+                      {!item.generatedFromRecurringId && item.recurrence !== "ONE_TIME" && (
+                        <button
+                          onClick={() => onToggleRecurrence(item)}
+                          className={`text-xs hover:underline ${item.recurrenceActive ? "text-ink-faint" : "text-marigold-600"}`}
+                          title={
+                            item.recurrenceActive
+                              ? "This row auto-generates a new entry each period — click to stop"
+                              : "Automatically generate a new entry each period (defaults to monthly)"
+                          }
+                        >
+                          {item.recurrenceActive ? "Auto-generating ✓" : "Make recurring"}
+                        </button>
+                      )}
                       <button onClick={() => setEditingId(item.id)} className="text-xs text-ink-faint hover:text-marigold-600">
                         Edit
                       </button>
