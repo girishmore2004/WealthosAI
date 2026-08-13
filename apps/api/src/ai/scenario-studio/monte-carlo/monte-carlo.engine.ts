@@ -50,7 +50,46 @@ export interface MonteCarloInput {
   seed: number;
   assumptions: MonteCarloAssumptions;
   effect: MonteCarloScenarioEffect;
+  // NEW (audit item #17): "no explicit timeout/circuit-breaker was verified around
+  // them, so a pathological input... could produce a slow response rather than a
+  // bounded failure." iterations/horizonMonths are ALREADY clamped by the caller
+  // (MonteCarloSimulationService — see MAX_MC_ITERATIONS/MC_HORIZON_MONTHS_CAP), which
+  // bounds the theoretical worst case to a fast, sub-second run on any reasonable
+  // host. This is a genuinely different, complementary protection: a real wall-clock
+  // circuit breaker for the case those counts, however bounded, still take too long
+  // in practice (a slow/loaded host, a future change that raises the caps, etc.).
+  // Optional and defaulted (see DEFAULT_MC_MAX_WALL_CLOCK_MS) so every existing call
+  // site that doesn't pass it explicitly gets the same protection automatically.
+  maxWallClockMs?: number;
 }
+
+// Thrown by runMonteCarloSimulation() when maxWallClockMs is exceeded mid-run.
+// MonteCarloSimulationService catches this specifically and turns it into a clear,
+// actionable 400 ("reduce horizon or iterations") rather than letting the request
+// either hang or fail with a generic 500 — see that service's simulate() method.
+export class MonteCarloTimeoutError extends Error {
+  constructor(elapsedMs: number, iterationsCompleted: number, totalIterations: number) {
+    super(
+      `Monte Carlo simulation exceeded its time budget (${elapsedMs}ms) after completing ${iterationsCompleted}/${totalIterations} iterations. Try a shorter horizon or fewer iterations.`,
+    );
+    this.name = "MonteCarloTimeoutError";
+  }
+}
+
+// Default time budget for a single runMonteCarloSimulation() call. 8 seconds is
+// comfortably above what the current caps (MAX_MC_ITERATIONS=5000 ×
+// MC_HORIZON_MONTHS_CAP=600) take on a normal host in practice (a simple numeric inner
+// loop, not I/O-bound), while still being short enough that a caller-facing HTTP
+// request doesn't hang indefinitely if something is genuinely wrong (a much slower
+// host, or a future change that raises the count-based caps without reconsidering
+// this budget).
+export const DEFAULT_MC_MAX_WALL_CLOCK_MS = 8000;
+
+// How often (in completed iterations) to check the wall clock — checking every single
+// iteration would add measurable Date.now() overhead across thousands of iterations;
+// checking too rarely delays how quickly a runaway run actually gets caught. 50 is a
+// reasonable middle ground for the iteration counts this module actually sees.
+const WALL_CLOCK_CHECK_INTERVAL_ITERATIONS = 50;
 
 export interface PercentileSet {
   p10: number;
@@ -194,6 +233,8 @@ const PROPERTY_APPRECIATION_MAX_PERCENT = 25;
  */
 export function runMonteCarloSimulation(input: MonteCarloInput): MonteCarloRawResult {
   const { horizonMonths, iterations, seed, assumptions, effect } = input;
+  const maxWallClockMs = input.maxWallClockMs ?? DEFAULT_MC_MAX_WALL_CLOCK_MS;
+  const startedAt = Date.now();
   const horizonYears = Math.ceil(horizonMonths / 12);
 
   // Band cadence: reporting every month would be far more points than any chart needs
@@ -211,6 +252,17 @@ export function runMonteCarloSimulation(input: MonteCarloInput): MonteCarloRawRe
   const terminalNetWorths: number[] = new Array(iterations);
 
   for (let iter = 0; iter < iterations; iter++) {
+    // NEW (audit item #17): periodic wall-clock circuit breaker — checked every
+    // WALL_CLOCK_CHECK_INTERVAL_ITERATIONS iterations (not every single one, to keep
+    // Date.now() overhead negligible across thousands of iterations). A bounded
+    // failure with a clear, actionable message beats an unbounded hang.
+    if (iter > 0 && iter % WALL_CLOCK_CHECK_INTERVAL_ITERATIONS === 0) {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > maxWallClockMs) {
+        throw new MonteCarloTimeoutError(elapsed, iter, iterations);
+      }
+    }
+
     // A distinct, deterministic RNG stream per iteration — 7919 is prime, chosen only
     // to avoid trivial seed collisions between adjacent iterations, not for any
     // cryptographic property (this PRNG is not cryptographically secure and must
