@@ -37,7 +37,15 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
   // 4 pre-existing tests below (none of which ever mention budgets) keep computing the
   // health score via the redistributed-weight path, exactly matching what should
   // happen for an account that hasn't set any budgets up.
-  const mockPrisma = { client: { budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() } } };
+  // Also now reads goal.findMany() for the #2/#18 fixes below — defaulted to "no
+  // goals" so these pre-existing tests exercise the exact original legacy behavior
+  // (category-name-matched emergency fund, uncommittedCash === cashBalance).
+  const mockPrisma = {
+    client: {
+      budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() },
+      goal: { findMany: jest.fn() },
+    },
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -47,6 +55,7 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
     mockAlertsService.refresh.mockResolvedValue([]);
     mockPropertyService.totalCurrentValue.mockResolvedValue(0);
     mockPrisma.client.budget.findMany.mockResolvedValue([]);
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -146,7 +155,12 @@ describe("DashboardService budget-aware health score (new)", () => {
   };
   const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
   const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
-  const mockPrisma = { client: { budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() } } };
+  const mockPrisma = {
+    client: {
+      budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() },
+      goal: { findMany: jest.fn() },
+    },
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -157,6 +171,7 @@ describe("DashboardService budget-aware health score (new)", () => {
     mockPropertyService.totalCurrentValue.mockResolvedValue(0);
     mockIncomeService.monthlyForecast.mockResolvedValue(100000);
     mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -283,5 +298,141 @@ describe("DashboardService budget CRUD (new)", () => {
   it("throws NotFoundException removing a budget that doesn't exist or isn't owned by the caller", async () => {
     mockPrisma.client.budget.deleteMany.mockResolvedValue({ count: 0 });
     await expect(service.removeBudget("user-1", "not-mine")).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe("DashboardService emergency fund via Goal + uncommitted cash (new, audit items #2 and #18)", () => {
+  let service: DashboardService;
+
+  const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
+  const mockExpensesService = { list: jest.fn() };
+  const mockInvestmentsService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
+  const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockPrisma = {
+    client: {
+      budget: { findMany: jest.fn().mockResolvedValue([]) },
+      goal: { findMany: jest.fn() },
+    },
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockInvestmentsService.totalCurrentValue.mockResolvedValue(0);
+    mockLoansService.totalOutstanding.mockResolvedValue(0);
+    mockLoansService.debtSummary.mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] });
+    mockAlertsService.refresh.mockResolvedValue([]);
+    mockPropertyService.totalCurrentValue.mockResolvedValue(0);
+    mockPrisma.client.budget.findMany.mockResolvedValue([]);
+    // Monthly expense total of 12000 -> monthly-equivalent of 1000, so a 6000 reserve
+    // == exactly 6 months, a clean number to assert against.
+    mockIncomeService.monthlyForecast.mockResolvedValue(50000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 50000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 12000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+      ],
+    }).compile();
+    service = moduleRef.get(DashboardService);
+  });
+
+  it("uses an EMERGENCY_FUND goal's currentAmount, not a literally-named expense category, when a goal exists", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 6000, investments: [] },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("GOAL");
+    expect(summary.emergencyFundAmount).toBe("6000.00");
+    expect(summary.healthScore.breakdown.emergencyFundMonths).toBe(100); // 6 months / 6 -> capped at 100
+  });
+
+  it("sums currentAmount across multiple EMERGENCY_FUND goals", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 2000, investments: [] },
+      { id: "g2", type: "EMERGENCY_FUND", currentAmount: 1000, investments: [] },
+      { id: "g3", type: "HOUSE", currentAmount: 500000, investments: [] }, // not counted
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("GOAL");
+    expect(summary.emergencyFundAmount).toBe("3000.00");
+  });
+
+  it("falls back to the legacy 'Emergency Fund'-named expense category when no goal exists", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 12000, categoryId: "c1", category: { name: "Rent", type: "NEED" } },
+      { amount: 3000, categoryId: "c2", category: { name: "Emergency Fund", type: "SAVINGS" } },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("CATEGORY_LEGACY");
+    expect(summary.emergencyFundAmount).toBe("3000.00");
+  });
+
+  it("reports basis NONE and a zero emergency-fund amount when neither a goal nor the legacy category exists", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("NONE");
+    expect(summary.emergencyFundAmount).toBe("0.00");
+    expect(summary.healthScore.breakdown.emergencyFundMonths).toBe(0);
+  });
+
+  it("prefers the GOAL basis over the legacy category even if both are present", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 9000, investments: [] },
+    ]);
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 3000, categoryId: "c2", category: { name: "Emergency Fund", type: "SAVINGS" } },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("GOAL");
+    expect(summary.emergencyFundAmount).toBe("9000.00");
+  });
+
+  it("subtracts non-investment-backed goal currentAmount from cashBalance to get uncommittedCash", async () => {
+    mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 20000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 15000, investments: [] }, // cash-backed, subtracted
+      { id: "g2", type: "HOUSE", currentAmount: 200000, investments: [{ id: "inv1" }] }, // investment-backed, NOT subtracted
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    // cashBalance = 100000 - 20000 = 80000; uncommittedCash = 80000 - 15000 (g1 only) = 65000
+    expect(summary.cashBalance).toBe("80000.00");
+    expect(summary.uncommittedCash).toBe("65000.00");
+  });
+
+  it("uncommittedCash equals cashBalance when the user has no goals at all", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+    mockIncomeService.list.mockResolvedValue([{ amount: 40000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 10000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.uncommittedCash).toBe(summary.cashBalance);
   });
 });
