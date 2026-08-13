@@ -73,4 +73,12 @@ export class IncomeController {
   previewRecurrence(@CurrentUser() user: User, @Param("id") id: string) {
     return this.recurrenceGenerator.previewIncomeOccurrences(user.id, id);
   }
+
+  // NEW (audit item #4): every logged amount change for this Income row, most-recent
+  // first. See IncomeService.update()'s doc comment for exactly when a history entry
+  // is created.
+  @Get(":id/history")
+  history(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.incomeService.history(user.id, id);
+  }
 }
