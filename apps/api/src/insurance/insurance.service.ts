@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { IncomeService } from "../income/income.service";
 import { CreatePolicyDto } from "./dto/create-policy.dto";
@@ -32,6 +32,7 @@ export class InsuranceService {
   }
 
   async create(userId: string, dto: CreatePolicyDto) {
+    await this.assertDependentOwnership(userId, dto.nomineeDependentId);
     return this.prisma.client.insurancePolicy.create({
       data: { ...dto, userId, renewalDate: new Date(dto.renewalDate) },
     });
@@ -44,6 +45,7 @@ export class InsuranceService {
   // access attempt and a nonexistent id into the same 404 rather than leaking which
   // case occurred via a 403/404 split.
   async update(userId: string, id: string, dto: UpdatePolicyDto) {
+    await this.assertDependentOwnership(userId, dto.nomineeDependentId);
     const result = await this.prisma.client.insurancePolicy.updateMany({
       where: { id, userId },
       data: { ...dto, renewalDate: dto.renewalDate ? new Date(dto.renewalDate) : undefined },
@@ -56,6 +58,27 @@ export class InsuranceService {
     // updateMany() only returns a count; fetch the row to keep returning the updated
     // record, matching the original method's contract.
     return this.prisma.client.insurancePolicy.findUnique({ where: { id } });
+  }
+
+  // NEW (audit item #13): closes a real cross-tenant risk analogous to the one already
+  // fixed for Investment.goalId (assertGoalOwnership) — without this check, a user
+  // could link a policy's nominee to any guessable Dependent.id belonging to a
+  // household they're not a member of. A Dependent belongs to a Household, not
+  // directly to a User, so ownership here means "the dependent's household matches the
+  // caller's own household" — a user with no household (householdId is nullable) can
+  // never successfully link a nominee, which is the correct behavior since they have
+  // no dependents to link to.
+  private async assertDependentOwnership(userId: string, dependentId?: string): Promise<void> {
+    if (!dependentId) return; // not linking a nominee — nothing to check
+
+    const [user, dependent] = await Promise.all([
+      this.prisma.client.user.findUnique({ where: { id: userId } }),
+      this.prisma.client.dependent.findUnique({ where: { id: dependentId } }),
+    ]);
+
+    if (!dependent || !user?.householdId || dependent.householdId !== user.householdId) {
+      throw new BadRequestException("nomineeDependentId does not refer to a dependent in your household.");
+    }
   }
 
   // Same atomic-ownership approach, and a genuine round-trip reduction: one
@@ -227,10 +250,18 @@ export class InsuranceService {
     const policies = await this.list(userId);
     return {
       totalPolicies: policies.length,
-      withNominee: policies.filter((p) => !!p.nomineeName).length,
+      // A nominee is "on file" if EITHER the free-text name or the new structured
+      // dependent link is set — a policy that's been fully migrated to the linked
+      // form (nomineeDependentId set, nomineeName left blank) must still count as
+      // having a nominee, not incorrectly show up as missing one.
+      withNominee: policies.filter((p) => !!p.nomineeName || !!p.nomineeDependentId).length,
       missingNominee: policies
-        .filter((p) => !p.nomineeName)
+        .filter((p) => !p.nomineeName && !p.nomineeDependentId)
         .map((p) => ({ id: p.id, provider: p.provider, type: p.type })),
+      // NEW (audit item #13): how many nominees are backed by a real household
+      // Dependent record versus only ever having been entered as free text — a useful
+      // "data quality" signal distinct from withNominee/missingNominee above.
+      linkedToDependent: policies.filter((p) => !!p.nomineeDependentId).length,
     };
   }
 }
