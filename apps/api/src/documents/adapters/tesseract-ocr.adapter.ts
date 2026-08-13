@@ -77,12 +77,18 @@ export class TesseractOcrAdapter implements OcrAdapter {
     const worker = await createWorker("eng");
     try {
       const pageTexts: string[] = [];
+      const pageConfidences: number[] = [];
       for (const page of rasterized.pages) {
         const {
-          data: { text },
+          data: { text, confidence },
         } = await worker.recognize(page.pngBuffer);
         pageTexts.push(text.trim());
+        pageConfidences.push(Math.max(0, Math.min(1, confidence / 100)));
       }
+      // Simple mean across pages — a multi-page PDF has one overall extraction
+      // quality signal on IngestionBatch (via the Document-Ingestion bridge), not a
+      // per-page one, so an unweighted average is the natural rollup.
+      const engineConfidence = pageConfidences.reduce((sum, c) => sum + c, 0) / pageConfidences.length;
 
       const combinedText = pageTexts
         .map((text, i) => `--- Page ${rasterized.pages[i].pageNumber} ---\n${text || "(no text detected on this page)"}`)
@@ -97,7 +103,7 @@ export class TesseractOcrAdapter implements OcrAdapter {
         ? `${categoryLabel} Extracted text from ${rasterized.pages.length}-page PDF${truncationNote}: ${flatText.slice(0, MAX_SUMMARY_TEXT_CHARS)}${flatText.length > MAX_SUMMARY_TEXT_CHARS ? "…" : ""}`
         : `${categoryLabel} (No text could be confidently extracted from this ${rasterized.pages.length}-page PDF.)`;
 
-      return { text: combinedText, summary };
+      return { text: combinedText, summary, engineConfidence };
     } finally {
       await worker.terminate();
     }
@@ -117,7 +123,7 @@ export class TesseractOcrAdapter implements OcrAdapter {
     const worker = await createWorker("eng");
     try {
       const {
-        data: { text },
+        data: { text, confidence },
       } = await worker.recognize(fileBuffer);
       const cleanedText = text.trim();
       const categoryLabel = CATEGORY_SUMMARIES[category] ?? CATEGORY_SUMMARIES.OTHER;
@@ -128,7 +134,11 @@ export class TesseractOcrAdapter implements OcrAdapter {
           }`
         : `${categoryLabel} (No text could be confidently extracted from this image.)`;
 
-      return { text: cleanedText || "(no text detected)", summary };
+      return {
+        text: cleanedText || "(no text detected)",
+        summary,
+        engineConfidence: Math.max(0, Math.min(1, confidence / 100)),
+      };
     } finally {
       // Always terminate the worker, success or failure — a real OCR engine holds a
       // WASM instance + language data in memory; leaking it on every failed job would
