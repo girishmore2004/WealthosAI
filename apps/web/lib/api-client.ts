@@ -141,6 +141,11 @@ export const api = {
     remove: (id: string) => request<void>(`/income/${id}`, { method: "DELETE" }),
     update: (id: string, data: Partial<{ source: string; label: string; amount: number; recurrence: string; receivedAt: string; notes: string }>) =>
       request<IncomeDTO>(`/income/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    // NEW (audit item #3): opt-in recurring-generation controls.
+    activateRecurrence: (id: string, endDate?: string) =>
+      request<IncomeDTO>(`/income/${id}/recurrence/activate`, { method: "POST", body: JSON.stringify({ endDate }) }),
+    deactivateRecurrence: (id: string) => request<IncomeDTO>(`/income/${id}/recurrence/deactivate`, { method: "POST" }),
+    previewRecurrence: (id: string) => request<{ occurrenceDate: string }[]>(`/income/${id}/recurrence/preview`),
   },
   expenses: {
     list: (month?: string) => request<ExpenseDTO[]>(`/expenses${month ? `?month=${month}` : ""}`),
@@ -170,6 +175,12 @@ export const api = {
     subscriptions: () => request<DetectedSubscriptionDTO[]>("/expenses/subscriptions"),
     breakdown: (month?: string) =>
       request<CategoryBreakdownDTO[]>(`/expenses/breakdown${month ? `?month=${month}` : ""}`),
+    // NEW (audit item #3): opt-in recurring-generation controls. Unlike income,
+    // activation requires the cadence — Expense had no recurrence field before this.
+    activateRecurrence: (id: string, recurrence: string, endDate?: string) =>
+      request<ExpenseDTO>(`/expenses/${id}/recurrence/activate`, { method: "POST", body: JSON.stringify({ recurrence, endDate }) }),
+    deactivateRecurrence: (id: string) => request<ExpenseDTO>(`/expenses/${id}/recurrence/deactivate`, { method: "POST" }),
+    previewRecurrence: (id: string) => request<{ occurrenceDate: string }[]>(`/expenses/${id}/recurrence/preview`),
   },
   investments: {
     list: () => request<InvestmentDTO[]>("/investments"),
