@@ -74,3 +74,15 @@ jobs:
         env:
           DATABASE_URL: "postgresql://wealthos:wealthos_ci_password@localhost:5432/wealthos?schema=public"
         run: npx prisma db seed
+      - name: Apply the initial migration to a real Postgres instance
+        working-directory: packages/db
+        env:
+          DATABASE_URL: "postgresql://wealthos:wealthos_ci_password@localhost:5432/wealthos?schema=public"
+          DIRECT_URL: "postgresql://wealthos:wealthos_ci_password@localhost:5432/wealthos?schema=public"
+        run: npx prisma migrate deploy
+      - name: Seed against the freshly-migrated database
+        working-directory: packages/db
+        env:
+          DATABASE_URL: "postgresql://wealthos:wealthos_ci_password@localhost:5432/wealthos?schema=public"
+          DIRECT_URL: "postgresql://wealthos:wealthos_ci_password@localhost:5432/wealthos?schema=public"
+        run: npx prisma db seed
