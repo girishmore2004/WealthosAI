@@ -124,7 +124,10 @@ describe("IncomePage pagination (new, audit item #16)", () => {
 
     fireEvent.change(screen.getByPlaceholderText("Label (e.g. Monthly salary)"), { target: { value: "New salary" } });
     fireEvent.change(screen.getByPlaceholderText("Amount (₹)"), { target: { value: "50000" } });
-    fireEvent.click(screen.getByText("Add income"));
+    // Not screen.getByText("Add income") — the Card title heading ("Add income") and
+    // the submit button both render that exact text, so a plain text query is
+    // ambiguous. Scoping by role picks the <button> specifically.
+    fireEvent.click(screen.getByRole("button", { name: "Add income" }));
 
     await waitFor(() => expect(mockedApi.income.create).toHaveBeenCalled());
     await waitFor(() => expect(mockedApi.income.listPaged).toHaveBeenLastCalledWith({ page: 1, pageSize: 25 }));
