@@ -49,11 +49,18 @@ describe("tax.service pure functions: applySlabs / findSurchargeRate", () => {
 describe("TaxService.estimate", () => {
   let service: TaxService;
 
-  const mockPrisma = { client: { taxDeduction: { findMany: jest.fn() } } };
+  // Was `{ taxDeduction: { findMany } }` only — estimate() now also calls
+  // capitalGainsSummary() internally (audit item #11), which queries
+  // realizedGainEvent.findMany(). Defaulted to "no realized gains" in beforeEach below
+  // so every pre-existing test in this block (none of which mention capital gains)
+  // keeps computing byte-identical income-tax figures, with capitalGains coming back
+  // all-zero.
+  const mockPrisma = { client: { taxDeduction: { findMany: jest.fn() }, realizedGainEvent: { findMany: jest.fn() } } };
   const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPrisma.client.realizedGainEvent.findMany.mockResolvedValue([]);
     const moduleRef = await Test.createTestingModule({
       providers: [
         TaxService,
@@ -249,6 +256,71 @@ describe("TaxService.estimate", () => {
       const result = await service.estimate("user-1", "2025-26");
 
       expect(result.oldRegime.marginalReliefApplied).toBe(false);
+    });
+  });
+
+  describe("capital gains (new, audit item #11)", () => {
+    beforeEach(() => {
+      mockIncomeService.monthlyForecast.mockResolvedValue(100000); // 12L/year
+      mockIncomeService.list.mockResolvedValue([]);
+      mockPrisma.client.taxDeduction.findMany.mockResolvedValue([]);
+    });
+
+    it("returns all-zero capital gains when no realized gains are logged for the year", async () => {
+      mockPrisma.client.realizedGainEvent.findMany.mockResolvedValue([]);
+
+      const result = await service.estimate("user-1", "2025-26");
+
+      expect(Number(result.capitalGains.totalCapitalGainsTax)).toBe(0);
+      expect(result.capitalGains.financialYear).toBe("2025-26");
+      expect(result.capitalGains.isProjectionOnly).toBe(true);
+    });
+
+    it("taxes an equity long-term gain at 12.5% above the ₹1,25,000 exemption", async () => {
+      mockPrisma.client.realizedGainEvent.findMany.mockResolvedValue([
+        { gainCategory: "EQUITY_LONG_TERM", gainAmount: 300000 },
+      ]);
+
+      const result = await service.estimate("user-1", "2025-26");
+
+      expect(Number(result.capitalGains.equityLongTermTax)).toBeCloseTo((300000 - 125000) * 0.125, 2);
+    });
+
+    it("only queries realized gains for the requested financial year", async () => {
+      mockPrisma.client.realizedGainEvent.findMany.mockResolvedValue([]);
+
+      await service.estimate("user-1", "2025-26");
+
+      expect(mockPrisma.client.realizedGainEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: "user-1", financialYear: "2025-26" } }),
+      );
+    });
+
+    it("computes otherShortTermTax at the marginal slab rate on top of the person's other taxable income", async () => {
+      mockPrisma.client.realizedGainEvent.findMany.mockResolvedValue([
+        { gainCategory: "OTHER_SHORT_TERM", gainAmount: 200000 },
+      ]);
+
+      const result = await service.estimate("user-1", "2025-26");
+
+      // 12L/year old-regime taxable income (no deductions) sits in the 30% bracket
+      // (>10L) for FY2025-26's old-regime slabs — so ₹200,000 of additional
+      // short-term "other asset" gain should be taxed at (close to) 30% marginal,
+      // not 0% or some flat capital-gains rate.
+      expect(Number(result.capitalGains.otherShortTermTax)).toBeCloseTo(200000 * 0.3, 2);
+    });
+
+    it("does not let capitalGains affect oldRegime/newRegime.taxPayable — it's a separate line item", async () => {
+      const withoutGains = await service.estimate("user-1", "2025-26");
+
+      mockPrisma.client.realizedGainEvent.findMany.mockResolvedValue([
+        { gainCategory: "EQUITY_LONG_TERM", gainAmount: 500000 },
+      ]);
+      const withGains = await service.estimate("user-1", "2025-26");
+
+      expect(withGains.oldRegime.taxPayable).toBe(withoutGains.oldRegime.taxPayable);
+      expect(withGains.newRegime.taxPayable).toBe(withoutGains.newRegime.taxPayable);
+      expect(Number(withGains.capitalGains.totalCapitalGainsTax)).toBeGreaterThan(0);
     });
   });
 });
