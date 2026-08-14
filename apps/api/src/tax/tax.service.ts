@@ -3,8 +3,9 @@ import { PrismaService } from "../prisma/prisma.service";
 import { IncomeService } from "../income/income.service";
 import { CreateDeductionDto } from "./dto/create-deduction.dto";
 import { financialYearRange } from "../common/utils/financial-year.util";
-import { TaxEstimateDTO, TaxSection } from "@wealthos/types";
+import { TaxEstimateDTO, TaxSection, CapitalGainsSummaryDTO } from "@wealthos/types";
 import { TaxSlabBracket, TaxYearConfig, resolveTaxYearConfig } from "./tax-slab-config";
+import { summarizeCapitalGains, CapitalGainsCategory } from "./capital-gains.util";
 
 // This engine is for education/decision-support only, not a substitute for a CA or the
 // official IT department calculator. Slab rates, limits, and surcharge thresholds now
@@ -169,12 +170,87 @@ export class TaxService {
     return monthlyForecast * 12 + oneTimeInYear;
   }
 
-  async estimate(userId: string, financialYear: string): Promise<TaxEstimateDTO> {
-    const { config, isEstimatedFromPriorYear } = resolveTaxYearConfig(financialYear);
+  // NEW (audit item #11): "Investments are not connected to capital-gains tax
+  // calculations." Aggregates every RealizedGainEvent logged for this financial year
+  // (via InvestmentsService.recordSale() — an explicit, user-initiated action, never
+  // auto-inferred) into the tax figures this method computes. See
+  // capital-gains.util.ts for the full rule documentation (LTCG/STCG thresholds per
+  // asset class, crypto's flat rate, the ₹1,25,000 equity LTCG exemption).
+  //
+  // otherShortTermTax (gains on non-equity, non-crypto assets held short-term) is
+  // computed here, not in the pure util, because it depends on the person's total
+  // taxable income — added to the OLD REGIME's taxable income (a disclosed
+  // simplification: the marginal difference this specific piece would show under the
+  // new regime's slabs isn't separately computed, matching how several other pieces
+  // of this engine are disclosed as approximations rather than risk a subtly wrong
+  // full implementation) and taxed at the resulting marginal rate via applySlabs().
+  async capitalGainsSummary(userId: string, financialYear: string): Promise<CapitalGainsSummaryDTO> {
+    const { config } = resolveTaxYearConfig(financialYear);
+    const [events, oldTaxableIncomeForMarginal] = await Promise.all([
+      this.prisma.client.realizedGainEvent.findMany({ where: { userId, financialYear } }),
+      this.marginalBaselineTaxableIncome(userId, financialYear),
+    ]);
 
+    const breakdown = summarizeCapitalGains(
+      events.map((e) => ({ category: e.gainCategory as CapitalGainsCategory, gainAmount: Number(e.gainAmount) })),
+    );
+
+    const positiveOtherShortTermGain = Math.max(0, breakdown.otherShortTermGain);
+    const otherShortTermTax =
+      applySlabs(oldTaxableIncomeForMarginal + positiveOtherShortTermGain, config.oldRegimeSlabs) -
+      applySlabs(oldTaxableIncomeForMarginal, config.oldRegimeSlabs);
+
+    const totalCapitalGainsTax =
+      breakdown.equityShortTermTax + breakdown.equityLongTermTax + breakdown.cryptoTax + otherShortTermTax + breakdown.otherLongTermTax;
+
+    return {
+      financialYear,
+      equityShortTermGain: breakdown.equityShortTermGain.toFixed(2),
+      equityLongTermGain: breakdown.equityLongTermGain.toFixed(2),
+      equityLongTermExemptionUsed: breakdown.equityLongTermExemptionUsed.toFixed(2),
+      cryptoGain: breakdown.cryptoGain.toFixed(2),
+      cryptoLossDisallowed: breakdown.cryptoLossDisallowed.toFixed(2),
+      otherShortTermGain: breakdown.otherShortTermGain.toFixed(2),
+      otherLongTermGain: breakdown.otherLongTermGain.toFixed(2),
+      equityShortTermTax: breakdown.equityShortTermTax.toFixed(2),
+      equityLongTermTax: breakdown.equityLongTermTax.toFixed(2),
+      cryptoTax: breakdown.cryptoTax.toFixed(2),
+      otherShortTermTax: otherShortTermTax.toFixed(2),
+      otherLongTermTax: breakdown.otherLongTermTax.toFixed(2),
+      totalCapitalGainsTax: totalCapitalGainsTax.toFixed(2),
+      isProjectionOnly: true,
+    };
+  }
+
+  // The "before capital gains" taxable-income baseline otherShortTermTax's marginal
+  // calculation is added on top of — deliberately the OLD REGIME's own
+  // deduction-adjusted taxable income (not a duplicate of estimate()'s full pipeline,
+  // just the income/deduction piece needed here).
+  private async marginalBaselineTaxableIncome(userId: string, financialYear: string): Promise<number> {
+    const { config } = resolveTaxYearConfig(financialYear);
     const [grossAnnualIncome, deductions] = await Promise.all([
       this.annualIncome(userId, financialYear),
       this.listDeductions(userId, financialYear),
+    ]);
+
+    let totalOldRegimeDeductions = 0;
+    for (const d of deductions) {
+      const section = d.section as TaxSection;
+      const limit = config.sectionLimits[section];
+      const used = Number(d.amount);
+      totalOldRegimeDeductions += limit ? Math.min(used, limit) : used;
+    }
+
+    return Math.max(0, grossAnnualIncome - config.standardDeductionOld - totalOldRegimeDeductions);
+  }
+
+  async estimate(userId: string, financialYear: string): Promise<TaxEstimateDTO> {
+    const { config, isEstimatedFromPriorYear } = resolveTaxYearConfig(financialYear);
+
+    const [grossAnnualIncome, deductions, capitalGains] = await Promise.all([
+      this.annualIncome(userId, financialYear),
+      this.listDeductions(userId, financialYear),
+      this.capitalGainsSummary(userId, financialYear),
     ]);
 
     const bySection = new Map<TaxSection, number>();
@@ -226,6 +302,13 @@ export class TaxService {
       savingsFromRecommendedRegime: Math.abs(oldResult.taxPayable - newResult.taxPayable).toFixed(2),
       deductionsBySection,
       yearEndChecklist: this.yearEndChecklist(bySection, config),
+      // NEW (audit item #11): capital gains from explicitly-recorded investment sales
+      // this financial year — a separate line item, not folded into oldRegime/
+      // newRegime.taxPayable above, since most of it (equity/crypto/other-LTCG) is
+      // taxed at flat rates that don't depend on which regime is chosen; add
+      // capitalGains.totalCapitalGainsTax to whichever regime's taxPayable you're
+      // comparing to get that regime's full liability.
+      capitalGains,
       isProjectionOnly: true,
       slabsFinancialYear: config.financialYear,
       slabsAreEstimated: isEstimatedFromPriorYear,
