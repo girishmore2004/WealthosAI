@@ -411,7 +411,12 @@ export default function IncomePage() {
           <p className="text-sm text-ink-faint">No income logged yet. Add your first entry above.</p>
         ) : (
           <>
-            <ul>
+            {/* data-testid lets tests scope label lookups to actual rows — several
+                income labels ("Salary", "Freelance", "Bonus", ...) are also valid
+                Source <option> text above, so an unscoped screen.getByText/findByText
+                for those strings is ambiguous (matches both the row and the select
+                option). */}
+            <ul data-testid="income-list">
             {items.map((item, i) => (
               <li
                 key={item.id}
