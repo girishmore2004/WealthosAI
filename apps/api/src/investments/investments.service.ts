@@ -5,7 +5,10 @@ import { CreateInvestmentDto } from "./dto/create-investment.dto";
 import { UpdateInvestmentDto } from "./dto/update-investment.dto";
 import { RebalancePortfolioDto } from "./dto/rebalance-portfolio.dto";
 import { ListInvestmentsQueryDto } from "./dto/list-investments-query.dto";
+import { RecordSaleDto } from "./dto/record-sale.dto";
 import { InvestmentSummaryDTO, RebalancePlanDTO, RebalanceActionDTO } from "@wealthos/types";
+import { classifyGainCategory, CapitalGainsExcludedTypeError } from "../tax/capital-gains.util";
+import { currentFinancialYear } from "../common/utils/financial-year.util";
 
 const TARGET_SUM_TOLERANCE_PERCENT = 0.5;
 // Below this rupee threshold a suggested trade is noise (rounding dust), not a real
@@ -336,5 +339,77 @@ export class InvestmentsService {
   async totalCurrentValue(userId: string): Promise<number> {
     const investments = await this.list(userId);
     return investments.reduce((sum, i) => sum + Number(i.currentValue), 0);
+  }
+
+  // NEW (audit item #11): records an explicit sale/disposal of (a portion of) an
+  // investment purely for capital-gains tax tracking — deliberately opt-in, never
+  // inferred from currentValue changing (see capital-gains.util.ts's doc comment).
+  // Does NOT touch the Investment row itself: currentValue/costBasis stay exactly as
+  // they are, since this is a tax-tracking side record, not a portfolio edit.
+  async recordSale(userId: string, investmentId: string, dto: RecordSaleDto) {
+    const investment = await this.prisma.client.investment.findUnique({ where: { id: investmentId } });
+    if (!investment || investment.userId !== userId) {
+      throw new NotFoundException("Investment not found");
+    }
+
+    if (dto.costBasisPortion > Number(investment.costBasis)) {
+      throw new BadRequestException("costBasisPortion cannot exceed the investment's total costBasis");
+    }
+
+    const saleDate = new Date(dto.saleDate);
+    const purchaseDate = new Date(investment.purchaseDate);
+    if (saleDate < purchaseDate) {
+      throw new BadRequestException("saleDate cannot be before the investment's purchaseDate");
+    }
+
+    const holdingPeriodDays = Math.round((saleDate.getTime() - purchaseDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    let gainCategory: string;
+    try {
+      gainCategory = classifyGainCategory(investment.type, holdingPeriodDays);
+    } catch (err) {
+      if (err instanceof CapitalGainsExcludedTypeError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+
+    const gainAmount = dto.proceeds - dto.costBasisPortion;
+    const financialYear = currentFinancialYear(saleDate);
+
+    return this.prisma.client.realizedGainEvent.create({
+      data: {
+        userId,
+        investmentId,
+        investmentType: investment.type,
+        saleDate,
+        proceeds: dto.proceeds,
+        costBasisPortion: dto.costBasisPortion,
+        gainAmount,
+        holdingPeriodDays,
+        gainCategory,
+        financialYear,
+        notes: dto.notes,
+      },
+    });
+  }
+
+  // NEW (audit item #11): every recorded sale/disposal for the caller, most-recent
+  // first — optionally filtered to a single financial year.
+  listRealizedGains(userId: string, financialYear?: string) {
+    return this.prisma.client.realizedGainEvent.findMany({
+      where: financialYear ? { userId, financialYear } : { userId },
+      orderBy: { saleDate: "desc" },
+    });
+  }
+
+  // Atomic, ownership-scoped delete — mirrors the same TOCTOU-safe pattern used
+  // elsewhere in this service (update()/remove() above).
+  async removeRealizedGain(userId: string, id: string) {
+    const result = await this.prisma.client.realizedGainEvent.deleteMany({ where: { id, userId } });
+    if (result.count === 0) {
+      throw new NotFoundException("Realized gain event not found");
+    }
+    return { id };
   }
 }
