@@ -1,6 +1,18 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import IncomePage from "../page";
 import { api } from "@/lib/api-client";
+
+// Several income `label` values used in these tests ("Salary", "Freelance", "Bonus")
+// are also valid IncomeSource <option> text in the "Add income" form's Source select,
+// which is always rendered regardless of loaded data. An unscoped
+// screen.getByText/findByText for those strings is therefore ambiguous — it matches
+// both the <option> and the row. findInList() waits for the income rows list
+// (data-testid="income-list") and scopes the text lookup to it, so it only ever
+// matches an actual row, never the form controls above it.
+const findInList = async (text: string | RegExp) => {
+  const list = await screen.findByTestId("income-list");
+  return within(list).findByText(text);
+};
 
 jest.mock("@/lib/api-client", () => ({
   api: {
@@ -53,7 +65,7 @@ describe("IncomePage pagination (new, audit item #16)", () => {
 
     render(<IncomePage />);
 
-    await screen.findByText("Salary");
+    await findInList("Salary");
     expect(mockedApi.income.listPaged).toHaveBeenCalledWith({ page: 1, pageSize: 25 });
     expect(mockedApi.income.list).not.toHaveBeenCalled();
   });
@@ -68,7 +80,7 @@ describe("IncomePage pagination (new, audit item #16)", () => {
     });
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
     expect(screen.getByText(/40 total/)).toBeInTheDocument();
@@ -86,7 +98,7 @@ describe("IncomePage pagination (new, audit item #16)", () => {
     });
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     mockedApi.income.listPaged.mockResolvedValueOnce({
       items: [makeIncome("i2", "Freelance")],
@@ -99,7 +111,7 @@ describe("IncomePage pagination (new, audit item #16)", () => {
     fireEvent.click(screen.getByText("Next"));
 
     await waitFor(() => expect(mockedApi.income.listPaged).toHaveBeenCalledWith({ page: 2, pageSize: 25 }));
-    await screen.findByText("Freelance");
+    await findInList("Freelance");
     expect(screen.getByText("Next")).toBeDisabled(); // now on the last page
   });
 
@@ -157,7 +169,7 @@ describe("IncomePage recurrence toggle (new, audit item #3)", () => {
     mockedApi.income.activateRecurrence.mockResolvedValue({} as any);
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     fireEvent.click(screen.getByText("Make recurring"));
 
@@ -175,7 +187,7 @@ describe("IncomePage recurrence toggle (new, audit item #3)", () => {
     mockedApi.income.deactivateRecurrence.mockResolvedValue({} as any);
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     fireEvent.click(screen.getByText("Auto-generating ✓"));
 
@@ -192,7 +204,7 @@ describe("IncomePage recurrence toggle (new, audit item #3)", () => {
     });
 
     render(<IncomePage />);
-    await screen.findByText("Bonus");
+    await findInList("Bonus");
 
     expect(screen.queryByText("Make recurring")).not.toBeInTheDocument();
   });
@@ -207,7 +219,7 @@ describe("IncomePage recurrence toggle (new, audit item #3)", () => {
     });
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     expect(screen.queryByText("Make recurring")).not.toBeInTheDocument();
     expect(screen.getByText("auto-generated")).toBeInTheDocument();
@@ -228,7 +240,7 @@ describe("IncomePage amount-change history (new, audit item #4)", () => {
     ]);
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     fireEvent.click(screen.getByText("History"));
 
@@ -247,7 +259,7 @@ describe("IncomePage amount-change history (new, audit item #4)", () => {
     mockedApi.income.history.mockResolvedValue([]);
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     fireEvent.click(screen.getByText("History"));
 
@@ -265,7 +277,7 @@ describe("IncomePage amount-change history (new, audit item #4)", () => {
     mockedApi.income.history.mockResolvedValue([]);
 
     render(<IncomePage />);
-    await screen.findByText("Salary");
+    await findInList("Salary");
 
     fireEvent.click(screen.getByText("History"));
     await screen.findByText(/No amount changes logged/i);
