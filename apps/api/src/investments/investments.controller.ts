@@ -4,6 +4,7 @@ import { CreateInvestmentDto } from "./dto/create-investment.dto";
 import { UpdateInvestmentDto } from "./dto/update-investment.dto";
 import { RebalancePortfolioDto } from "./dto/rebalance-portfolio.dto";
 import { ListInvestmentsQueryDto } from "./dto/list-investments-query.dto";
+import { RecordSaleDto } from "./dto/record-sale.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
@@ -31,6 +32,20 @@ export class InvestmentsController {
     return this.investmentsService.summary(user.id);
   }
 
+  // NEW (audit item #11): every recorded sale/disposal for the caller, most-recent
+  // first — optionally filtered to a single financial year (matches TaxService's own
+  // "YYYY-YY" format). Declared before the ":id" -style routes below so "realized-gains"
+  // is never mistaken for an investment id.
+  @Get("realized-gains")
+  listRealizedGains(@CurrentUser() user: User, @Query("financialYear") financialYear?: string) {
+    return this.investmentsService.listRealizedGains(user.id, financialYear);
+  }
+
+  @Delete("realized-gains/:id")
+  removeRealizedGain(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.investmentsService.removeRealizedGain(user.id, id);
+  }
+
   @Post("rebalance")
   rebalance(@CurrentUser() user: User, @Body() dto: RebalancePortfolioDto) {
     return this.investmentsService.rebalance(user.id, dto);
@@ -49,5 +64,14 @@ export class InvestmentsController {
   @Delete(":id")
   remove(@CurrentUser() user: User, @Param("id") id: string) {
     return this.investmentsService.remove(user.id, id);
+  }
+
+  // NEW (audit item #11): records an explicit sale/disposal of (a portion of) this
+  // investment for capital-gains tax tracking. See InvestmentsService.recordSale()'s
+  // own doc comment for why this is a deliberate, opt-in action rather than something
+  // inferred automatically.
+  @Post(":id/realized-gains")
+  recordSale(@CurrentUser() user: User, @Param("id") id: string, @Body() dto: RecordSaleDto) {
+    return this.investmentsService.recordSale(user.id, id, dto);
   }
 }
