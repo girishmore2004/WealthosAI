@@ -1,5 +1,5 @@
 import { Test } from "@nestjs/testing";
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, BadRequestException } from "@nestjs/common";
 import { PropertyService } from "../src/property/property.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { LoansService } from "../src/loans/loans.service";
