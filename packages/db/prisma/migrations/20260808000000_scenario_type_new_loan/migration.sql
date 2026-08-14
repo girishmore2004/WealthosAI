@@ -14,5 +14,15 @@
 -- transaction block prior to PG 12; on PG 12+ (Prisma's supported baseline) this is
 -- safe to run standalone, which is how Prisma's migration runner executes each
 -- migration file already.
+--
+-- HOTFIX (P3009 recovery): this migration was left in a `failed` state in production
+-- after a deploy was interrupted mid-run (Neon's pooler can drop long-lived DDL
+-- connections), so it's unknown from `_prisma_migrations` alone whether the ADD VALUE
+-- actually committed before the connection dropped. `IF NOT EXISTS` (supported since
+-- PG 12) makes this statement safe to re-run either way — a no-op if 'NEW_LOAN' is
+-- already present, or the original effect if it isn't — instead of erroring with
+-- "enum label already exists" on retry. See DEPLOYMENT.md for the accompanying
+-- `prisma migrate resolve --rolled-back` step required once, in production, before
+-- the next deploy will pick this corrected file up.
 
-ALTER TYPE "ScenarioType" ADD VALUE 'NEW_LOAN';
+ALTER TYPE "ScenarioType" ADD VALUE IF NOT EXISTS 'NEW_LOAN';
