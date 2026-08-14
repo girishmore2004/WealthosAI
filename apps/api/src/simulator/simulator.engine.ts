@@ -115,7 +115,14 @@ interface ProjectionInputs {
 export function projectNetWorth(input: ProjectionInputs): number {
   const monthlyRate = (input.annualReturnPercent ?? DEFAULT_ANNUAL_INVESTMENT_RETURN_PERCENT) / 12 / 100;
 
-  if (!input.loans || input.loans.length === 0) {
+  // `undefined` (not provided at all) means the caller has no loan-level detail and
+  // wants the legacy flat-debt, no-inflation closed-form calculation. An explicitly
+  // supplied array — even an empty one, e.g. a real user with zero loans — opts into
+  // the month-by-month path instead, so a zero-loan baseline still gets the same
+  // expense-inflation treatment as a scenario that adds a loan on top of it (otherwise
+  // the two sides of a comparison could silently use different models and diverge for
+  // reasons unrelated to the scenario itself).
+  if (input.loans === undefined) {
     const projectedInvestments =
       compound(input.investmentsValue, monthlyRate, input.months) +
       futureValueSeries(input.monthlyInvestmentContribution, monthlyRate, input.months);
@@ -178,13 +185,22 @@ function buildResult(
 ): ScenarioResultDTO {
   const baselineLoans: LoanAmortizationInput[] = baseline.loans ?? [];
 
+  // Both sides of the comparison must use the SAME projection method (legacy
+  // flat-debt vs. month-by-month amortization + expense inflation) or the delta
+  // between them mixes the scenario's real effect with an artifact of comparing two
+  // different models. Detail mode is opted into if either side has loan-level detail
+  // at all — e.g. a scenario that adds a brand-new loan on top of a baseline with no
+  // loans of its own still needs the baseline computed in detail mode (with zero
+  // loans) so expense inflation is applied identically on both sides.
+  const usesLoanDetail = baseline.loans !== undefined || effect.loans !== undefined;
+
   const baselineProjection = projectNetWorth({
     monthlyIncome: baseline.monthlyIncome,
     monthlyExpenses: baseline.monthlyExpenses,
     monthlyInvestmentContribution: baselineEffect.monthlyInvestmentContribution ?? 0,
     investmentsValue: baseline.investmentsValue,
     debt: 0,
-    loans: baselineLoans,
+    loans: usesLoanDetail ? baselineLoans : undefined,
     expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
     months: scenarioMonths,
   });
@@ -196,7 +212,7 @@ function buildResult(
       monthlyInvestmentContribution: effect.monthlyInvestmentContribution ?? 0,
       investmentsValue: baseline.investmentsValue,
       debt: 0,
-      loans: effect.loans ?? baselineLoans,
+      loans: usesLoanDetail ? (effect.loans ?? baselineLoans) : undefined,
       expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
       months: scenarioMonths,
     }) + (effect.immediateNetWorthDelta ?? 0);
