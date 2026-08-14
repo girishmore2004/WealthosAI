@@ -6,6 +6,8 @@ import { AiQueueService } from "../src/ai/ops/ai-queue.service";
 import { DocumentOcrHandler } from "../src/documents/document-ocr.handler";
 import { OCR_ADAPTER } from "../src/documents/adapters/ocr-adapter.factory";
 import { OcrNotApplicableError } from "../src/documents/adapters/ocr.adapter";
+import { RagAutoReindexService } from "../src/ai/ops/rag-auto-reindex.service";
+import { CopilotIngestionService } from "../src/ai/copilot-ingestion/copilot-ingestion.service";
 
 function fakeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
   return {
@@ -144,6 +146,8 @@ describe("DocumentOcrHandler (new — async OCR processing)", () => {
   const mockPrisma = { client: { document: { findUnique: jest.fn(), update: jest.fn() } } };
   const mockStorage = { save: jest.fn(), read: jest.fn(), delete: jest.fn() };
   const mockOcr = { process: jest.fn() };
+  const mockRagAutoReindex = { triggerFor: jest.fn().mockResolvedValue(undefined) };
+  const mockCopilotIngestion = { ingestFromDocumentText: jest.fn().mockResolvedValue(undefined) };
 
   // Captures the callback DocumentOcrHandler registers via onModuleInit(), so tests can
   // invoke it directly exactly as the real AiQueueService's worker would when a job is
@@ -164,6 +168,8 @@ describe("DocumentOcrHandler (new — async OCR processing)", () => {
         { provide: LocalDiskStorageAdapter, useValue: mockStorage },
         { provide: OCR_ADAPTER, useValue: mockOcr },
         { provide: AiQueueService, useValue: mockAiQueue },
+        { provide: RagAutoReindexService, useValue: mockRagAutoReindex },
+        { provide: CopilotIngestionService, useValue: mockCopilotIngestion },
       ],
     }).compile();
     handler = moduleRef.get(DocumentOcrHandler);
@@ -245,21 +251,13 @@ describe("DocumentOcrHandler (new — async OCR processing)", () => {
 });
 
 describe("TesseractOcrAdapter (new — mime-type gate only, no real OCR engine invoked)", () => {
-  // Only the synchronous mime-type gate is unit-tested here: it throws
-  // OcrNotApplicableError BEFORE ever calling tesseract.js's createWorker(), so this
-  // stays a fast, hermetic unit test. Actually exercising the real Tesseract engine
-  // (worker startup, language data, image recognition) belongs in a manual/integration
-  // QA pass, not this suite — see the QA checklist in the accompanying improvement plan.
-  it("throws OcrNotApplicableError for a PDF, without attempting to start a Tesseract worker", async () => {
-    const { TesseractOcrAdapter } = await import("../src/documents/adapters/tesseract-ocr.adapter");
-    const { OcrNotApplicableError } = await import("../src/documents/adapters/ocr.adapter");
-    const adapter = new TesseractOcrAdapter();
-
-    await expect(adapter.process(Buffer.from("pdf-bytes"), "application/pdf", "OTHER")).rejects.toThrow(
-      OcrNotApplicableError,
-    );
-  });
-
+  // Only the synchronous mime-type gate is unit-tested here for genuinely unsupported
+  // types (e.g. Word documents), which still throw OcrNotApplicableError BEFORE ever
+  // calling tesseract.js's createWorker(). PDFs are no longer rejected outright — see
+  // audit item #5's dedicated, fully-mocked suite in tesseract-ocr.adapter.spec.ts for
+  // PDF routing/rasterization/error-mapping coverage (real Tesseract engine internals —
+  // worker startup, language data, image recognition — still belong in a manual/
+  // integration QA pass, not this suite).
   it("throws OcrNotApplicableError for a Word document", async () => {
     const { TesseractOcrAdapter } = await import("../src/documents/adapters/tesseract-ocr.adapter");
     const { OcrNotApplicableError } = await import("../src/documents/adapters/ocr.adapter");
