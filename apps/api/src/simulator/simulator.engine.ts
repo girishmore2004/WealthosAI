@@ -100,6 +100,18 @@ interface ProjectionInputs {
   // closed-form fallback path never modeled inflation and continues not to, so it stays
   // byte-for-byte identical to its original behavior when `loans` isn't provided.
   expenseInflationPercent?: number;
+  // Forces the month-by-month detail path even when `loans` is an empty array —
+  // otherwise indistinguishable, by design, from omitting `loans` entirely (an empty
+  // array is still the legacy closed-form path unless this is set; see
+  // projectNetWorth()'s own doc comment). Used exclusively by buildResult() to keep
+  // both sides of a scenario comparison on the SAME model when a scenario adds loan
+  // detail on top of an otherwise loan-free baseline (e.g. NEW_LOAN/HOUSE_PURCHASE
+  // against a baseline with zero existing loans) — without this, the baseline would
+  // silently fall back to the no-inflation legacy model while the scenario used the
+  // inflation-aware one, producing a spurious net-worth delta unrelated to the
+  // scenario itself. Every other caller (the low-level unit tests, RETIREMENT_AGE_SHIFT)
+  // never sets this, so `loans: []` continues to mean exactly what it always has.
+  forceLoanDetailMode?: boolean;
 }
 
 // Model (stated explicitly so it can be surfaced in the UI, not hidden):
