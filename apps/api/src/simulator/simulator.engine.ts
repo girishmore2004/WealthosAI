@@ -100,17 +100,17 @@ interface ProjectionInputs {
   // closed-form fallback path never modeled inflation and continues not to, so it stays
   // byte-for-byte identical to its original behavior when `loans` isn't provided.
   expenseInflationPercent?: number;
-  // Forces the month-by-month detail path even when `loans` is an empty array —
-  // otherwise indistinguishable, by design, from omitting `loans` entirely (an empty
-  // array is still the legacy closed-form path unless this is set; see
-  // projectNetWorth()'s own doc comment). Used exclusively by buildResult() to keep
-  // both sides of a scenario comparison on the SAME model when a scenario adds loan
-  // detail on top of an otherwise loan-free baseline (e.g. NEW_LOAN/HOUSE_PURCHASE
-  // against a baseline with zero existing loans) — without this, the baseline would
-  // silently fall back to the no-inflation legacy model while the scenario used the
-  // inflation-aware one, producing a spurious net-worth delta unrelated to the
-  // scenario itself. Every other caller (the low-level unit tests, RETIREMENT_AGE_SHIFT)
-  // never sets this, so `loans: []` continues to mean exactly what it always has.
+  // Forces the month-by-month detail path even when `loans` is an empty array — by
+  // default an empty array is the legacy closed-form path, identical to omitting
+  // `loans` entirely (see projectNetWorth()'s own doc comment). Used exclusively by
+  // buildResult() to keep both sides of a scenario comparison on the SAME model when a
+  // scenario adds loan detail on top of an otherwise loan-free baseline (e.g.
+  // NEW_LOAN/HOUSE_PURCHASE against a baseline with zero existing loans) — without
+  // this, the baseline would silently fall back to the no-inflation legacy model while
+  // the scenario used the inflation-aware one, producing a spurious net-worth delta
+  // unrelated to the scenario itself. Every other caller (the low-level unit tests,
+  // RETIREMENT_AGE_SHIFT) never sets this, so `loans: []` continues to mean exactly
+  // what it always has: the closed-form fast path.
   forceLoanDetailMode?: boolean;
 }
 
@@ -128,13 +128,17 @@ export function projectNetWorth(input: ProjectionInputs): number {
   const monthlyRate = (input.annualReturnPercent ?? DEFAULT_ANNUAL_INVESTMENT_RETURN_PERCENT) / 12 / 100;
 
   // `undefined` (not provided at all) means the caller has no loan-level detail and
-  // wants the legacy flat-debt, no-inflation closed-form calculation. An explicitly
-  // supplied array — even an empty one, e.g. a real user with zero loans — opts into
-  // the month-by-month path instead, so a zero-loan baseline still gets the same
-  // expense-inflation treatment as a scenario that adds a loan on top of it (otherwise
-  // the two sides of a comparison could silently use different models and diverge for
-  // reasons unrelated to the scenario itself).
-  if (input.loans === undefined) {
+  // wants the legacy flat-debt, no-inflation closed-form calculation. An empty array is
+  // ALSO the closed-form fast path by default — a bare `loans: []` on its own must stay
+  // byte-identical to omitting `loans` entirely (see the "without `loans`, behaves
+  // exactly like the original closed-form calculation" test). The month-by-month/
+  // expense-inflation path only engages for an empty array when `forceLoanDetailMode`
+  // is explicitly set — that's how buildResult() keeps both sides of a comparison on
+  // the SAME model when a scenario adds loan detail on top of an otherwise loan-free
+  // baseline (e.g. NEW_LOAN/HOUSE_PURCHASE against a baseline with zero existing
+  // loans), without silently forcing every ordinary zero-loan caller (e.g.
+  // RETIREMENT_AGE_SHIFT) into the inflation-aware model it never asked for.
+  if (input.loans === undefined || (input.loans.length === 0 && !input.forceLoanDetailMode)) {
     const projectedInvestments =
       compound(input.investmentsValue, monthlyRate, input.months) +
       futureValueSeries(input.monthlyInvestmentContribution, monthlyRate, input.months);
@@ -213,6 +217,11 @@ function buildResult(
     investmentsValue: baseline.investmentsValue,
     debt: 0,
     loans: usesLoanDetail ? baselineLoans : undefined,
+    // Without this, a zero-loan baseline (baselineLoans = []) would silently fall back
+    // to the closed-form fast path (see projectNetWorth()'s guard) while the scenario
+    // side — which has real loan detail via effect.loans — used the month-by-month/
+    // inflation-aware path, mixing two different models into one delta.
+    forceLoanDetailMode: usesLoanDetail,
     expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
     months: scenarioMonths,
   });
@@ -225,6 +234,7 @@ function buildResult(
       investmentsValue: baseline.investmentsValue,
       debt: 0,
       loans: usesLoanDetail ? (effect.loans ?? baselineLoans) : undefined,
+      forceLoanDetailMode: usesLoanDetail,
       expenseInflationPercent: DEFAULT_ANNUAL_EXPENSE_INFLATION_PERCENT,
       months: scenarioMonths,
     }) + (effect.immediateNetWorthDelta ?? 0);
