@@ -59,8 +59,15 @@ export function amortizeOneMonth(balance: number, annualRatePercent: number, emi
     return { interest, principalPaid: 0, newBalance: balance, stuck: true };
   }
 
-  if (principalPaid > balance) principalPaid = balance; // final, partial month
-  return { interest, principalPaid, newBalance: Math.max(0, balance - principalPaid), stuck: false };
+  if (principalPaid >= balance) {
+    // final, partial month — the EMI more than covers what's left. Cap the total
+    // cash applied (interest + principal) at the outstanding balance so the loan
+    // closes out exactly, rather than crediting/debiting an extra `interest` worth
+    // of principal beyond what's actually owed.
+    principalPaid = balance - interest;
+    return { interest, principalPaid, newBalance: 0, stuck: false };
+  }
+  return { interest, principalPaid, newBalance: balance - principalPaid, stuck: false };
 }
 
 // Full month-by-month schedule for a single loan, supporting an optional future
