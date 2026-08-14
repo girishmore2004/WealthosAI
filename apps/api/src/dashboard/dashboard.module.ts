@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { DashboardController } from "./dashboard.controller";
 import { DashboardService } from "./dashboard.service";
 import { IncomeModule } from "../income/income.module";
@@ -15,7 +15,7 @@ import { FinancialFactsModule } from "../common/financial-facts/financial-facts.
     ExpensesModule,
     InvestmentsModule,
     LoansModule,
-    AlertsModule,
+    forwardRef(() => AlertsModule),
     PropertyModule,
     FinancialFactsModule,
   ],
