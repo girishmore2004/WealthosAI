@@ -70,9 +70,16 @@ export default () => ({
   // free/OSS OCR engine; "mock" keeps the deterministic zero-dependency placeholder
   // (useful for tests/CI or an environment that wants to skip real OCR processing).
   ocrAdapter: process.env.OCR_ADAPTER ?? "tesseract",
-  resend: {
+    resend: {
     apiKey: process.env.RESEND_API_KEY ?? "",
     fromEmail: process.env.OTP_FROM_EMAIL ?? "WealthOS AI <onboarding@resend.dev>",
+  },
+  // Brevo (OTP_ADAPTER=brevo) needs only a verified *sender email address* rather than
+  // a verified domain — see brevo-email-otp.adapter.ts for why that matters here.
+  brevo: {
+    apiKey: process.env.BREVO_API_KEY ?? "",
+    senderEmail: process.env.BREVO_SENDER_EMAIL ?? "",
+    senderName: process.env.BREVO_SENDER_NAME ?? "WealthOS AI",
   },
   ai: {
     groqApiKey: process.env.GROQ_API_KEY ?? "",
