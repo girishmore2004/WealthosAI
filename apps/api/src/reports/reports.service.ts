@@ -48,12 +48,15 @@ export class ReportsService {
     validateMonthFormat(month);
     const targetMonth = month ?? currentMonthString();
 
-    const [incomeFact, expenses] = await Promise.all([
+    const [incomeFact, monthExpenses] = await Promise.all([
       this.financialFactsService.getActualMonthlyIncome(userId, targetMonth),
       this.expensesService.list(userId, targetMonth),
     ]);
 
     const monthIncome = Number(incomeFact.value);
+    // Expenses are actual spending: legacy SAVINGS-category rows (SIP / emergency-fund
+    // entries) are excluded so a SIP is never reported as spending.
+    const expenses = monthExpenses.filter((e) => e.category?.type !== "SAVINGS");
     const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
     const expensesByCategory = groupExpensesByCategory(expenses, totalExpenses);
 
@@ -96,8 +99,9 @@ export class ReportsService {
       .filter((i) => i.receivedAt >= fyStart && i.receivedAt <= fyEnd)
       .reduce((sum, i) => sum + Number(i.amount), 0);
 
-    const totalExpenses = allExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
-    const expensesByCategory = groupExpensesByCategory(allExpenses, totalExpenses);
+    const spendingExpenses = allExpenses.filter((e) => e.category.type !== "SAVINGS");
+    const totalExpenses = spendingExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+    const expensesByCategory = groupExpensesByCategory(spendingExpenses, totalExpenses);
 
     return {
       financialYear: fy,
