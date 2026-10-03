@@ -97,6 +97,40 @@ describe("ReportsService", () => {
     });
   });
 
+  describe("actual spending only", () => {
+    it("monthlyReport excludes legacy SAVINGS-category rows (SIP / emergency fund) from expenses", async () => {
+      mockIncomeService.list.mockResolvedValue([{ amount: 65000, receivedAt: new Date("2026-09-01") }]);
+      mockExpensesService.list.mockResolvedValue([
+        { amount: 15000, category: { name: "Rent", type: "NEED" } },
+        { amount: 10000, category: { name: "SIP", type: "SAVINGS" } },
+        { amount: 7000, category: { name: "Emergency Fund", type: "SAVINGS" } },
+      ]);
+
+      const report = await service.monthlyReport("user-1", "2026-09");
+
+      expect(report.expenses).toBe("15000.00");
+      expect(report.netCashflow).toBe("50000.00");
+      expect(report.savingsRate).toBe(76.9); // (65000 - 15000) / 65000
+      expect(report.expensesByCategory.map((c) => c.categoryName ?? (c as { name?: string }).name)).not.toContain("SIP");
+    });
+
+    it("yearlyReport excludes SAVINGS-category rows from total expenses", async () => {
+      mockIncomeService.list.mockResolvedValue([{ amount: 100000, receivedAt: new Date("2026-06-01") }]);
+      mockPrisma.client.expense.findMany.mockResolvedValue([
+        { amount: 20000, category: { name: "Rent", type: "NEED" } },
+        { amount: 12000, category: { name: "SIP", type: "SAVINGS" } },
+      ]);
+      mockInvestmentsService.summary.mockResolvedValue({ totalCurrentValue: "0.00" });
+      mockLoansService.debtSummary.mockResolvedValue({ totalOutstanding: "0.00" });
+      mockBusinessService.annualProfitForUser.mockResolvedValue(null);
+
+      const report = await service.yearlyReport("user-1", "2026-27");
+
+      expect(report.totalExpenses).toBe("20000.00");
+      expect(report.netSavings).toBe("80000.00");
+    });
+  });
+
   describe("yearlyReport", () => {
     it("includes income/expenses only within the April-March financial year window", async () => {
       mockIncomeService.list.mockResolvedValue([
