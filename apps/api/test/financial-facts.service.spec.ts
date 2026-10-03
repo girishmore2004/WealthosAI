@@ -7,12 +7,18 @@ import { ExpensesService } from "../src/expenses/expenses.service";
 describe("FinancialFactsService", () => {
   let service: FinancialFactsService;
 
-  const mockPrisma = { client: { goal: { findMany: jest.fn() } } };
+  const mockPrisma = {
+    client: {
+      goal: { findMany: jest.fn() },
+      emergencyFundEntry: { groupBy: jest.fn().mockResolvedValue([]) },
+    },
+  };
   const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
   const mockExpensesService = { list: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPrisma.client.emergencyFundEntry.groupBy.mockResolvedValue([]);
     const moduleRef = await Test.createTestingModule({
       providers: [
         FinancialFactsService,
@@ -124,7 +130,7 @@ describe("FinancialFactsService", () => {
 
       expect(status.basis).toBe("GOAL");
       expect(status.amount).toBe(6000);
-      expect(status.monthsOfCoverage).toBeCloseTo(72, 0); // 6000 / (1000/12)
+      expect(status.monthsOfCoverage).toBeCloseTo(6, 5); // 6000 reserve / 1000 monthly — not divided by 12 again
     });
 
     it("falls back to the legacy category match when no goal exists", async () => {
