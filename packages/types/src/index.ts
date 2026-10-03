@@ -782,7 +782,11 @@ export interface YearlyReportDTO {
 // consume instead of each independently re-deriving the same figure with a different,
 // undocumented basis. See FinancialFactsService for the actual computation.
 
-export type FinancialFactBasis = "ACTUAL" | "FORECAST" | "PROJECTED";
+// ACTUAL = recorded history; FORECAST = normalized recurring expectation; PROJECTED =
+// scenario/what-if output; TARGET = a goal/threshold the user set; ESTIMATED = derived
+// from incomplete data. A forecast must never silently be presented as an actual.
+export type FinancialFactBasis = "ACTUAL" | "FORECAST" | "PROJECTED" | "TARGET" | "ESTIMATED";
+export type FinancialFactPeriod = "MONTHLY" | "YEARLY" | "LIFETIME" | "CUSTOM";
 export type FinancialFactConfidence = "HIGH" | "MEDIUM" | "LOW";
 
 export interface FinancialFactDTO {
