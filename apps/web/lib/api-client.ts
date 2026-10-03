@@ -5,6 +5,7 @@ import type {
   OptimizedScenarioDTO,
   OptimizationConstraintsDTO,
   DashboardSummaryDTO,
+  DataHealthReportDTO,
   ExpenseDTO,
   CategoryBreakdownDTO,
   DetectedSubscriptionDTO,
@@ -121,6 +122,10 @@ export const api = {
   },
   dashboard: {
     summary: () => request<DashboardSummaryDTO>("/dashboard/summary"),
+  },
+  // NEW: authoritative financial-core read surface (reconciliation / data health).
+  financialCore: {
+    dataHealth: () => request<DataHealthReportDTO>("/financial-core/data-health"),
   },
   income: {
     list: () => request<IncomeDTO[]>("/income"),
