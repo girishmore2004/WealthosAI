@@ -51,4 +51,26 @@ describe("NetWorthCard", () => {
 
     expect(screen.getByText(/Set up an Emergency Fund goal/i)).toBeInTheDocument();
   });
+
+  it("shows Available / Emergency / Total cash instead of one ambiguous balance when the split is present", () => {
+    render(
+      <NetWorthCard
+        summary={{
+          ...baseSummary,
+          availableCash: "33000.00",
+          emergencyCash: "7000.00",
+          totalCash: "40000.00",
+          monthlyInvestmentContributions: "10000.00",
+          investmentRate: 15.4,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Available cash")).toBeInTheDocument();
+    expect(screen.getByText("Emergency cash")).toBeInTheDocument();
+    expect(screen.getByText("Total cash")).toBeInTheDocument();
+    expect(screen.queryByText("Cash balance")).not.toBeInTheDocument();
+    expect(screen.getByText("Invested this month")).toBeInTheDocument();
+    expect(screen.getByText("Investment rate")).toBeInTheDocument();
+  });
 });
