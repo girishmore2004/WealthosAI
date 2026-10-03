@@ -17,8 +17,52 @@ import { FinancialFactsService } from "../src/common/financial-facts/financial-f
 // jest.fn() returning a fixed value) so these DashboardService tests keep exercising
 // real end-to-end behavior through getSummary(), matching how the two services actually
 // interact in production.
+// Default authoritative position/cash-flow used by getSummary(). Individual tests override
+// getFinancialPosition when they assert cash / net worth, because those figures now come
+// from FinancialFactsService (not from summing the income/expense lists in DashboardService).
+function makePosition(over: Partial<{ available: string; emergency: string; total: string; netWorth: string }> = {}) {
+  return {
+    basis: "ACTUAL",
+    period: "LIFETIME",
+    asOfDate: new Date().toISOString(),
+    currency: "INR",
+    cash: {
+      available: over.available ?? "0.00",
+      emergency: over.emergency ?? "0.00",
+      total: over.total ?? over.available ?? "0.00",
+    },
+    income: "0.00",
+    expenses: "0.00",
+    investmentContributions: "0.00",
+    investmentWithdrawals: "0.00",
+    investmentValue: "0.00",
+    property: "0.00",
+    loans: "0.00",
+    totalAssets: "0.00",
+    totalLiabilities: "0.00",
+    netWorth: over.netWorth ?? "0.00",
+    dataHealth: [],
+  };
+}
+
 function makeMockFinancialFactsService() {
   return {
+    getFinancialPosition: jest.fn().mockResolvedValue(makePosition()),
+    getMonthlyCashFlow: jest.fn().mockResolvedValue({
+      basis: "ACTUAL",
+      period: "MONTHLY",
+      month: "2026-10",
+      income: "0.00",
+      expenses: "0.00",
+      investmentContributions: "0.00",
+      emergencyAllocations: "0.00",
+      netCashFlow: "0.00",
+      savingsRate: null,
+      investmentRate: null,
+      expenseRate: null,
+      dataHealth: [],
+    }),
+    getEmergencyCoverage: jest.fn().mockResolvedValue({ coverageMonths: null }),
     getEmergencyFundStatus: jest.fn(
       async (
         _userId: string,
@@ -32,7 +76,7 @@ function makeMockFinancialFactsService() {
         const monthExpenses = prefetched?.monthExpenses ?? [];
 
         let amount = 0;
-        let basis: "GOAL" | "CATEGORY_LEGACY" | "NONE" = "NONE";
+        let basis: "LEDGER" | "GOAL" | "CATEGORY_LEGACY" | "NONE" = "NONE";
 
         if (emergencyFundGoals.length > 0) {
           amount = emergencyFundGoals.reduce((sum, g) => sum + Number(g.currentAmount), 0);
@@ -178,13 +222,17 @@ describe("DashboardService.computeHealthScore (via getSummary)", () => {
     mockInvestmentsService.totalCurrentValue.mockResolvedValue(200000);
     mockLoansService.totalOutstanding.mockResolvedValue(1000000);
     mockPropertyService.totalCurrentValue.mockResolvedValue(4500000);
+    // Net worth is the authoritative FinancialFactsService figure:
+    // available cash 50000 + investments 200000 + property 4500000 - loans 1000000.
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(
+      makePosition({ available: "50000.00", netWorth: String(50000 + 200000 + 4500000 - 1000000) }),
+    );
 
     const summary = await service.getSummary("user-1");
 
-    // cashBalance here = totalIncomeAllTime(80000) - totalExpenseAllTime(30000) = 50000
-    // netWorth = cashBalance + investments + property - debt
     expect(summary.propertyValue).toBe("4500000.00");
     expect(Number(summary.netWorth)).toBeCloseTo(50000 + 200000 + 4500000 - 1000000);
+    expect(summary.availableCash).toBe("50000.00");
   });
 });
 
@@ -465,6 +513,7 @@ describe("DashboardService emergency fund via Goal + uncommitted cash (new, audi
   it("subtracts non-investment-backed goal currentAmount from cashBalance to get uncommittedCash", async () => {
     mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
     mockExpensesService.list.mockResolvedValue([{ amount: 20000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(makePosition({ available: "80000.00" }));
     mockPrisma.client.goal.findMany.mockResolvedValue([
       { id: "g1", type: "EMERGENCY_FUND", currentAmount: 15000, investments: [] }, // cash-backed, subtracted
       { id: "g2", type: "HOUSE", currentAmount: 200000, investments: [{ id: "inv1" }] }, // investment-backed, NOT subtracted
@@ -472,18 +521,118 @@ describe("DashboardService emergency fund via Goal + uncommitted cash (new, audi
 
     const summary = await service.getSummary("user-1");
 
-    // cashBalance = 100000 - 20000 = 80000; uncommittedCash = 80000 - 15000 (g1 only) = 65000
+    // cashBalance (= available cash) = 80000; uncommittedCash = 80000 - 15000 (g1 only) = 65000
     expect(summary.cashBalance).toBe("80000.00");
     expect(summary.uncommittedCash).toBe("65000.00");
   });
 
   it("uncommittedCash equals cashBalance when the user has no goals at all", async () => {
     mockPrisma.client.goal.findMany.mockResolvedValue([]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(makePosition({ available: "30000.00" }));
     mockIncomeService.list.mockResolvedValue([{ amount: 40000 }]);
     mockExpensesService.list.mockResolvedValue([{ amount: 10000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
 
     const summary = await service.getSummary("user-1");
 
     expect(summary.uncommittedCash).toBe(summary.cashBalance);
+  });
+});
+
+
+describe("DashboardService — authoritative cash model and actual spending", () => {
+  let service: DashboardService;
+  const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
+  const mockExpensesService = { list: jest.fn() };
+  const mockInvestmentsService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
+  const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
+  const mockPrisma = { client: { budget: { findMany: jest.fn().mockResolvedValue([]) }, goal: { findMany: jest.fn().mockResolvedValue([]) } } };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
+      ],
+    }).compile();
+    service = moduleRef.get(DashboardService);
+  });
+
+  it("does not count legacy SAVINGS-category rows (SIP) as monthly spending", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 15000, categoryId: "c1", category: { name: "Rent", type: "NEED" } },
+      { amount: 10000, categoryId: "c2", category: { name: "SIP", type: "SAVINGS" } },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.monthlyExpenses).toBe("15000.00");
+    expect(summary.monthlyExpensesBasis).toBe("ACTUAL");
+  });
+
+  it("exposes Available / Emergency / Total cash separately (33,000 + 7,000 = 40,000)", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(
+      makePosition({ available: "33000.00", emergency: "7000.00", total: "40000.00" }),
+    );
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.availableCash).toBe("33000.00");
+    expect(summary.emergencyCash).toBe("7000.00");
+    expect(summary.totalCash).toBe("40000.00");
+    expect(summary.cashBalance).toBe("33000.00"); // legacy field == available cash
+  });
+
+  it("reports investment contributions and rate from the facts layer (10,000 / 65,000 ≈ 15.4%)", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([]);
+    mockFinancialFactsService.getMonthlyCashFlow.mockResolvedValue({
+      income: "65000.00",
+      investmentContributions: "10000.00",
+    });
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.monthlyInvestmentContributions).toBe("10000.00");
+    expect(summary.investmentRate).toBe(15.4);
+  });
+
+  it("uses Emergency Cash / average essential expenses for coverage when the reserve ledger exists", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([{ amount: 15000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockFinancialFactsService.getEmergencyFundStatus.mockResolvedValue({ amount: 60000, basis: "LEDGER", monthsOfCoverage: 4 });
+    mockFinancialFactsService.getEmergencyCoverage.mockResolvedValue({ coverageMonths: "6.00" });
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("LEDGER");
+    expect(summary.healthScore.breakdown.emergencyFundMonths).toBe(100); // 6 months => full score
+  });
+
+  it("passes data-health warnings through for the dashboard card and the AI Coach", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([]);
+    const warning = { code: "INVESTMENT_AS_EXPENSE", severity: "WARNING", message: "m", count: 1 };
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue({ ...makePosition(), dataHealth: [warning] });
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.dataHealth).toEqual([warning]);
   });
 });
