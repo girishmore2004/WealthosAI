@@ -45,7 +45,7 @@ function makeMockFinancialFactsService() {
           }
         }
 
-        const monthsOfCoverage = monthlyExpenseTotal > 0 && amount > 0 ? amount / (monthlyExpenseTotal / 12) : 0;
+        const monthsOfCoverage = monthlyExpenseTotal > 0 && amount > 0 ? amount / monthlyExpenseTotal : 0;
         return { amount, basis, monthsOfCoverage };
       },
     ),
@@ -377,11 +377,12 @@ describe("DashboardService emergency fund via Goal + uncommitted cash (new, audi
     mockAlertsService.refresh.mockResolvedValue([]);
     mockPropertyService.totalCurrentValue.mockResolvedValue(0);
     mockPrisma.client.budget.findMany.mockResolvedValue([]);
-    // Monthly expense total of 12000 -> monthly-equivalent of 1000, so a 6000 reserve
-    // == exactly 6 months, a clean number to assert against.
+    // This month's expense total is already a MONTHLY figure (1000), so a 6000 reserve
+    // == exactly 6 months. (This previously used 12000 and relied on the legacy "/ 12"
+    // bug in the coverage formula, which wrongly treated the monthly total as annual.)
     mockIncomeService.monthlyForecast.mockResolvedValue(50000);
     mockIncomeService.list.mockResolvedValue([{ amount: 50000 }]);
-    mockExpensesService.list.mockResolvedValue([{ amount: 12000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 1000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
