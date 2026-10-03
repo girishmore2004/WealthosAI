@@ -30,6 +30,7 @@ import { AgenticCoachModule } from "./ai/coach/agentic-coach.module";
 import { ScenarioStudioModule } from "./ai/scenario-studio/scenario-studio.module";
 import { MlInsightsModule } from "./ai/ml-insights/ml-insights.module";
 import { CopilotIngestionModule } from "./ai/copilot-ingestion/copilot-ingestion.module";
+import { FinancialCoreModule } from "./financial-core/financial-core.module";
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { CopilotIngestionModule } from "./ai/copilot-ingestion/copilot-ingestion
     ScenarioStudioModule,
     MlInsightsModule,
     CopilotIngestionModule,
+    FinancialCoreModule,
   ],
 })
 export class AppModule {}
