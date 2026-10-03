@@ -195,6 +195,9 @@ model User {
   recurringEventLogs RecurringEventLog[] // NEW (audit item #3)
   incomeHistory IncomeHistory[] // NEW (audit item #4)
   realizedGainEvents RealizedGainEvent[] // NEW (audit item #11)
+  investmentCashflows  InvestmentCashflow[]  // NEW (financial-core upgrade)
+  investmentValuations InvestmentValuation[] // NEW (financial-core upgrade)
+  emergencyFundEntries EmergencyFundEntry[]  // NEW (financial-core upgrade)
   suggestionRankingProfile SuggestionRankingProfile?
 
   @@index([householdId])
@@ -449,7 +452,19 @@ model Expense {
   recurrenceEndDate         DateTime?
   nextOccurrenceAt          DateTime?
   generatedFromRecurringId  String?
+  // NEW (financial-core upgrade): provenance + idempotency for expenses that are
+  // generated from, or linked to, another domain record (e.g. sourceType =
+  // "INSURANCE_PREMIUM", sourceId = policyId, sourceReference = premium period such as
+  // "2026-09"). All three are NULL on every manually-entered and every pre-existing row.
+  // Postgres treats NULLs as distinct in a UNIQUE index, so legacy/manual rows never
+  // collide; two rows with the same non-null (user, sourceType, sourceId,
+  // sourceReference) cannot coexist — that is the "manual premium + generated premium"
+  // duplicate guard.
+  sourceType      String?
+  sourceId        String?
+  sourceReference String?
 
+  @@unique([userId, sourceType, sourceId, sourceReference], map: "Expense_source_idempotency_key")
   @@index([userId, spentAt])
   @@index([categoryId])
   @@index([recurrenceActive, nextOccurrenceAt])
@@ -584,9 +599,21 @@ model Investment {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   realizedGainEvents RealizedGainEvent[] // NEW (audit item #11)
+  cashflows          InvestmentCashflow[]  // NEW (financial-core upgrade)
+  valuations         InvestmentValuation[] // NEW (financial-core upgrade)
+  // NEW (financial-core upgrade): optional recurring-contribution (SIP) schedule. Only
+  // meaningful for types that actually have one (MUTUAL_FUND SIPs, NPS, PPF, ...); stocks
+  // and one-time holdings leave all of these NULL / false. Generated contributions are
+  // InvestmentCashflow rows (never Expenses), keyed by investmentId + period.
+  monthlyContribution   Decimal?  @db.Decimal(14, 2)
+  contributionDay       Int?      // day of month, 1-31 (clamped to the month's length)
+  contributionStartDate DateTime?
+  contributionEndDate   DateTime?
+  sipActive             Boolean   @default(false)
 
   @@index([userId])
   @@index([goalId])
+  @@index([sipActive])
 }
 
 model Loan {
@@ -1651,4 +1678,91 @@ model SavedScenario {
   createdAt      DateTime      @default(now())
 
   @@index([userId, createdAt])
+}
+
+
+// --- Financial-core upgrade: investment cashflows, valuations, emergency reserve ------
+//
+// Purely additive. Investment.currentValue / costBasis are untouched and remain the
+// fallback when an investment has no valuation rows yet, so nothing existing breaks.
+
+enum InvestmentCashflowType {
+  CONTRIBUTION          // user money moved from cash into the investment (cash outflow)
+  WITHDRAWAL            // user money moved from the investment back to cash (cash inflow)
+  SALE                  // proceeds of a sale (cash inflow); pair with RealizedGainEvent
+  DIVIDEND              // paid out to the user, NOT included in current value
+  FEE                   // paid by the user, NOT already deducted from current value
+  EMPLOYER_CONTRIBUTION // asset increase, never a user cash outflow (EPF/NPS)
+  INTEREST              // credited inside the balance (EPF/PPF); informational, in value
+  TRANSFER_IN           // internal movement between holdings; not cash
+  TRANSFER_OUT
+}
+
+model InvestmentCashflow {
+  id            String                 @id @default(cuid())
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  investment    Investment             @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  investmentId  String
+  type          InvestmentCashflowType
+  amount        Decimal                @db.Decimal(14, 2) // always positive; direction comes from `type`
+  occurredAt    DateTime
+  // Deterministic idempotency component for generated rows, e.g. "2026-09" for a SIP.
+  // NULL for manual entries (NULLs never collide in the unique index below).
+  periodKey     String?
+  // "MANUAL" | "RECURRING" | "LEGACY_EXPENSE_MIGRATION" | "BANK_INGESTION"
+  origin        String                 @default("MANUAL")
+  // Provenance for rows created by the legacy migration: the Expense they came from.
+  // Deliberately not a foreign key — the original Expense is preserved, never deleted.
+  sourceExpenseId String?
+  notes         String?
+  createdAt     DateTime               @default(now())
+
+  @@unique([investmentId, type, periodKey], map: "InvestmentCashflow_idempotency_key")
+  @@unique([sourceExpenseId], map: "InvestmentCashflow_sourceExpenseId_key")
+  @@index([userId, occurredAt])
+  @@index([investmentId, occurredAt])
+}
+
+model InvestmentValuation {
+  id           String     @id @default(cuid())
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  investment   Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  investmentId String
+  value        Decimal    @db.Decimal(14, 2)
+  valuedAt     DateTime
+  // "MANUAL" | "DOCUMENT_EXTRACTION" | "LEGACY_CURRENT_VALUE"
+  origin       String     @default("MANUAL")
+  createdAt    DateTime   @default(now())
+
+  @@unique([investmentId, valuedAt])
+  @@index([userId])
+  @@index([investmentId, valuedAt])
+}
+
+enum EmergencyFundEntryType {
+  ALLOCATE      // available cash -> reserve
+  RELEASE       // reserve -> available cash
+  WITHDRAWAL    // reserve -> available cash to be spent (the spend itself is an Expense)
+  ADJUSTMENT    // signed correction of the reserve balance (amount may be negative)
+  TRANSFER_IN   // reserve topped up from outside the cash model
+  TRANSFER_OUT  // reserve moved out of the cash model
+}
+
+model EmergencyFundEntry {
+  id              String                 @id @default(cuid())
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+  type            EmergencyFundEntryType
+  amount          Decimal                @db.Decimal(14, 2) // positive, except ADJUSTMENT (signed)
+  occurredAt      DateTime
+  origin          String                 @default("MANUAL") // | "LEGACY_EXPENSE_MIGRATION"
+  // Provenance for the legacy migration; not a foreign key (the Expense is preserved).
+  sourceExpenseId String?
+  notes           String?
+  createdAt       DateTime               @default(now())
+
+  @@unique([sourceExpenseId], map: "EmergencyFundEntry_sourceExpenseId_key")
+  @@index([userId, occurredAt])
 }
