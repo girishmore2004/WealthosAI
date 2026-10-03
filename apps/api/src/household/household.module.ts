@@ -9,6 +9,7 @@ import { PropertyModule } from "../property/property.module";
 import { GoalsModule } from "../goals/goals.module";
 import { BusinessModule } from "../business/business.module";
 import { AlertsModule } from "../alerts/alerts.module";
+import { FinancialFactsModule } from "../common/financial-facts/financial-facts.module";
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AlertsModule } from "../alerts/alerts.module";
     GoalsModule,
     BusinessModule,
     AlertsModule,
+    FinancialFactsModule,
   ],
   controllers: [HouseholdController],
   providers: [HouseholdService],
