@@ -234,7 +234,8 @@ export interface DashboardSummaryDTO {
   //   match is used as a fallback for backward compatibility with any account already
   //   relying on that behavior.
   // "NONE": neither a goal nor a matching category expense was found this month.
-  emergencyFundBasis: "GOAL" | "CATEGORY_LEGACY" | "NONE";
+  // "LEDGER": the EmergencyFundEntry reserve ledger (authoritative once any entry exists).
+  emergencyFundBasis: "LEDGER" | "GOAL" | "CATEGORY_LEGACY" | "NONE";
   // The liquid reserve amount emergencyFundMonths (in healthScore.breakdown) was derived
   // from, in the currency's smallest display form (2dp string), regardless of basis.
   emergencyFundAmount: string;
@@ -244,6 +245,29 @@ export interface DashboardSummaryDTO {
   // explicit rather than only documented in a code comment, so a user comparing the two
   // pages (or the AI Coach explaining the difference) has a concrete field to point to.
   monthlyIncomeBasis: "FORECAST";
+  // NEW (financial-core upgrade) — all optional so older clients/fixtures keep working.
+  // `cashBalance` above is now exactly `availableCash` (it never included reserved money);
+  // the three cash concepts are surfaced explicitly instead of one ambiguous balance.
+  availableCash?: string;
+  emergencyCash?: string;
+  totalCash?: string;
+  // ACTUAL contributions to investments this month — never part of monthlyExpenses.
+  monthlyInvestmentContributions?: string;
+  // Percent (0-100, 1dp) like `savingsRate`, derived from ACTUAL income for the month.
+  investmentRate?: number;
+  // monthlyExpenses is actual spending only (SIPs / reserve allocations excluded).
+  monthlyExpensesBasis?: "ACTUAL";
+  // Data-quality warnings from the shared facts layer (legacy SIP/emergency "expenses",
+  // stale valuations). Same list the AI Coach consumes.
+  dataHealth?: FinancialDataHealthWarningDTO[];
+}
+
+export interface FinancialDataHealthWarningDTO {
+  code: string;
+  severity: "WARNING" | "INFO";
+  message: string;
+  count: number;
+  amount?: string;
 }
 
 export interface InsightDTO {
@@ -1506,4 +1530,24 @@ export interface PagedResult<T> {
   page: number;
   pageSize: number;
   totalPages: number;
+}
+
+
+// NEW (financial-core upgrade): GET /financial-core/data-health
+export interface DataHealthIssueDTO {
+  code: string;
+  severity: "WARNING" | "INFO";
+  message: string;
+  count: number;
+  amount?: string;
+  entityIds: string[];
+}
+
+export interface DataHealthReportDTO {
+  basis: "ACTUAL";
+  asOfDate: string;
+  status: "HEALTHY" | "NEEDS_REVIEW";
+  issues: DataHealthIssueDTO[];
+  checks: Array<{ label: string; ok: boolean }>;
+  notChecked: string[];
 }
