@@ -15,6 +15,8 @@ import { matchIntent, COACH_INTENTS } from "./coach.intents";
 import { CoachInteractionDTO } from "@wealthos/types";
 import { formatINR } from "../common/utils/currency.util";
 import { RagAutoReindexService } from "../ai/ops/rag-auto-reindex.service";
+import { FinancialFactsService } from "../common/financial-facts/financial-facts.service";
+import { formatRatioAsPercent, toDecimal } from "../common/financial-facts/financial-formulas";
 
 interface GroundedAnswer {
   answer: string;
@@ -42,6 +44,7 @@ export class CoachService {
     private dashboardService: DashboardService,
     private alertsService: AlertsService,
     private ragAutoReindex: RagAutoReindexService,
+    private financialFacts: FinancialFactsService,
   ) {}
 
   async ask(userId: string, question: string): Promise<CoachInteractionDTO> {
@@ -193,33 +196,38 @@ export class CoachService {
     };
   }
 
+  // Net worth and savings rate come from FinancialFactsService — the same numbers the
+  // Dashboard shows. This handler used to re-derive both from raw Income/Expense lists
+  // (omitting property and counting SIPs as spending), so the Coach and Dashboard could
+  // disagree for the same user at the same time.
   private async answerNetWorth(userId: string): Promise<GroundedAnswer> {
-    const [investmentsValue, totalDebt, incomes, expenses] = await Promise.all([
-      this.investmentsService.totalCurrentValue(userId),
-      this.loansService.totalOutstanding(userId),
-      this.incomeService.list(userId),
-      this.expensesService.list(userId),
-    ]);
-    const cash = incomes.reduce((s, i) => s + Number(i.amount), 0) - expenses.reduce((s, e) => s + Number(e.amount), 0);
-    const netWorth = cash + investmentsValue - totalDebt;
+    const p = await this.financialFacts.getFinancialPosition(userId);
+    const warn = p.dataHealth.some((w) => w.severity === "WARNING")
+      ? " Note: some records are flagged for review (see Data Health), so this figure may change once they are reconciled."
+      : "";
     return {
-      answer: `Your net worth is approximately ${formatINR(netWorth)} — that's ${formatINR(cash)} in cash flow, ${formatINR(investmentsValue)} in investments, minus ${formatINR(totalDebt)} in outstanding debt. This doesn't yet include property value if you've added properties separately.`,
-      dataSources: ["income", "expenses", "investments", "loans"],
+      answer:
+        `Your net worth is ${formatINR(p.netWorth)}: assets of ${formatINR(p.totalAssets)} ` +
+        `(${formatINR(p.cash.available)} available cash, ${formatINR(p.cash.emergency)} emergency cash, ` +
+        `${formatINR(p.investmentValue)} investments, ${formatINR(p.property)} property) ` +
+        `minus ${formatINR(p.totalLiabilities)} in liabilities.${warn}`,
+      dataSources: ["financial-facts"],
     };
   }
 
   private async answerSavingsRate(userId: string): Promise<GroundedAnswer> {
-    const monthlyIncome = await this.incomeService.monthlyForecast(userId);
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const monthExpenses = await this.expensesService.list(userId, currentMonth);
-    const spent = monthExpenses.reduce((s, e) => s + Number(e.amount), 0);
-    if (monthlyIncome <= 0) {
-      return { answer: "I can't compute a savings rate yet — no income has been logged.", dataSources: ["income"] };
+    const cf = await this.financialFacts.getMonthlyCashFlow(userId);
+    if (cf.savingsRate === null) {
+      return { answer: "I can't compute a savings rate yet — no income has been recorded this month.", dataSources: ["financial-facts"] };
     }
-    const rate = Math.max(0, ((monthlyIncome - spent) / monthlyIncome) * 100);
+    const rate = toDecimal(cf.savingsRate);
+    const invested = toDecimal(cf.investmentContributions);
+    const investedNote = invested.gt(0) ? ` Separately, ${formatINR(cf.investmentContributions)} went into investments (not counted as spending).` : "";
     return {
-      answer: `This month's savings rate is about ${rate.toFixed(1)}%, based on ${formatINR(monthlyIncome)} in forecast monthly income and ${formatINR(spent)} spent so far.`,
-      dataSources: ["income", "expenses"],
+      answer:
+        `This month's savings rate is ${formatRatioAsPercent(rate, 1)}, based on ${formatINR(cf.income)} income received and ` +
+        `${formatINR(cf.expenses)} of actual spending.${investedNote}`,
+      dataSources: ["financial-facts"],
     };
   }
 
