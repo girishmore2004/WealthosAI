@@ -9,6 +9,7 @@ import { LoansService } from "../src/loans/loans.service";
 import { PropertyService } from "../src/property/property.service";
 import { GoalsService } from "../src/goals/goals.service";
 import { BusinessService } from "../src/business/business.service";
+import { FinancialFactsService } from "../src/common/financial-facts/financial-facts.service";
 import { AlertsService } from "../src/alerts/alerts.service";
 
 describe("HouseholdService.getHouseholdSummary", () => {
@@ -29,6 +30,8 @@ describe("HouseholdService.getHouseholdSummary", () => {
   const mockGoals = { list: jest.fn() };
   const mockBusiness = { listBusinesses: jest.fn(), monthlySummary: jest.fn() };
   const mockAlerts = { list: jest.fn() };
+  // Authoritative per-member position: cash 20000 + investments 100000 + property 200000 - debt 50000.
+  const mockFacts = { getFinancialPosition: jest.fn().mockResolvedValue({ netWorth: "270000.00" }) };
 
   const owner = { id: "owner-1", name: "Alex Owner", role: "OWNER", householdId: "hh-1" };
   const member = { id: "member-1", name: "Sam Member", role: "MEMBER", householdId: "hh-1" };
@@ -63,6 +66,7 @@ describe("HouseholdService.getHouseholdSummary", () => {
         { provide: GoalsService, useValue: mockGoals },
         { provide: BusinessService, useValue: mockBusiness },
         { provide: AlertsService, useValue: mockAlerts },
+        { provide: FinancialFactsService, useValue: mockFacts },
       ],
     }).compile();
     service = moduleRef.get(HouseholdService);
@@ -190,6 +194,7 @@ describe("HouseholdService dependent-management helpers", () => {
         { provide: GoalsService, useValue: noop },
         { provide: BusinessService, useValue: noop },
         { provide: AlertsService, useValue: noop },
+        { provide: FinancialFactsService, useValue: noop },
       ],
     }).compile();
     service = moduleRef.get(HouseholdService);
@@ -277,6 +282,7 @@ describe("HouseholdService invite / accept / decline / revoke / leave (new)", ()
         { provide: GoalsService, useValue: noop },
         { provide: BusinessService, useValue: noop },
         { provide: AlertsService, useValue: noop },
+        { provide: FinancialFactsService, useValue: noop },
       ],
     }).compile();
     service = moduleRef.get(HouseholdService);
