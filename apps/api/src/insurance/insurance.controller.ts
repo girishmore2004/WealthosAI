@@ -1,5 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { InsuranceService } from "./insurance.service";
+import { InsurancePremiumService } from "./insurance-premium.service";
+import { RecordPremiumDto } from "./dto/record-premium.dto";
 import { CreatePolicyDto } from "./dto/create-policy.dto";
 import { UpdatePolicyDto } from "./dto/update-policy.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
@@ -9,7 +11,10 @@ import { User } from "@wealthos/db";
 @UseGuards(SessionAuthGuard)
 @Controller("insurance")
 export class InsuranceController {
-  constructor(private insuranceService: InsuranceService) {}
+  constructor(
+    private insuranceService: InsuranceService,
+    private premiumService: InsurancePremiumService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: User) {
@@ -24,6 +29,18 @@ export class InsuranceController {
   @Get("renewals")
   renewals(@CurrentUser() user: User, @Query("withinDays") withinDays?: string) {
     return this.insuranceService.upcomingRenewals(user.id, withinDays ? parseInt(withinDays, 10) : undefined);
+  }
+
+  // NEW: premium per policy + total recorded, from the linked expenses.
+  @Get("premiums/summary")
+  premiumSummary(@CurrentUser() user: User) {
+    return this.premiumService.totals(user.id);
+  }
+
+  // NEW: the single, idempotent way to record a premium payment (manual or generated).
+  @Post(":id/premiums")
+  recordPremium(@CurrentUser() user: User, @Param("id") id: string, @Body() dto: RecordPremiumDto) {
+    return this.premiumService.recordPremium(user.id, id, dto);
   }
 
   @Get("nominee-summary")
