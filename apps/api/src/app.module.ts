@@ -31,6 +31,7 @@ import { ScenarioStudioModule } from "./ai/scenario-studio/scenario-studio.modul
 import { MlInsightsModule } from "./ai/ml-insights/ml-insights.module";
 import { CopilotIngestionModule } from "./ai/copilot-ingestion/copilot-ingestion.module";
 import { FinancialCoreModule } from "./financial-core/financial-core.module";
+import { FinancialEngineModule } from "./ai/financial-engine/financial-engine.module";
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { FinancialCoreModule } from "./financial-core/financial-core.module";
     MlInsightsModule,
     CopilotIngestionModule,
     FinancialCoreModule,
+    FinancialEngineModule,
   ],
 })
 export class AppModule {}
