@@ -12,6 +12,7 @@ import { IncomeService } from "../src/income/income.service";
 import { DashboardService } from "../src/dashboard/dashboard.service";
 import { AlertsService } from "../src/alerts/alerts.service";
 import { RagAutoReindexService } from "../src/ai/ops/rag-auto-reindex.service";
+import { FinancialFactsService } from "../src/common/financial-facts/financial-facts.service";
 
 describe("CoachService.ask", () => {
   let service: CoachService;
@@ -34,6 +35,7 @@ describe("CoachService.ask", () => {
   const mockAlerts = { list: jest.fn() };
   // NEW (audit item #7)
   const mockRagAutoReindex = { triggerFor: jest.fn().mockResolvedValue(undefined) };
+  const mockFacts = { getFinancialPosition: jest.fn(), getMonthlyCashFlow: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -52,6 +54,7 @@ describe("CoachService.ask", () => {
         { provide: DashboardService, useValue: mockDashboard },
         { provide: AlertsService, useValue: mockAlerts },
         { provide: RagAutoReindexService, useValue: mockRagAutoReindex },
+        { provide: FinancialFactsService, useValue: mockFacts },
       ],
     }).compile();
     service = moduleRef.get(CoachService);
@@ -183,6 +186,53 @@ describe("CoachService.ask", () => {
       // the trigger doesn't distinguish, matching the roadmap's plain
       // "post-interaction" instruction.
       expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1");
+    });
+  });
+
+  describe("authoritative net worth and savings rate", () => {
+    const position = {
+      netWorth: "4750000.00", totalAssets: "4955000.00", totalLiabilities: "205000.00",
+      cash: { available: "33000.00", emergency: "7000.00", total: "40000.00" },
+      investmentValue: "200000.00", property: "4500000.00", dataHealth: [],
+    };
+
+    it("answers net worth from FinancialFactsService (includes property and the emergency reserve), not from raw lists", async () => {
+      mockFacts.getFinancialPosition.mockResolvedValue(position);
+
+      const result = await service.ask("user-1", "what is my net worth");
+
+      expect(result.answer).toContain("₹47,50,000");
+      expect(result.answer).toContain("₹7,000"); // emergency cash is shown
+      expect(mockIncome.list).not.toHaveBeenCalled();
+      expect(mockExpenses.list).not.toHaveBeenCalled();
+    });
+
+    it("mentions when records are flagged for review", async () => {
+      mockFacts.getFinancialPosition.mockResolvedValue({ ...position, dataHealth: [{ code: "INVESTMENT_AS_EXPENSE", severity: "WARNING", message: "m", count: 1 }] });
+
+      const result = await service.ask("user-1", "what is my net worth");
+
+      expect(result.answer).toMatch(/flagged for review/);
+    });
+
+    it("answers savings rate once as a percentage (76.9%, never 7692%) and keeps SIPs out of spending", async () => {
+      mockFacts.getMonthlyCashFlow.mockResolvedValue({
+        income: "65000.00", expenses: "15000.00", investmentContributions: "10000.00", savingsRate: "0.769230769230769",
+      });
+
+      const result = await service.ask("user-1", "what is my savings rate");
+
+      expect(result.answer).toContain("76.9%");
+      expect(result.answer).not.toMatch(/7692|7,692/);
+      expect(result.answer).toContain("₹10,000");
+    });
+
+    it("says it cannot compute the savings rate when no income was received this month", async () => {
+      mockFacts.getMonthlyCashFlow.mockResolvedValue({ income: "0.00", expenses: "100.00", investmentContributions: "0.00", savingsRate: null });
+
+      const result = await service.ask("user-1", "what is my savings rate");
+
+      expect(result.answer).toMatch(/can't compute a savings rate/);
     });
   });
 });
