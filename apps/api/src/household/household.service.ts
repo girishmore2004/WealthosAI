@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { FinancialFactsService } from "../common/financial-facts/financial-facts.service";
 import { createHash, randomBytes } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateMemberDto } from "./dto/create-member.dto";
@@ -51,6 +52,7 @@ export class HouseholdService {
     private goalsService: GoalsService,
     private businessService: BusinessService,
     private alertsService: AlertsService,
+    private financialFacts: FinancialFactsService,
   ) {}
 
   async getOrCreateHouseholdForUser(userId: string) {
@@ -335,10 +337,11 @@ export class HouseholdService {
     ]);
 
     const monthlyExpenses = monthExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
-    const allIncomes = await this.incomeService.list(member.id);
-    const allExpenses = await this.expensesService.list(member.id);
-    const cash = allIncomes.reduce((s, i) => s + Number(i.amount), 0) - allExpenses.reduce((s, e) => s + Number(e.amount), 0);
-    const netWorth = cash + investmentsValue + propertyValue - totalDebt;
+    // Each member's net worth is the authoritative FinancialFactsService figure for THAT
+    // member's own userId (assets - liabilities), identical to what that member sees on
+    // their own Dashboard. Previously re-derived here from raw lists.
+    const position = await this.financialFacts.getFinancialPosition(member.id);
+    const netWorth = Number(position.netWorth);
 
     const goalsTarget = goals.reduce((s, g) => s + Number(g.targetAmount), 0);
     const goalsSaved = goals.reduce((s, g) => s + Number(g.currentAmount) + Number(g.linkedInvestmentValue), 0);
