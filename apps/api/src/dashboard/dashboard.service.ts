@@ -9,6 +9,8 @@ import { PropertyService } from "../property/property.service";
 import { FinancialFactsService } from "../common/financial-facts/financial-facts.service";
 import { UpsertBudgetDto } from "./dto/upsert-budget.dto";
 import { DashboardSummaryDTO, FinancialHealthScoreDTO, InsightDTO } from "@wealthos/types";
+import { Prisma } from "@wealthos/db";
+import { investmentRate as investmentRateRatio, toDecimal } from "../common/financial-facts/financial-formulas";
 
 // NOTE ON "AI": this is a deterministic rules engine, not an LLM call. It is intentionally
 // explainable (every number below traces to a concrete calculation) and every output is
@@ -64,8 +66,6 @@ export class DashboardService {
     const [
       monthlyIncome,
       monthExpenses,
-      allExpenses,
-      allIncomes,
       investmentsValue,
       totalDebt,
       debtSummary,
@@ -73,11 +73,11 @@ export class DashboardService {
       propertyValue,
       budgets,
       goals,
+      position,
+      cashFlow,
     ] = await Promise.all([
       this.incomeService.monthlyForecast(userId),
       this.expensesService.list(userId, currentMonth),
-      this.expensesService.list(userId),
-      this.incomeService.list(userId),
       this.investmentsService.totalCurrentValue(userId),
       this.loansService.totalOutstanding(userId),
       this.loansService.debtSummary(userId),
@@ -93,20 +93,29 @@ export class DashboardService {
         where: { userId },
         include: { investments: { select: { id: true } } },
       }),
+      // Authoritative position (cash split, investments, net worth) and this month's
+      // ACTUAL cash flow — computed once in FinancialFactsService so Dashboard, Reports
+      // and the AI Coach cannot drift apart.
+      this.financialFactsService.getFinancialPosition(userId),
+      this.financialFactsService.getMonthlyCashFlow(userId, currentMonth),
     ]);
 
-    const monthlyExpenseTotal = monthExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+    // Expenses are ACTUAL SPENDING. Legacy SAVINGS-category rows (SIPs / emergency-fund
+    // "expenses") are not spending: they are excluded here and surfaced through
+    // `dataHealth` until the legacy migration moves them into contributions / the reserve.
+    const spendingExpenses = monthExpenses.filter((e) => e.category?.type !== "SAVINGS");
+    const monthlyExpenseTotal = spendingExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
     const savingsRate =
       monthlyIncome > 0 ? Math.max(0, (monthlyIncome - monthlyExpenseTotal) / monthlyIncome) : 0;
 
-    // Cash balance is cumulative income minus cumulative expenses. Net worth adds
-    // investment holdings and property value, and subtracts outstanding loan principal
-    // (which already includes any property-linked mortgage) — the closest
-    // approximation to a real balance sheet until the business-equity module exists.
-    const totalIncomeAllTime = allIncomes.reduce((sum, i) => sum + Number(i.amount), 0);
-    const totalExpenseAllTime = allExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
-    const cashBalance = totalIncomeAllTime - totalExpenseAllTime;
-    const netWorth = cashBalance + investmentsValue + propertyValue - totalDebt;
+    // Cash and net worth now come from FinancialFactsService.getFinancialPosition():
+    //   Available Cash = income - spending - investment outflows - reserve allocations
+    //   Total Cash     = Available Cash + Emergency Cash
+    //   Net Worth      = assets (cash + reserve + investments + property) - liabilities
+    // `cashBalance` keeps its name for existing clients but is the AVAILABLE cash — the
+    // same figure it always represented, since reserved money was never part of it.
+    const cashBalance = Number(position.cash.available);
+    const netWorth = Number(position.netWorth);
 
     // #2 fix: emergency fund calculation now lives in FinancialFactsService (shared with
     // any future consumer — Coach, AI Search) instead of being computed inline here.
@@ -118,8 +127,14 @@ export class DashboardService {
       monthlyExpenseTotal,
       { emergencyFundGoals, monthExpenses },
     );
-    const { amount: emergencyFundAmount, basis: emergencyFundBasis, monthsOfCoverage: emergencyFundMonths } =
-      emergencyFundStatus;
+    const { amount: emergencyFundAmount, basis: emergencyFundBasis } = emergencyFundStatus;
+    let emergencyFundMonths = emergencyFundStatus.monthsOfCoverage;
+    if (emergencyFundBasis === "LEDGER") {
+      // Reserve ledger present: coverage is Emergency Cash / AVERAGE MONTHLY ESSENTIAL
+      // expenses (the shared definition), not this month's total spend.
+      const coverage = await this.financialFactsService.getEmergencyCoverage(userId);
+      if (coverage.coverageMonths !== null) emergencyFundMonths = Number(coverage.coverageMonths);
+    }
 
     // #18: cash already earmarked toward a savings goal that isn't backed by a linked
     // Investment (an investment-backed goal's value is already reflected in
@@ -166,6 +181,15 @@ export class DashboardService {
       emergencyFundBasis,
       emergencyFundAmount: emergencyFundAmount.toFixed(2),
       monthlyIncomeBasis: "FORECAST",
+      availableCash: position.cash.available,
+      emergencyCash: position.cash.emergency,
+      totalCash: position.cash.total,
+      monthlyInvestmentContributions: cashFlow.investmentContributions,
+      investmentRate: Number(
+        ((investmentRateRatio(toDecimal(cashFlow.investmentContributions), toDecimal(cashFlow.income)) ?? new Prisma.Decimal(0)).toNumber() * 100).toFixed(1),
+      ),
+      monthlyExpensesBasis: "ACTUAL",
+      dataHealth: position.dataHealth,
     };
   }
 
