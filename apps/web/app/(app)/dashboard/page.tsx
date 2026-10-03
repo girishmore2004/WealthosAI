@@ -57,6 +57,7 @@ import { HealthScoreCard } from "@/components/dashboard/HealthScoreCard";
 import { NetWorthCard } from "@/components/dashboard/NetWorthCard";
 import { InsightList } from "@/components/dashboard/InsightList";
 import { MlInsightsPanel } from "@/components/dashboard/MlInsightsPanel";
+import { DataHealthCard } from "@/components/dashboard/DataHealthCard";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummaryDTO | null>(null);
@@ -90,6 +91,7 @@ export default function DashboardPage() {
         <HealthScoreCard score={summary.healthScore} />
         <NetWorthCard summary={summary} />
       </div>
+      <DataHealthCard />
       <InsightList insights={summary.insights} />
       <MlInsightsPanel />
     </div>
