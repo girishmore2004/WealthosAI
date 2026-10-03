@@ -329,11 +329,13 @@ function computeRelatedSourceIds(sources: SourceDocument[]): Map<string, string[
   return related;
 }
 
+// NOTE: savingsRate on MonthlyReportDTO / DashboardSummaryDTO is ALREADY a percentage
+// (e.g. 76.9). It was previously multiplied by 100 again here, indexing "7690.0%".
 function reportToText(report: { month: string; income: string; expenses: string; netCashflow: string; savingsRate: number; expensesByCategory: { category: string; amount: string }[] }): string {
   const categoryLines = report.expensesByCategory.map((c) => `${c.category}: ${c.amount}`).join(", ");
   return (
     `Monthly report for ${report.month}. Income: ${report.income}. Expenses: ${report.expenses}. ` +
-    `Net cashflow: ${report.netCashflow}. Savings rate: ${(report.savingsRate * 100).toFixed(1)}%. ` +
+    `Net cashflow: ${report.netCashflow}. Savings rate: ${report.savingsRate.toFixed(1)}%. ` +
     `Expenses by category: ${categoryLines || "none recorded"}.`
   );
 }
@@ -353,7 +355,7 @@ function snapshotToText(summary: {
   return (
     `Current financial snapshot. Net worth: ${summary.netWorth}. Cash balance: ${summary.cashBalance}. ` +
     `Monthly income: ${summary.monthlyIncome}. Monthly expenses: ${summary.monthlyExpenses}. ` +
-    `Savings rate: ${(summary.savingsRate * 100).toFixed(1)}%. Investments value: ${summary.investmentsValue}. ` +
+    `Savings rate: ${summary.savingsRate.toFixed(1)}%. Investments value: ${summary.investmentsValue}. ` +
     `Total debt: ${summary.totalDebt}. Property value: ${summary.propertyValue}.\n${insightLines}`
   );
 }
