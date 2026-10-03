@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@wealthos/db";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
@@ -117,6 +117,25 @@ export class ExpensesService {
   }
 
   async create(userId: string, dto: CreateExpenseDto) {
+    // Expenses are ACTUAL SPENDING. SIPs, investment contributions and emergency-fund
+    // allocations move money between buckets and are recorded as InvestmentCashflow /
+    // EmergencyFundEntry, so the legacy SAVINGS category type is refused for NEW
+    // expenses. Existing SAVINGS rows are preserved untouched (they are reconciled by
+    // the legacy migration, never deleted).
+    const category = await this.prisma.client.category.findUnique({
+      where: { id: dto.categoryId },
+      select: { type: true, name: true },
+    });
+    if (!category) {
+      throw new BadRequestException("Category not found");
+    }
+    if (category.type === "SAVINGS") {
+      throw new BadRequestException(
+        `"${category.name}" is a savings/investment category and cannot be used for an expense. ` +
+          "Record SIPs and investments as investment contributions, and emergency-fund transfers as emergency allocations.",
+      );
+    }
+
     return this.prisma.client.expense.create({
       data: { ...dto, userId, spentAt: new Date(dto.spentAt) },
       include: { category: true },
