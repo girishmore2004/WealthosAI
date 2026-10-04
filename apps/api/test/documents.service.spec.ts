@@ -16,7 +16,8 @@ function fakeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.
     encoding: "7bit",
     mimetype: "application/pdf",
     size: 1024,
-    buffer: Buffer.from("test"),
+    // A real PDF signature: upload now verifies the file's actual bytes against its declared type.
+    buffer: Buffer.from("%PDF-1.4 test"),
     destination: "",
     filename: "",
     path: "",
@@ -65,6 +66,21 @@ describe("DocumentsService.upload", () => {
     expect(mockStorage.save).not.toHaveBeenCalled();
   });
 
+  it("rejects a file whose content does not match its declared type (script posing as a PDF)", async () => {
+    const file = fakeFile({ buffer: Buffer.from("<html><script>alert(1)</script></html>") });
+
+    await expect(service.upload("user-1", file, { category: "OTHER" as never })).rejects.toThrow(/does not match/i);
+    expect(mockStorage.save).not.toHaveBeenCalled();
+  });
+
+  it("stores under a type-derived name, ignoring a hostile client filename", async () => {
+    const file = fakeFile({ originalname: "../../etc/passwd\u0000.exe" });
+
+    await service.upload("user-1", file, { category: "OTHER" as never });
+
+    expect(mockStorage.save).toHaveBeenCalledWith(expect.any(Buffer), "upload.pdf");
+  });
+
   it("rejects when no file is present", async () => {
     await expect(
       service.upload("user-1", undefined as never, { category: "OTHER" as never }),
@@ -88,7 +104,7 @@ describe("DocumentsService.upload", () => {
   });
 
   it("enqueues an async OCR job scoped to the created document, using its id as the idempotency key", async () => {
-    const file = fakeFile({ mimetype: "image/jpeg" });
+    const file = fakeFile({ mimetype: "image/jpeg", buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]) });
 
     await service.upload("user-1", file, { category: "PAN" as never });
 
