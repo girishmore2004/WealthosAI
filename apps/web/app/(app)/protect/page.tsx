@@ -8,6 +8,7 @@
 // import { Input } from "@/components/ui/Input";
 // import { InlineEditForm, EditField } from "@/components/ui/InlineEditForm";
 // import { formatINR } from "@/lib/format";
+import { PolicyDocuments } from "@/components/protect/PolicyDocuments";
 
 // const TYPES: InsuranceType[] = [
 //   "HEALTH",
@@ -152,7 +153,14 @@
 //         {error && <p className="mt-2 text-sm text-loss">{error}</p>}
 //       </Card>
 
-//       <Card title="All policies">
+//       <Card
+        title="All policies"
+        action={
+          <span className="money text-xs text-ink-faint">
+            Premiums recorded: {formatINR(Object.values(premiums).reduce((sum, p) => sum + Number(p.totalPaid), 0))}
+          </span>
+        }
+      >
 //         {loading ? (
 //           <p className="text-sm text-ink-faint">Loading…</p>
 //         ) : items.length === 0 ? (
@@ -184,7 +192,17 @@
 //                       </p>
 //                     </div>
 //                     <div className="flex items-center gap-3">
-//                       <span className="money text-ink">{formatINR(item.coverageAmount)} cover</span>
+//                       <span className="text-xs text-ink-faint">
+                        {formatINR(item.premiumAmount)} / {item.premiumFrequency.toLowerCase()}
+                        {premiums[item.id] ? ` · ${premiums[item.id].premiumsRecorded} recorded (${formatINR(premiums[item.id].totalPaid)})` : ""}
+                      </span>
+                      <span className="money text-ink">{formatINR(item.coverageAmount)} cover</span>
+                      <button
+                        onClick={() => setOpenDocsId(openDocsId === item.id ? null : item.id)}
+                        className="text-xs text-ink-faint hover:text-marigold-600"
+                      >
+                        Documents
+                      </button>
 //                       <button onClick={() => setEditingId(item.id)} className="text-xs text-ink-faint hover:text-marigold-600">
 //                         Edit
 //                       </button>
@@ -263,6 +281,10 @@ export default function ProtectPage() {
   // dropdown and to resolve a linked policy's nomineeDependentId back to a display
   // name in the read-only list view below.
   const [dependents, setDependents] = useState<DependentDTO[]>([]);
+  // NEW: premiums recorded per policy (from the expenses linked to each policy) and the policy
+  // whose documents panel is open.
+  const [premiums, setPremiums] = useState<Record<string, { premiumsRecorded: number; totalPaid: string }>>({});
+  const [openDocsId, setOpenDocsId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -279,11 +301,12 @@ export default function ProtectPage() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.insurance.list(), api.insurance.gapAnalysis(), api.household.get()])
-      .then(([list, gaps, household]) => {
+    Promise.all([api.insurance.list(), api.insurance.gapAnalysis(), api.household.get(), api.insurance.premiumSummary()])
+      .then(([list, gaps, household, premiumRows]) => {
         setItems(list);
         setGaps(gaps);
         setDependents(household.dependents);
+        setPremiums(Object.fromEntries(premiumRows.map((r) => [r.policyId, { premiumsRecorded: r.premiumsRecorded, totalPaid: r.totalPaid }])));
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load policies."))
       .finally(() => setLoading(false));
@@ -467,6 +490,7 @@ export default function ProtectPage() {
                     </div>
                   </div>
                 )}
+                {openDocsId === item.id && editingId !== item.id && <PolicyDocuments policyId={item.id} onPremiumRecorded={load} />}
               </li>
             ))}
           </ul>
