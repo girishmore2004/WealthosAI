@@ -6,6 +6,9 @@ import { ConfigService } from "@nestjs/config";
 import { AppModule } from "./app.module";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
+import { securityHeaders } from "./common/security/security-headers.middleware";
+import { buildOriginMatcher, csrfOriginCheck } from "./common/security/origin-check";
+import { SESSION_COOKIE_NAME } from "./common/guards/session-auth.guard";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -14,24 +17,22 @@ async function bootstrap() {
   const allowedOrigins = [config.get<string>("webUrl")!, ...config.get<string[]>("corsExtraOrigins")!];
   const previewPrefix = config.get<string>("vercelPreviewPrefix");
 
+  const isTrustedOrigin = buildOriginMatcher({ allowedOrigins, vercelPreviewPrefix: previewPrefix });
+
+  // Don't advertise the framework, and send hardening headers on every response.
+  app.getHttpAdapter().getInstance().disable("x-powered-by");
+  app.use(securityHeaders(process.env.NODE_ENV === "production"));
   app.use(cookieParser());
+  // CSRF: cookie-authenticated, state-changing requests must come from a trusted origin.
+  // Runs after cookieParser (it reads the session cookie) and before any controller.
+  app.use(csrfOriginCheck(isTrustedOrigin, SESSION_COOKIE_NAME));
   app.enableCors({
     origin(origin, callback) {
       // No Origin header — same-origin requests, curl, server-to-server health checks, etc.
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      // Vercel preview deployments get a random per-branch/PR suffix appended to the
-      // project name (e.g. wealthos-ai-git-my-feature-yourteam.vercel.app), so an exact
-      // match against WEB_URL can never cover them. Opt-in only: VERCEL_PREVIEW_PREFIX
-      // must be set, and the origin must be https + *.vercel.app, to avoid accidentally
-      // trusting an unrelated vercel.app project.
-      if (
-        previewPrefix &&
-        /^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin) &&
-        new URL(origin).hostname.startsWith(previewPrefix)
-      ) {
-        return callback(null, true);
-      }
+      // Vercel preview deployments get a random per-branch suffix, so an exact match against
+      // WEB_URL can never cover them; opt-in via VERCEL_PREVIEW_PREFIX (see buildOriginMatcher).
+      if (isTrustedOrigin(origin)) return callback(null, true);
       return callback(new Error(`Origin ${origin} not allowed by CORS`), false);
     },
     credentials: true,
