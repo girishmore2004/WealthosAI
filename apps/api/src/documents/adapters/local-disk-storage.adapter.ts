@@ -9,6 +9,18 @@ import { DocumentStorageAdapter } from "./document-storage.adapter";
 // on-disk path, so there's no path-traversal risk from a malicious upload name.
 const STORAGE_ROOT = process.env.DOCUMENT_STORAGE_PATH ?? path.resolve(process.cwd(), "storage", "documents");
 
+// Defence in depth: keys are generated server-side, but read/delete still refuse anything
+// that resolves outside STORAGE_ROOT, so a corrupted or tampered key can never reach another
+// file on disk.
+function resolveInsideRoot(storageKey: string): string {
+  const root = path.resolve(STORAGE_ROOT);
+  const full = path.resolve(root, storageKey);
+  if (full !== root && !full.startsWith(root + path.sep)) {
+    throw new Error("Invalid storage key");
+  }
+  return full;
+}
+
 @Injectable()
 export class LocalDiskStorageAdapter implements DocumentStorageAdapter {
   private readonly logger = new Logger("LocalDiskStorage");
@@ -19,18 +31,20 @@ export class LocalDiskStorageAdapter implements DocumentStorageAdapter {
 
   async save(buffer: Buffer, suggestedFileName: string): Promise<string> {
     await this.ensureRoot();
-    const ext = path.extname(suggestedFileName).slice(0, 10); // cap a pathological extension length
+    // Only a short, plain alphanumeric extension is ever kept (callers pass a type-derived name).
+    const rawExt = path.extname(suggestedFileName);
+    const ext = /^\.[a-z0-9]{1,8}$/i.test(rawExt) ? rawExt.toLowerCase() : "";
     const storageKey = `${randomUUID()}${ext}`;
-    await fs.writeFile(path.join(STORAGE_ROOT, storageKey), buffer);
+    await fs.writeFile(resolveInsideRoot(storageKey), buffer, { mode: 0o600 });
     this.logger.log(`Stored document as ${storageKey}`);
     return storageKey;
   }
 
   async read(storageKey: string): Promise<Buffer> {
-    return fs.readFile(path.join(STORAGE_ROOT, storageKey));
+    return fs.readFile(resolveInsideRoot(storageKey));
   }
 
   async delete(storageKey: string): Promise<void> {
-    await fs.rm(path.join(STORAGE_ROOT, storageKey), { force: true });
+    await fs.rm(resolveInsideRoot(storageKey), { force: true });
   }
 }
