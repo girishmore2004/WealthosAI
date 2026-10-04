@@ -43,15 +43,19 @@ export class AuthService {
   private get verifyMaxAttempts() {
     return this.config.get<number>("otp.verifyMaxAttempts") ?? 5;
   }
+
   private get verifyLockoutSeconds() {
     return this.config.get<number>("otp.verifyLockoutSeconds") ?? 900;
   }
+
   private get resendCooldownSeconds() {
     return this.config.get<number>("otp.resendCooldownSeconds") ?? 45;
   }
+
   private get requestIpMax() {
     return this.config.get<number>("otp.requestIpMax") ?? 15;
   }
+
   private get requestIpWindowSeconds() {
     return this.config.get<number>("otp.requestIpWindowSeconds") ?? 3600;
   }
@@ -136,6 +140,12 @@ export class AuthService {
     }
 
     const code = randomInt(100000, 999999).toString();
+
+    // Demo/debug visibility only.
+    // This does NOT change OTP generation, hashing, storage, verification,
+    // expiry, rate limiting, or email delivery.
+    this.logger.log(`[DEMO OTP] ${identifier}: ${code}`);
+
     const existingUser = await this.prisma.client.user.findUnique({ where: { email: identifier } });
 
     await this.prisma.client.otpCode.create({
@@ -188,6 +198,7 @@ export class AuthService {
       where: { id: otp.id },
       data: { consumed: true },
     });
+
     await this.safeDel(`otp-fail:${identifier}`, "otp fail counter reset");
 
     const user = await this.getOrCreateUser(identifier);
@@ -239,6 +250,7 @@ export class AuthService {
       where: { identifier, consumed: false, expiresAt: { gt: new Date() } },
       orderBy: { createdAt: "desc" },
     });
+
     if (latestOtp) {
       await this.prisma.client.otpCode.update({
         where: { id: latestOtp.id },
