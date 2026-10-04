@@ -5,6 +5,7 @@ import { UpdateDocumentDto } from "./dto/update-document.dto";
 import { DocumentStorageAdapter } from "./adapters/document-storage.adapter";
 import { LocalDiskStorageAdapter } from "./adapters/local-disk-storage.adapter";
 import { AiQueueService } from "../ai/ops/ai-queue.service";
+import { detectFileType, extensionFor } from "./file-signature.util";
 
 export const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 export const ALLOWED_MIME_TYPES = [
@@ -48,7 +49,14 @@ export class DocumentsService {
       throw new BadRequestException(`File type ${file.mimetype} is not supported`);
     }
 
-    const storageKey = await this.storage.save(file.buffer, file.originalname);
+    // The declared mimetype is client-controlled; require the file's real signature to match it.
+    const detected = detectFileType(file.buffer);
+    if (!detected || detected !== file.mimetype) {
+      throw new BadRequestException("The file content does not match its declared type");
+    }
+
+    // The stored name's extension is derived from the detected type, not the client filename.
+    const storageKey = await this.storage.save(file.buffer, `upload${extensionFor(detected)}`);
     const tags = dto.tags
       ? dto.tags.split(",").map((t) => t.trim()).filter(Boolean)
       : [];
