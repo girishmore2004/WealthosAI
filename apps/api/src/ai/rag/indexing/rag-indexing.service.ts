@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { RedactionService } from "../../gateway/redaction.service";
 import { createHash } from "node:crypto";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { AiSourceType } from "@wealthos/db";
@@ -65,6 +66,7 @@ export class RagIndexingService implements OnModuleInit {
     private queue: AiQueueService,
     private reports: ReportsService,
     private dashboard: DashboardService,
+    private redaction: RedactionService,
   ) {}
 
   onModuleInit() {
@@ -213,7 +215,10 @@ export class RagIndexingService implements OnModuleInit {
     const sources: SourceDocument[] = [];
 
     for (const doc of documents) {
-      const text = [doc.summary, doc.ocrText].filter(Boolean).join("\n\n");
+      // Identifiers (PAN, Aadhaar, account / policy numbers, IFSC, UPI ...) are scrubbed BEFORE
+      // the text is chunked, embedded, stored or later handed to a model as context. Without
+      // this, OCR of a PAN card or bank statement sat in plaintext in the index.
+      const text = this.redaction.redact([doc.summary, doc.ocrText].filter(Boolean).join("\n\n")).text;
       if (!text.trim()) continue;
       sources.push({
         sourceType: "DOCUMENT",
@@ -228,7 +233,7 @@ export class RagIndexingService implements OnModuleInit {
       sources.push({
         sourceType: "COACH_INTERACTION",
         sourceId: interaction.id,
-        text: `Q: ${interaction.question}\nA: ${interaction.answer}`,
+        text: this.redaction.redact(`Q: ${interaction.question}\nA: ${interaction.answer}`).text,
         metadata: { title: interaction.question, intent: interaction.matchedIntent },
         sourceCreatedAt: interaction.createdAt,
       });
