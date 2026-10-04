@@ -7,6 +7,7 @@ import { DocumentStorageAdapter } from "./adapters/document-storage.adapter";
 import { LocalDiskStorageAdapter } from "./adapters/local-disk-storage.adapter";
 import { OcrAdapter, OcrNotApplicableError } from "./adapters/ocr.adapter";
 import { OCR_ADAPTER } from "./adapters/ocr-adapter.factory";
+import { DocumentReconciliationService } from "./document-reconciliation.service";
 
 interface DocumentOcrJobInput {
   documentId: string;
@@ -39,6 +40,7 @@ export class DocumentOcrHandler implements OnModuleInit {
     @Inject(OCR_ADAPTER) private ocr: OcrAdapter,
     private ragAutoReindex: RagAutoReindexService,
     private copilotIngestion: CopilotIngestionService,
+    private reconciliation: DocumentReconciliationService,
   ) {}
 
   onModuleInit() {
@@ -97,6 +99,16 @@ export class DocumentOcrHandler implements OnModuleInit {
             `Document-to-Ingestion bridge failed for document ${documentId}: ${(bridgeErr as Error).message}`,
           );
         }
+      }
+
+      // Document entity linking: if this document is linked to a policy, compare the facts
+      // extracted from it with the stored policy and record any conflict as a discrepancy.
+      // Best-effort and strictly read-only with respect to the policy — it never overwrites
+      // authoritative data, and a failure here never fails the OCR result saved above.
+      try {
+        await this.reconciliation.reconcile(userId, documentId, result.engineConfidence);
+      } catch (reconcileErr) {
+        this.logger.warn(`Document reconciliation failed for ${documentId}: ${(reconcileErr as Error).name}`);
       }
 
       // NEW (audit item #7): "reindexing is exclusively user-triggered... nothing in
