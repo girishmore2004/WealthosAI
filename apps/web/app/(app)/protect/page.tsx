@@ -134,16 +134,16 @@ export default function ProtectPage() {
         setDependents(household.dependents);
 
         setPremiums(
-          Object.fromEntries(
-            premiumRows.map((r) => [
-              r.policyId,
-              {
-                premiumsRecorded: r.premiumsRecorded,
-                totalPaid: r.totalPaid,
-              },
-            ])
-          )
-        );
+  Object.fromEntries(
+    premiumRows.map((r) => [
+      r.policyId,
+      {
+        premiumsRecorded: Number(r.premiumsRecorded),
+        totalPaid: Number(r.totalPaid),
+      },
+    ])
+  )
+);
       })
       .catch((err) =>
         setError(
