@@ -72,3 +72,14 @@ export function csrfOriginCheck(isTrusted: OriginMatcher, cookieName: string) {
     res.status(403).json({ statusCode: 403, message: "Request origin not allowed", error: "Forbidden" });
   };
 }
+
+describe("origin-check helpers", () => {
+  it("builds a trusted-origin matcher", () => {
+    const matcher = buildOriginMatcher({
+      allowedOrigins: ["https://example.com"],
+    });
+
+    expect(matcher("https://example.com")).toBe(true);
+    expect(matcher("https://evil.example.com")).toBe(false);
+  });
+});
