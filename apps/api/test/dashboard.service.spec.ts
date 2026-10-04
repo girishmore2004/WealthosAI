@@ -76,7 +76,7 @@ function makeMockFinancialFactsService() {
         const monthExpenses = prefetched?.monthExpenses ?? [];
 
         let amount = 0;
-        let basis: "LEDGER" | "GOAL" | "CATEGORY_LEGACY" | "NONE" = "NONE";
+        let basis: "LEDGER" as any | "GOAL" | "CATEGORY_LEGACY" | "NONE" = "NONE";
 
         if (emergencyFundGoals.length > 0) {
           amount = emergencyFundGoals.reduce((sum, g) => sum + Number(g.currentAmount), 0);
@@ -616,7 +616,7 @@ describe("DashboardService — authoritative cash model and actual spending", ()
   it("uses Emergency Cash / average essential expenses for coverage when the reserve ledger exists", async () => {
     mockIncomeService.monthlyForecast.mockResolvedValue(65000);
     mockExpensesService.list.mockResolvedValue([{ amount: 15000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
-    mockFinancialFactsService.getEmergencyFundStatus.mockResolvedValue({ amount: 60000, basis: "LEDGER", monthsOfCoverage: 4 });
+    mockFinancialFactsService.getEmergencyFundStatus.mockResolvedValue({ amount: 60000, basis: "LEDGER" as any, monthsOfCoverage: 4 });
     mockFinancialFactsService.getEmergencyCoverage.mockResolvedValue({ coverageMonths: "6.00" });
 
     const summary = await service.getSummary("user-1");
