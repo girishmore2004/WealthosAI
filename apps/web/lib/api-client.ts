@@ -6,6 +6,7 @@ import type {
   OptimizationConstraintsDTO,
   DashboardSummaryDTO,
   DataHealthReportDTO,
+  DocumentDiscrepancyDTO,
   ExpenseDTO,
   CategoryBreakdownDTO,
   DetectedSubscriptionDTO,
@@ -247,6 +248,12 @@ export const api = {
       ),
   },
   insurance: {
+    // Premium per policy and total recorded, from the expenses linked to each policy.
+    premiumSummary: () =>
+      request<Array<{ policyId: string; premiumAmount: string; premiumFrequency: string; premiumsRecorded: number; totalPaid: string }>>("/insurance/premiums/summary"),
+    // The one idempotent way to record a premium: recording the same period twice adds nothing.
+    recordPremium: (policyId: string, body: { paidAt?: string; period?: string } = {}) =>
+      request<{ created: boolean; expenseId: string; period: string }>(`/insurance/${policyId}/premiums`, { method: "POST", body: JSON.stringify(body) }),
     list: () => request<InsurancePolicyDTO[]>("/insurance"),
     gapAnalysis: () => request<CoverageGapDTO[]>("/insurance/gap-analysis"),
     renewals: (withinDays?: number) => request<InsurancePolicyDTO[]>(`/insurance/renewals${withinDays ? `?withinDays=${withinDays}` : ""}`),
@@ -423,12 +430,27 @@ export const api = {
     list: (category?: string) => request<DocumentDTO[]>(`/documents${category ? `?category=${category}` : ""}`),
     expiring: (withinDays?: number) =>
       request<DocumentDTO[]>(`/documents/expiring${withinDays ? `?withinDays=${withinDays}` : ""}`),
-    upload: (file: File, meta: { category: string; tags?: string; expiryDate?: string }) => {
+    // Documents linked to one record (e.g. a policy). The server verifies the caller owns it.
+    byEntity: (entityType: string, entityId: string) =>
+      request<DocumentDTO[]>(`/documents/by-entity?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`),
+    discrepancies: () => request<DocumentDiscrepancyDTO[]>("/documents/discrepancies"),
+    resolveDiscrepancy: (id: string, resolution: "KEEP_DATABASE" | "DISMISS") =>
+      request<{ resolved: boolean }>(`/documents/discrepancies/${id}/resolve`, { method: "POST", body: JSON.stringify({ resolution }) }),
+    reconcile: (id: string) => request<{ supported: boolean }>(`/documents/${id}/reconcile`, { method: "POST" }),
+    upload: (
+      file: File,
+      meta: { category: string; tags?: string; expiryDate?: string; entityType?: string; entityId?: string; documentType?: string },
+    ) => {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("category", meta.category);
       if (meta.tags) formData.append("tags", meta.tags);
       if (meta.expiryDate) formData.append("expiryDate", meta.expiryDate);
+      if (meta.entityType && meta.entityId) {
+        formData.append("entityType", meta.entityType);
+        formData.append("entityId", meta.entityId);
+      }
+      if (meta.documentType) formData.append("documentType", meta.documentType);
       return requestFormData<DocumentDTO>("/documents", formData);
     },
     update: (id: string, data: { category?: string; tags?: string[]; expiryDate?: string }) =>
