@@ -770,7 +770,27 @@ export interface DocumentDTO {
   ocrStatus: OcrStatus;
   ocrText: string | null;
   summary: string | null;
+  // NEW (document entity linking) — optional so older fixtures keep compiling.
+  entityType?: DocumentEntityType | null;
+  entityId?: string | null;
+  documentType?: string | null;
+  extractionConfidence?: string | null;
   createdAt: string;
+}
+
+export type DocumentEntityType = "POLICY" | "INVESTMENT" | "LOAN" | "PROPERTY" | "INCOME" | "TAX" | "BUSINESS";
+
+export interface DocumentDiscrepancyDTO {
+  id: string;
+  documentId: string;
+  entityType: DocumentEntityType;
+  entityId: string;
+  field: string;
+  documentValue: string;
+  databaseValue: string;
+  status: "OPEN" | "KEPT_DATABASE" | "DISMISSED" | "RESOLVED";
+  createdAt: string;
+  resolvedAt: string | null;
 }
 
 export interface MonthlyReportDTO {
@@ -999,7 +1019,7 @@ export interface AiJobStatusDTO {
 
 // --- Phase 11: RAG engine ----------------------------------------------------------
 
-export type AiSourceType = "DOCUMENT" | "REPORT" | "COACH_INTERACTION" | "ALERT" | "SNAPSHOT";
+export type AiSourceType = "DOCUMENT" | "REPORT" | "COACH_INTERACTION" | "ALERT" | "SNAPSHOT" | "FINANCIAL_FACT";
 
 export interface AiCitedSourceDTO {
   chunkId: string;
