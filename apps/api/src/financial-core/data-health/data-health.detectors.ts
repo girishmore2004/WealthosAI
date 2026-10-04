@@ -13,7 +13,9 @@ export type DataHealthCode =
   | "NEGATIVE_AVAILABLE_CASH"
   | "DUPLICATE_RECURRING_EVENT"
   | "INCONSISTENT_COST_BASIS"
-  | "POSSIBLE_BANK_DUPLICATE";
+  | "POSSIBLE_BANK_DUPLICATE"
+  | "UNLINKED_DOCUMENT"
+  | "DOCUMENT_DISCREPANCY";
 
 export interface DataHealthIssue {
   code: DataHealthCode;
@@ -316,4 +318,43 @@ export function detectNegativeCash(availableCash: string): DataHealthIssue[] {
         }),
       ]
     : [];
+}
+
+export interface DocumentRow {
+  id: string;
+  category: string;
+  entityType: string | null;
+}
+
+// Categories that are inherently ABOUT a specific record (a policy, a loan, a holding ...).
+// Receipts, bills and ID documents are legitimately standalone, so they are not flagged.
+const NEEDS_ENTITY_LINK = new Set(["INSURANCE_POLICY", "LOAN_DOCUMENT", "PROPERTY_PAPER", "MF_STATEMENT", "TAX_RETURN"]);
+
+export function detectUnlinkedDocuments(documents: DocumentRow[]): DataHealthIssue[] {
+  const unlinked = documents.filter((d) => NEEDS_ENTITY_LINK.has(d.category) && d.entityType === null);
+  return unlinked.length === 0
+    ? []
+    : [
+        issue({
+          code: "UNLINKED_DOCUMENT",
+          severity: "INFO",
+          message: "Some documents that belong to a policy, loan, property or investment are not linked to it, so they cannot be used to verify your records.",
+          count: unlinked.length,
+          entityIds: unlinked.map((d) => d.id),
+        }),
+      ];
+}
+
+export function detectDocumentDiscrepancies(open: Array<{ id: string }>): DataHealthIssue[] {
+  return open.length === 0
+    ? []
+    : [
+        issue({
+          code: "DOCUMENT_DISCREPANCY",
+          severity: "WARNING",
+          message: "A linked document shows a different value from your records. Your records were not changed; review the difference.",
+          count: open.length,
+          entityIds: open.map((d) => d.id),
+        }),
+      ];
 }
