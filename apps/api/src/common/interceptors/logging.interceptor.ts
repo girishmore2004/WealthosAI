@@ -13,7 +13,8 @@ export class LoggingInterceptor implements NestInterceptor {
       tap(() => {
         const ms = Date.now() - start;
         // eslint-disable-next-line no-console
-        console.log(`${request.method} ${request.originalUrl} - ${ms}ms`);
+        // Path only: the query string can carry search text, dates or ids that don't belong in logs.
+        console.log(`${request.method} ${request.originalUrl.split("?")[0]} - ${ms}ms`);
       }),
     );
   }
