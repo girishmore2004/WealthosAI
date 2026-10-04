@@ -1,45 +1,77 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
-import { Response } from "express";
+import { ArgumentsHost, HttpException, HttpStatus } from "@nestjs/common";
 import { MulterError } from "multer";
+import { HttpExceptionFilter } from "../src/common/filters/http-exception.filter";
 
-// Normalizes every error into a consistent { statusCode, message, error } shape
-// so the web app never has to guess the error format.
-@Catch()
-export class HttpExceptionFilter implements ExceptionFilter {
-  catch(exception: unknown, host: ArgumentsHost) {
-    const ctx = host.switchToHttp();
-    const response = ctx.getResponse<Response>();
-
-    // multer enforces its own upload limits (e.g. fileSize) during the multipart parse,
-    // before the request ever reaches DocumentsService's own validation — without this,
-    // an oversized upload would otherwise fall through to a generic 500.
-    if (exception instanceof MulterError) {
-      const message =
-        exception.code === "LIMIT_FILE_SIZE" ? "File exceeds the maximum upload size" : exception.message;
-      response.status(HttpStatus.BAD_REQUEST).json({ statusCode: HttpStatus.BAD_REQUEST, message, error: "BadRequest" });
-      return;
-    }
-
-    const isHttpException = exception instanceof HttpException;
-    const statusCode = isHttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
-    const body = isHttpException ? exception.getResponse() : null;
-
-    const message =
-      typeof body === "object" && body !== null && "message" in body
-        ? (body as { message: string | string[] }).message
-        : exception instanceof Error
-          ? exception.message
-          : "Internal server error";
-
-    if (!isHttpException) {
-      // eslint-disable-next-line no-console
-      console.error("Unhandled exception:", exception);
-    }
-
-    response.status(statusCode).json({
-      statusCode,
-      message,
-      error: isHttpException ? exception.name : "InternalServerError",
-    });
-  }
+function mockHost() {
+  const json = jest.fn();
+  const status = jest.fn().mockReturnValue({ json });
+  const host = {
+    switchToHttp: () => ({ getResponse: () => ({ status }) }),
+  } as unknown as ArgumentsHost;
+  return { host, status, json };
 }
+
+describe("HttpExceptionFilter", () => {
+  let filter: HttpExceptionFilter;
+
+  beforeEach(() => {
+    filter = new HttpExceptionFilter();
+  });
+
+  it("maps a MulterError LIMIT_FILE_SIZE to a 400 with a clear message, not a 500", () => {
+    const { host, status, json } = mockHost();
+    const error = new MulterError("LIMIT_FILE_SIZE");
+
+    filter.catch(error, host);
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: HttpStatus.BAD_REQUEST, message: expect.stringMatching(/exceeds/i) }),
+    );
+  });
+
+  it("maps other MulterErrors to 400 using multer's own message", () => {
+    const { host, status, json } = mockHost();
+    const error = new MulterError("LIMIT_UNEXPECTED_FILE");
+
+    filter.catch(error, host);
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: HttpStatus.BAD_REQUEST }));
+  });
+
+  it("still maps a normal HttpException to its own status code", () => {
+    const { host, status, json } = mockHost();
+    const error = new HttpException("Not found", HttpStatus.NOT_FOUND);
+
+    filter.catch(error, host);
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.NOT_FOUND);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ message: "Not found" }));
+  });
+
+  it("falls back to 500 for an unrecognized error", () => {
+    const { host, status, json } = mockHost();
+
+    filter.catch(new Error("boom"), host);
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: HttpStatus.INTERNAL_SERVER_ERROR }));
+  });
+});
+
+describe("HttpExceptionFilter — no internal detail leaks to the client", () => {
+  it("returns a generic message for an unexpected error, never its own message", () => {
+    const { host, json } = mockHost();
+    const spy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+    new HttpExceptionFilter().catch(new Error('Invalid `prisma.expense.create()` invocation: amount "15000" email "a@b.com"'), host);
+
+    const body = json.mock.calls[0][0];
+    expect(body.message).toBe("Internal server error");
+    expect(JSON.stringify(body)).not.toMatch(/prisma|15000|a@b\.com/);
+    // The server log keeps the error NAME only, not the message/args.
+    expect(spy.mock.calls[0].join(" ")).not.toMatch(/15000|a@b\.com/);
+    spy.mockRestore();
+  });
+});
