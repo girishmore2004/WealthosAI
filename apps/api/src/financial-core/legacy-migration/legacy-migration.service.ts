@@ -137,14 +137,33 @@ export class LegacyMigrationService {
     }
 
     const summary = summarize(items);
-    if (!dryRun) {
-      await this.audit.log("FINANCIAL_LEGACY_MIGRATION", userId, {
-        summary,
-        items: items
-          .slice(0, AUDIT_ITEM_CAP)
-          .map((i) => ({ expenseId: i.expenseId, status: i.status, target: i.target, periodKey: i.periodKey ?? null })),
-        truncated: items.length > AUDIT_ITEM_CAP,
-      });
+
+if (!dryRun) {
+  const auditMetadata = {
+    summary: {
+      MIGRATED: summary.MIGRATED,
+      SKIPPED: summary.SKIPPED,
+      DUPLICATE: summary.DUPLICATE,
+      WARNING: summary.WARNING,
+      ERROR: summary.ERROR,
+    },
+    items: items
+      .slice(0, AUDIT_ITEM_CAP)
+      .map((i) => ({
+        expenseId: i.expenseId,
+        status: i.status,
+        target: i.target,
+        periodKey: i.periodKey ?? null,
+      })),
+    truncated: items.length > AUDIT_ITEM_CAP,
+  };
+
+  await this.audit.log(
+    "FINANCIAL_LEGACY_MIGRATION",
+    userId,
+    auditMetadata,
+  );
+}
     }
     return { dryRun, summary, items };
   }
