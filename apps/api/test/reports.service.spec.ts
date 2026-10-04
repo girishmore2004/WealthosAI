@@ -111,7 +111,9 @@ describe("ReportsService", () => {
       expect(report.expenses).toBe("15000.00");
       expect(report.netCashflow).toBe("50000.00");
       expect(report.savingsRate).toBe(76.9); // (65000 - 15000) / 65000
-      expect(report.expensesByCategory.map((c) => c.categoryName ?? (c as { name?: string }).name)).not.toContain("SIP");
+      expect(
+  report.expensesByCategory.map((c) => c.category)
+).not.toContain("SIP");
     });
 
     it("yearlyReport excludes SAVINGS-category rows from total expenses", async () => {
