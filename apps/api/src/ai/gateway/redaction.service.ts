@@ -32,6 +32,22 @@ const RULES: RedactionRule[] = [
   { type: "pan", pattern: /\b[A-Z]{5}\d{4}[A-Z]\b/g, replacement: "[redacted-pan]" },
   { type: "aadhaar", pattern: /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g, replacement: "[redacted-aadhaar]" },
   { type: "card", pattern: /\b(?:\d[ -]?){13,16}\b/g, replacement: "[redacted-card]" },
+  // Added in the security pass — these identify an account or a person but were previously
+  // sent to the model verbatim:
+  { type: "ifsc", pattern: /\b[A-Z]{4}0[A-Z0-9]{6}\b/g, replacement: "[redacted-ifsc]" },
+  { type: "gstin", pattern: /\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/g, replacement: "[redacted-gstin]" },
+  // UPI handles (name@bank). Runs after the email rule, so real emails are already gone.
+  { type: "upi", pattern: /\b[\w.-]{2,}@[a-z]{2,}\b/gi, replacement: "[redacted-upi]" },
+  // A labelled identifier: "policy no: ABC12345", "a/c 123456789012", "folio number 1234567/89".
+  // Only the identifier is replaced; the label stays so the sentence still reads.
+  {
+    type: "labelled-id",
+    pattern: /\b((?:policy|account|a\/c|acct|folio|loan|customer|membership|uan|pran)\s*(?:no\.?|number|num|#|id)?\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\/-]{5,})/gi,
+    replacement: "$1[redacted-id]",
+  },
+  // A bare 9-18 digit run (bank account numbers). Last, so 12-digit Aadhaar / 13-16 digit
+  // cards are already labelled by their more specific rules.
+  { type: "account", pattern: /\b\d{9,18}\b/g, replacement: "[redacted-account]" },
 ];
 
 @Injectable()
