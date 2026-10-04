@@ -9,6 +9,9 @@ import { AiQueueService } from "../../ops/ai-queue.service";
 import { ReportsService } from "../../../reports/reports.service";
 import { DashboardService } from "../../../dashboard/dashboard.service";
 import { MAX_RELATED_SOURCE_EXPANSIONS, SOURCE_PRIORITY } from "../rag.constants";
+import { FinancialFactsService } from "../../../common/financial-facts/financial-facts.service";
+import { DataHealthService } from "../../../financial-core/data-health/data-health.service";
+import { buildFinancialFactSources } from "./financial-fact-sources";
 
 interface SourceDocument {
   sourceType: AiSourceType;
@@ -67,6 +70,8 @@ export class RagIndexingService implements OnModuleInit {
     private reports: ReportsService,
     private dashboard: DashboardService,
     private redaction: RedactionService,
+    private facts: FinancialFactsService,
+    private dataHealth: DataHealthService,
   ) {}
 
   onModuleInit() {
@@ -224,7 +229,8 @@ export class RagIndexingService implements OnModuleInit {
         sourceType: "DOCUMENT",
         sourceId: doc.id,
         text,
-        metadata: { title: doc.fileName, category: doc.category, tags: doc.tags },
+        // entityType/entityId/documentType let retrieval relate a document to the record it is about.
+        metadata: { title: doc.fileName, category: doc.category, tags: doc.tags, entityType: doc.entityType, entityId: doc.entityId, documentType: doc.documentType },
         sourceCreatedAt: doc.createdAt,
       });
     }
@@ -266,6 +272,17 @@ export class RagIndexingService implements OnModuleInit {
       this.logger.warn(`Skipping monthly report indexing for ${userId}: ${(err as Error).message}`);
     }
 
+    // Structured facts about the user's own records (summary, policies, investments, loans,
+    // emergency fund, data health). Best-effort like the report/snapshot sources above: a
+    // failure here skips these sources rather than failing the whole reindex.
+    try {
+      for (const fact of await this.gatherFinancialFacts(userId)) {
+        sources.push({ ...fact, text: this.redaction.redact(fact.text).text });
+      }
+    } catch (err) {
+      this.logger.warn(`Skipping financial fact indexing for ${userId}: ${(err as Error).name}`);
+    }
+
     if (monthlySnapshot) {
       sources.push({
         sourceType: "SNAPSHOT",
@@ -277,6 +294,51 @@ export class RagIndexingService implements OnModuleInit {
     }
 
     return sources;
+  }
+
+  // Reads each table once for the whole user (no per-record queries), always scoped by userId.
+  private async gatherFinancialFacts(userId: string) {
+    const db = this.prisma.client;
+    const [position, cashFlow, emergency, policies, investments, cashflows, loans, health] = await Promise.all([
+      this.facts.getFinancialPosition(userId),
+      this.facts.getMonthlyCashFlow(userId),
+      this.facts.getEmergencyCoverage(userId),
+      db.insurancePolicy.findMany({ where: { userId }, take: 200 }),
+      db.investment.findMany({ where: { userId }, take: 200, include: { valuations: { orderBy: { valuedAt: "desc" }, take: 1 } } }),
+      db.investmentCashflow.groupBy({ by: ["investmentId", "type"], where: { userId }, _sum: { amount: true } }),
+      db.loan.findMany({ where: { userId }, take: 200 }),
+      this.dataHealth.getReport(userId),
+    ]);
+
+    const totals = new Map<string, { contributions: number; withdrawals: number }>();
+    for (const row of cashflows) {
+      const t = totals.get(row.investmentId) ?? { contributions: 0, withdrawals: 0 };
+      const amount = Number(row._sum.amount ?? 0);
+      if (row.type === "CONTRIBUTION" || row.type === "EMPLOYER_CONTRIBUTION") t.contributions += amount;
+      if (row.type === "WITHDRAWAL" || row.type === "SALE") t.withdrawals += amount;
+      totals.set(row.investmentId, t);
+    }
+
+    return buildFinancialFactSources(
+      {
+        position,
+        cashFlow,
+        emergency,
+        policies: policies.map((p) => ({
+          id: p.id, provider: p.provider, type: p.type, premiumAmount: p.premiumAmount.toString(), premiumFrequency: p.premiumFrequency,
+          coverageAmount: p.coverageAmount.toString(), renewalDate: p.renewalDate, nomineeName: p.nomineeName, policyNumber: p.policyNumber,
+        })),
+        investments: investments.map((i) => ({
+          id: i.id, name: i.name, type: i.type,
+          currentValue: (i.valuations[0]?.value ?? i.currentValue).toString(), valuedAt: i.valuations[0]?.valuedAt ?? null,
+          contributions: (totals.get(i.id)?.contributions ?? 0).toFixed(2), withdrawals: (totals.get(i.id)?.withdrawals ?? 0).toFixed(2),
+          sipActive: i.sipActive, monthlyContribution: i.monthlyContribution?.toString() ?? null,
+        })),
+        loans: loans.map((l) => ({ id: l.id, lender: l.lender, type: l.type, outstandingPrincipal: l.outstandingPrincipal.toString(), emiAmount: l.emiAmount.toString(), interestRateAnnual: l.interestRateAnnual.toString() })),
+        dataHealth: health.issues.map((i) => ({ code: i.code, message: i.message, count: i.count, amount: i.amount })),
+      },
+      new Date(),
+    );
   }
 
   private async safeDashboardSummary(userId: string) {
@@ -324,6 +386,29 @@ function computeRelatedSourceIds(sources: SourceDocument[]): Map<string, string[
     related.set(sourceKey(doc), links);
   }
 
+  // A document linked to a record (a policy PDF -> that policy) and the FINANCIAL_FACT source
+  // for the same record point at each other, so a question answered by one also pulls in the
+  // other. Purely structural: the link is the user's own explicit entityType/entityId.
+  const factsByEntity = new Map<string, string>();
+  for (const f of sources) {
+    if (f.sourceType === "FINANCIAL_FACT" && typeof f.metadata.entityType === "string" && typeof f.metadata.entityId === "string") {
+      factsByEntity.set(`${f.metadata.entityType}:${f.metadata.entityId}`, f.sourceId);
+    }
+  }
+  const docsByEntity = new Map<string, string[]>();
+  for (const d of documents) {
+    if (typeof d.metadata.entityType !== "string" || typeof d.metadata.entityId !== "string") continue;
+    const key = `${d.metadata.entityType}:${d.metadata.entityId}`;
+    docsByEntity.set(key, [...(docsByEntity.get(key) ?? []), d.sourceId]);
+    const factId = factsByEntity.get(key);
+    if (factId) related.set(sourceKey(d), [...(related.get(sourceKey(d)) ?? []), factId].slice(0, MAX_RELATED_SOURCE_EXPANSIONS));
+  }
+  for (const f of sources) {
+    if (f.sourceType !== "FINANCIAL_FACT" || typeof f.metadata.entityType !== "string") continue;
+    const docs = docsByEntity.get(`${f.metadata.entityType}:${f.metadata.entityId}`);
+    if (docs?.length) related.set(sourceKey(f), docs.slice(0, MAX_RELATED_SOURCE_EXPANSIONS));
+  }
+
   const report = sources.find((s) => s.sourceType === "REPORT");
   const snapshot = sources.find((s) => s.sourceType === "SNAPSHOT");
   if (report && snapshot) {
@@ -354,11 +439,14 @@ function snapshotToText(summary: {
   investmentsValue: string;
   totalDebt: string;
   propertyValue: string;
+  emergencyCash?: string;
+  totalCash?: string;
   insights: { title: string; detail: string }[];
 }): string {
   const insightLines = summary.insights.map((i) => `${i.title}: ${i.detail}`).join("\n");
   return (
-    `Current financial snapshot. Net worth: ${summary.netWorth}. Cash balance: ${summary.cashBalance}. ` +
+    `Current financial snapshot. Net worth: ${summary.netWorth}. Available cash: ${summary.cashBalance}` +
+    `${summary.emergencyCash !== undefined ? `, emergency cash: ${summary.emergencyCash}, total cash: ${summary.totalCash ?? summary.cashBalance}` : ""}. ` +
     `Monthly income: ${summary.monthlyIncome}. Monthly expenses: ${summary.monthlyExpenses}. ` +
     `Savings rate: ${summary.savingsRate.toFixed(1)}%. Investments value: ${summary.investmentsValue}. ` +
     `Total debt: ${summary.totalDebt}. Property value: ${summary.propertyValue}.\n${insightLines}`
