@@ -34,34 +34,95 @@ export class LegacyMigrationService {
     private audit: AuditService,
   ) {}
 
-  async run(userId: string, dryRun = true): Promise<LegacyMigrationReport> {
+  async run(
+    userId: string,
+    dryRun = true,
+  ): Promise<LegacyMigrationReport> {
     const db = this.prisma.client;
 
-    const [expenses, investments, cashflowRefs, entryRefs, contributions] = await Promise.all([
+    const [
+      expenses,
+      investments,
+      cashflowRefs,
+      entryRefs,
+      contributions,
+    ] = await Promise.all([
       db.expense.findMany({
-        where: { userId, category: { type: "SAVINGS" } },
+        where: {
+          userId,
+          category: { type: "SAVINGS" },
+        },
         select: {
           id: true,
           amount: true,
           spentAt: true,
           merchant: true,
           notes: true,
-          category: { select: { name: true } },
+          category: {
+            select: {
+              name: true,
+            },
+          },
         },
-        orderBy: { spentAt: "asc" },
+        orderBy: {
+          spentAt: "asc",
+        },
       }),
-      db.investment.findMany({ where: { userId }, select: { id: true, name: true } }),
-      db.investmentCashflow.findMany({ where: { userId, sourceExpenseId: { not: null } }, select: { sourceExpenseId: true } }),
-      db.emergencyFundEntry.findMany({ where: { userId, sourceExpenseId: { not: null } }, select: { sourceExpenseId: true } }),
+
+      db.investment.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          name: true,
+        },
+      }),
+
       db.investmentCashflow.findMany({
-        where: { userId, type: "CONTRIBUTION" },
-        select: { investmentId: true, occurredAt: true, amount: true },
+        where: {
+          userId,
+          sourceExpenseId: { not: null },
+        },
+        select: {
+          sourceExpenseId: true,
+        },
+      }),
+
+      db.emergencyFundEntry.findMany({
+        where: {
+          userId,
+          sourceExpenseId: { not: null },
+        },
+        select: {
+          sourceExpenseId: true,
+        },
+      }),
+
+      db.investmentCashflow.findMany({
+        where: {
+          userId,
+          type: "CONTRIBUTION",
+        },
+        select: {
+          investmentId: true,
+          occurredAt: true,
+          amount: true,
+        },
       }),
     ]);
 
     const migrated = new Set<string>();
-    for (const r of cashflowRefs) if (r.sourceExpenseId) migrated.add(r.sourceExpenseId);
-    for (const r of entryRefs) if (r.sourceExpenseId) migrated.add(r.sourceExpenseId);
+
+    for (const r of cashflowRefs) {
+      if (r.sourceExpenseId) {
+        migrated.add(r.sourceExpenseId);
+      }
+    }
+
+    for (const r of entryRefs) {
+      if (r.sourceExpenseId) {
+        migrated.add(r.sourceExpenseId);
+      }
+    }
 
     const plan = planLegacyMigration({
       expenses: expenses.map((e) => ({
@@ -72,8 +133,11 @@ export class LegacyMigrationService {
         notes: e.notes,
         categoryName: e.category.name,
       })),
+
       investments,
+
       alreadyMigratedExpenseIds: migrated,
+
       existingContributions: contributions.map((c) => ({
         investmentId: c.investmentId,
         occurredAt: c.occurredAt,
@@ -89,11 +153,18 @@ export class LegacyMigrationService {
         items.push(item);
         continue;
       }
+
       const source = byId.get(item.expenseId);
+
       if (!source) {
-        items.push({ ...item, status: "ERROR", reason: "Source expense disappeared during migration." });
+        items.push({
+          ...item,
+          status: "ERROR",
+          reason: "Source expense disappeared during migration.",
+        });
         continue;
       }
+
       try {
         if (item.target === "EMERGENCY_ALLOCATION") {
           await db.emergencyFundEntry.create({
@@ -107,7 +178,10 @@ export class LegacyMigrationService {
               notes: source.notes ?? undefined,
             },
           });
-        } else if (item.target === "INVESTMENT_CONTRIBUTION" && item.investmentId) {
+        } else if (
+          item.target === "INVESTMENT_CONTRIBUTION" &&
+          item.investmentId
+        ) {
           await db.investmentCashflow.create({
             data: {
               userId,
@@ -122,49 +196,70 @@ export class LegacyMigrationService {
             },
           });
         }
+
         items.push(item);
       } catch (err) {
         if (isUniqueViolation(err)) {
-          // Lost a race with another run (or a manual entry took the slot): treat as
-          // already handled, never as a failure and never as a second row.
-          items.push({ ...item, status: "DUPLICATE", reason: "Already created by a concurrent run or entry." });
+          // Lost a race with another run (or a manual entry took the slot):
+          // treat as already handled, never as a failure and never as a second row.
+          items.push({
+            ...item,
+            status: "DUPLICATE",
+            reason: "Already created by a concurrent run or entry.",
+          });
         } else {
-          // Surfaced, never swallowed — and the type of error only, no financial payload.
-          this.logger.error(`Legacy migration failed for expense ${item.expenseId}: ${(err as Error).name}`);
-          items.push({ ...item, status: "ERROR", reason: "Database error while migrating this expense." });
+          // Surfaced, never swallowed — and the type of error only,
+          // no financial payload.
+          this.logger.error(
+            `Legacy migration failed for expense ${item.expenseId}: ${
+              (err as Error).name
+            }`,
+          );
+
+          items.push({
+            ...item,
+            status: "ERROR",
+            reason: "Database error while migrating this expense.",
+          });
         }
       }
     }
 
     const summary = summarize(items);
 
-if (!dryRun) {
-  const auditMetadata = {
-    summary: {
-      MIGRATED: summary.MIGRATED,
-      SKIPPED: summary.SKIPPED,
-      DUPLICATE: summary.DUPLICATE,
-      WARNING: summary.WARNING,
-      ERROR: summary.ERROR,
-    },
-    items: items
-      .slice(0, AUDIT_ITEM_CAP)
-      .map((i) => ({
-        expenseId: i.expenseId,
-        status: i.status,
-        target: i.target,
-        periodKey: i.periodKey ?? null,
-      })),
-    truncated: items.length > AUDIT_ITEM_CAP,
-  };
+    if (!dryRun) {
+      const auditMetadata = {
+        summary: {
+          MIGRATED: summary.MIGRATED,
+          SKIPPED: summary.SKIPPED,
+          DUPLICATE: summary.DUPLICATE,
+          WARNING: summary.WARNING,
+          ERROR: summary.ERROR,
+        },
 
-  await this.audit.log(
-    "FINANCIAL_LEGACY_MIGRATION",
-    userId,
-    auditMetadata,
-  );
-}
+        items: items
+          .slice(0, AUDIT_ITEM_CAP)
+          .map((i) => ({
+            expenseId: i.expenseId,
+            status: i.status,
+            target: i.target,
+            periodKey: i.periodKey ?? null,
+          })),
+
+        truncated: items.length > AUDIT_ITEM_CAP,
+      };
+
+      await this.audit.log(
+        "FINANCIAL_LEGACY_MIGRATION",
+        userId,
+        auditMetadata,
+      );
     }
-    return { dryRun, summary, items };
+
+    return {
+      dryRun,
+      summary,
+      items,
+    };
   }
 }
