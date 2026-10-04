@@ -198,6 +198,8 @@ model User {
   investmentCashflows  InvestmentCashflow[]  // NEW (financial-core upgrade)
   investmentValuations InvestmentValuation[] // NEW (financial-core upgrade)
   emergencyFundEntries EmergencyFundEntry[]  // NEW (financial-core upgrade)
+  documentDiscrepancies DocumentDiscrepancy[] // NEW (document entity linking)
+  loanPayments         LoanPayment[]         // NEW (loan EMI split)
   suggestionRankingProfile SuggestionRankingProfile?
 
   @@index([householdId])
@@ -633,6 +635,7 @@ model Loan {
   updatedAt              DateTime  @updatedAt
 
   properties Property[]
+  payments   LoanPayment[] // NEW (loan EMI split)
 
   @@index([userId])
 }
@@ -958,11 +961,27 @@ model Document {
   ocrStatus    OcrStatus         @default(NOT_APPLICABLE)
   ocrText      String?
   summary      String?
+  // NEW (document entity linking): optionally tie a document to the real record it is about
+  // (a policy, a loan, ...). Both NULL = unlinked, which is every pre-existing document. No
+  // formal FK because one pair of columns points at several tables; ownership of the target is
+  // verified server-side (DocumentEntityService) every time a link is written.
+  entityType   DocumentEntityType?
+  entityId     String?
+  // Fine-grained kind ("POLICY_PDF", "PREMIUM_RECEIPT", "CAS", ...), validated against an
+  // allowlist in code rather than an enum so new kinds don't need a migration.
+  documentType String?
+  // How structured facts were extracted from ocrText (extractor name/version, which fields
+  // were found, OCR confidence). Extracted values never overwrite authoritative data — a
+  // conflict becomes a DocumentDiscrepancy for the user to review.
+  extractionMetadata   Json?
+  extractionConfidence Decimal?  @db.Decimal(4, 3)
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+  discrepancies DocumentDiscrepancy[]
 
   @@index([userId, category])
   @@index([userId, expiryDate])
+  @@index([userId, entityType, entityId])
 }
 
 // --- Phase 10: AI Gateway ops (prompt registry, interaction log, background jobs) --
@@ -1074,6 +1093,8 @@ enum AiSourceType {
   REPORT
   COACH_INTERACTION
   ALERT
+  FINANCIAL_FACT // NEW: structured facts about the user's own records (summary, policies,
+  // investments, loans, emergency fund, data health). The record kind lives in metadata.factType.
   SNAPSHOT // a point-in-time dashboard snapshot indexed at reindex time — see the
   // README limitation on why this is "current state as of last reindex", not a real
   // historical time series (no periodic snapshots are stored anywhere in the app yet).
@@ -1482,6 +1503,8 @@ enum TransactionKind {
   EXPENSE
   LOAN_EMI
   INVESTMENT_CONTRIBUTION
+  INSURANCE_PREMIUM // NEW: routes to a policy's linked premium expense, never a generic expense
+  OWN_ACCOUNT_TRANSFER // NEW: movement between the user's own accounts — not income or spending
 }
 
 model IngestionBatch {
@@ -1546,6 +1569,9 @@ model IngestionReviewItem {
   // (which comparison applies), never used to auto-create/auto-modify a Loan/
   // Investment record.
   transactionKind           TransactionKind     @default(EXPENSE)
+  // NEW: the id of the Loan / Investment / InsurancePolicy the line was matched to at ingest
+  // time, or NULL when it could not be matched (the user must then pick the target explicitly).
+  matchedRecordId           String?
   reconciliationNote        String?
   missingFields             String[]
   overallConfidence         Decimal             @db.Decimal(4, 3)
@@ -1765,4 +1791,73 @@ model EmergencyFundEntry {
 
   @@unique([sourceExpenseId], map: "EmergencyFundEntry_sourceExpenseId_key")
   @@index([userId, occurredAt])
+}
+
+
+// --- Document entity linking & discrepancies ---------------------------------------------
+
+enum DocumentEntityType {
+  POLICY
+  INVESTMENT
+  LOAN
+  PROPERTY
+  INCOME
+  TAX
+  BUSINESS
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  KEPT_DATABASE // user reviewed it and confirmed the database value is right
+  DISMISSED
+  RESOLVED // database and document now agree
+}
+
+// A conflict between a value extracted from a document and the value stored in the database.
+// Created instead of overwriting: OCR is fallible, so the database stays authoritative until
+// the user decides. One row per (document, entity, field) keeps re-runs idempotent.
+model DocumentDiscrepancy {
+  id            String             @id @default(cuid())
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  document      Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId    String
+  entityType    DocumentEntityType
+  entityId      String
+  field         String // e.g. "premiumAmount", "coverageAmount", "renewalDate"
+  documentValue String
+  databaseValue String
+  status        DiscrepancyStatus  @default(OPEN)
+  createdAt     DateTime           @default(now())
+  resolvedAt    DateTime?
+
+  @@unique([documentId, entityType, entityId, field])
+  @@index([userId, status])
+}
+
+
+// --- Loan EMI split ------------------------------------------------------------------------
+//
+// An EMI is not an expense: only its INTEREST portion is spending; the PRINCIPAL portion repays
+// a liability (it lowers Loan.outstandingPrincipal, and leaves cash without being an expense).
+// One row per (loan, period) is the deterministic idempotency key for a recorded EMI.
+model LoanPayment {
+  id                 String   @id @default(cuid())
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId             String
+  loan               Loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  loanId             String
+  period             String // "YYYY-MM"
+  paidAt             DateTime
+  amount             Decimal  @db.Decimal(14, 2) // cash that left the account
+  interestPortion    Decimal  @db.Decimal(14, 2) // recorded as an Expense (sourceType LOAN_EMI, sourceId loanId, sourceReference period)
+  principalPortion   Decimal  @db.Decimal(14, 2) // reduces the liability; NOT an expense
+  outstandingBefore  Decimal  @db.Decimal(14, 2)
+  outstandingAfter   Decimal  @db.Decimal(14, 2)
+  // "MANUAL" | "BANK_INGESTION"
+  origin             String   @default("MANUAL")
+  createdAt          DateTime @default(now())
+
+  @@unique([loanId, period], map: "LoanPayment_idempotency_key")
+  @@index([userId, paidAt])
 }
