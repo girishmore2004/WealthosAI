@@ -11,6 +11,8 @@ export const SOURCE_PRIORITY: Record<AiSourceType, number> = {
   DOCUMENT: 3,
   REPORT: 3,
   SNAPSHOT: 2,
+  // Structured facts computed from the user's own records are authoritative, like a Report.
+  FINANCIAL_FACT: 3,
   COACH_INTERACTION: 2,
   ALERT: 1,
 };
