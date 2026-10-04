@@ -223,6 +223,7 @@ const SOURCE_TYPES: { value: AiSourceType; label: string }[] = [
   { value: "COACH_INTERACTION", label: "Coach history" },
   { value: "ALERT", label: "Alerts" },
   { value: "SNAPSHOT", label: "Current snapshot" },
+  { value: "FINANCIAL_FACT", label: "Your records" },
 ];
 
 const SUGGESTED_QUERIES = [
