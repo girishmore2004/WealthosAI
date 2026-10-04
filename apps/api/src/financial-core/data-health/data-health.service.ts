@@ -7,6 +7,7 @@ import {
   ExpenseRow,
   IncomeRow,
   InvestmentRow,
+  detectDocumentDiscrepancies,
   detectDuplicateRecurringEvents,
   detectDuplicateSalary,
   detectExpenseDuplicates,
@@ -14,6 +15,7 @@ import {
   detectInvestmentIssues,
   detectLegacySavingsExpenses,
   detectNegativeCash,
+  detectUnlinkedDocuments,
 } from "./data-health.detectors";
 
 export interface DataHealthReport {
@@ -42,7 +44,7 @@ export class DataHealthService {
     const now = new Date();
     const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - LOOKBACK_MONTHS, 1));
 
-    const [incomes, expenses, contributions, policies, investments, cashflowRefs, entryRefs, position] = await Promise.all([
+    const [incomes, expenses, contributions, policies, investments, cashflowRefs, entryRefs, position, documents, openDiscrepancies] = await Promise.all([
       db.income.findMany({
         where: { userId, receivedAt: { gte: since } },
         select: { id: true, source: true, amount: true, receivedAt: true, generatedFromRecurringId: true },
@@ -78,6 +80,8 @@ export class DataHealthService {
       db.investmentCashflow.findMany({ where: { userId, sourceExpenseId: { not: null } }, select: { sourceExpenseId: true } }),
       db.emergencyFundEntry.findMany({ where: { userId, sourceExpenseId: { not: null } }, select: { sourceExpenseId: true } }),
       this.facts.getFinancialPosition(userId),
+      db.document.findMany({ where: { userId }, select: { id: true, category: true, entityType: true } }),
+      db.documentDiscrepancy.findMany({ where: { userId, status: "OPEN" }, select: { id: true } }),
     ]);
 
     const migrated = new Set<string>();
@@ -125,6 +129,8 @@ export class DataHealthService {
       ...detectInsuranceIssues(expenseRows, policies.map((p) => ({ id: p.id, premiumAmount: p.premiumAmount.toString() }))),
       ...detectInvestmentIssues(investmentRows, now),
       ...detectNegativeCash(position.cash.available),
+      ...detectUnlinkedDocuments(documents.map((d) => ({ id: d.id, category: d.category, entityType: d.entityType }))),
+      ...detectDocumentDiscrepancies(openDiscrepancies),
     ];
 
     const has = (...codes: DataHealthIssue["code"][]) => issues.some((i) => codes.includes(i.code));
@@ -136,6 +142,7 @@ export class DataHealthService {
       { label: "Insurance linked", ok: !has("MISSING_SOURCE_REFERENCE", "DUPLICATE_INSURANCE_PREMIUM") },
       { label: "Investment valuations current", ok: !has("STALE_INVESTMENT_VALUATION", "MISSING_INVESTMENT_VALUATION") },
       { label: "Cash position consistent", ok: !has("NEGATIVE_AVAILABLE_CASH") },
+      { label: "Documents linked and matching", ok: !has("UNLINKED_DOCUMENT", "DOCUMENT_DISCREPANCY") },
     ];
 
     return {
@@ -144,9 +151,9 @@ export class DataHealthService {
       status: issues.some((i) => i.severity === "WARNING") ? "NEEDS_REVIEW" : "HEALTHY",
       issues,
       checks,
-      // Honest about scope: these spec'd checks need document linking / premium schedules,
-      // which are later phases, so they are NOT silently reported as passing.
-      notChecked: ["UNLINKED_DOCUMENT", "MISSING_POLICY_PAYMENT"],
+      // Honest about scope: this check needs a premium schedule model that does not exist yet,
+      // so it is NOT silently reported as passing.
+      notChecked: ["MISSING_POLICY_PAYMENT"],
     };
   }
 }
