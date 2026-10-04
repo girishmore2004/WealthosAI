@@ -59,3 +59,19 @@ describe("HttpExceptionFilter", () => {
     expect(json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: HttpStatus.INTERNAL_SERVER_ERROR }));
   });
 });
+
+describe("HttpExceptionFilter — no internal detail leaks to the client", () => {
+  it("returns a generic message for an unexpected error, never its own message", () => {
+    const { host, json } = mockHost();
+    const spy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+    new HttpExceptionFilter().catch(new Error('Invalid `prisma.expense.create()` invocation: amount "15000" email "a@b.com"'), host);
+
+    const body = json.mock.calls[0][0];
+    expect(body.message).toBe("Internal server error");
+    expect(JSON.stringify(body)).not.toMatch(/prisma|15000|a@b\.com/);
+    // The server log keeps the error NAME only, not the message/args.
+    expect(spy.mock.calls[0].join(" ")).not.toMatch(/15000|a@b\.com/);
+    spy.mockRestore();
+  });
+});
