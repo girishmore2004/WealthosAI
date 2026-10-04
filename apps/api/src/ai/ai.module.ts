@@ -37,7 +37,6 @@ import { AiJobsController } from "./controllers/ai-jobs.controller";
 // them otherwise need.
 @Module({
   controllers: [AiHealthController, AiJobsController],
-
   providers: [
     GroqClient,
     ModelRouterService,
@@ -56,14 +55,8 @@ import { AiJobsController } from "./controllers/ai-jobs.controller";
     HealthSelfTestHandler,
     RagAutoReindexService,
   ],
-
-  exports: [
-    AiGatewayService,
-    AiQueueService,
-    AiCacheService,
-    PromptRegistryService,
-    RagAutoReindexService,
-    RedactionService,
-  ],
+  // RedactionService is exported because RagIndexingService (RagModule) scrubs identifiers from
+  // document text before it is indexed.
+  exports: [AiGatewayService, AiQueueService, AiCacheService, PromptRegistryService, RagAutoReindexService, RedactionService],
 })
 export class AiModule {}
