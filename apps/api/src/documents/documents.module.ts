@@ -7,6 +7,8 @@ import { MockOcrAdapter } from "./adapters/mock-ocr.adapter";
 import { TesseractOcrAdapter } from "./adapters/tesseract-ocr.adapter";
 import { OCR_ADAPTER, ocrAdapterFactory } from "./adapters/ocr-adapter.factory";
 import { DocumentOcrHandler } from "./document-ocr.handler";
+import { DocumentEntityService } from "./document-entity.service";
+import { DocumentReconciliationService } from "./document-reconciliation.service";
 import { AiModule } from "../ai/ai.module";
 import { CopilotIngestionModule } from "../ai/copilot-ingestion/copilot-ingestion.module";
 
@@ -27,6 +29,8 @@ import { CopilotIngestionModule } from "../ai/copilot-ingestion/copilot-ingestio
   controllers: [DocumentsController],
   providers: [
     DocumentsService,
+    DocumentEntityService,
+    DocumentReconciliationService,
     LocalDiskStorageAdapter,
     MockOcrAdapter,
     TesseractOcrAdapter,
@@ -38,6 +42,6 @@ import { CopilotIngestionModule } from "../ai/copilot-ingestion/copilot-ingestio
       inject: [ConfigService, TesseractOcrAdapter, MockOcrAdapter],
     },
   ],
-  exports: [DocumentsService],
+  exports: [DocumentsService, DocumentEntityService, DocumentReconciliationService],
 })
 export class DocumentsModule {}
