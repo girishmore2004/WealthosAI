@@ -3,6 +3,8 @@ import { DocumentsService, MAX_DOCUMENT_SIZE_BYTES } from "../src/documents/docu
 import { PrismaService } from "../src/prisma/prisma.service";
 import { LocalDiskStorageAdapter } from "../src/documents/adapters/local-disk-storage.adapter";
 import { AiQueueService } from "../src/ai/ops/ai-queue.service";
+import { DocumentEntityService } from "../src/documents/document-entity.service";
+import { DocumentReconciliationService } from "../src/documents/document-reconciliation.service";
 import { DocumentOcrHandler } from "../src/documents/document-ocr.handler";
 import { OCR_ADAPTER } from "../src/documents/adapters/ocr-adapter.factory";
 import { OcrNotApplicableError } from "../src/documents/adapters/ocr.adapter";
@@ -26,6 +28,12 @@ function fakeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.
   };
 }
 
+const mockEntities = {
+  validateLink: jest.fn().mockResolvedValue({ entityType: null, entityId: null }),
+  validateDocumentType: jest.fn().mockReturnValue(null),
+};
+const mockReconciliation = { reconcile: jest.fn().mockResolvedValue({ supported: false }) };
+
 describe("DocumentsService.upload", () => {
   let service: DocumentsService;
   const mockPrisma = {
@@ -47,6 +55,8 @@ describe("DocumentsService.upload", () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: LocalDiskStorageAdapter, useValue: mockStorage },
         { provide: AiQueueService, useValue: mockAiQueue },
+        { provide: DocumentEntityService, useValue: mockEntities },
+        { provide: DocumentReconciliationService, useValue: mockReconciliation },
       ],
     }).compile();
     service = moduleRef.get(DocumentsService);
@@ -130,6 +140,8 @@ describe("DocumentsService.download", () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: LocalDiskStorageAdapter, useValue: mockStorage },
         { provide: AiQueueService, useValue: mockAiQueue },
+        { provide: DocumentEntityService, useValue: mockEntities },
+        { provide: DocumentReconciliationService, useValue: mockReconciliation },
       ],
     }).compile();
     service = moduleRef.get(DocumentsService);
@@ -186,6 +198,7 @@ describe("DocumentOcrHandler (new — async OCR processing)", () => {
         { provide: AiQueueService, useValue: mockAiQueue },
         { provide: RagAutoReindexService, useValue: mockRagAutoReindex },
         { provide: CopilotIngestionService, useValue: mockCopilotIngestion },
+        { provide: DocumentReconciliationService, useValue: mockReconciliation },
       ],
     }).compile();
     handler = moduleRef.get(DocumentOcrHandler);
@@ -286,5 +299,64 @@ describe("TesseractOcrAdapter (new — mime-type gate only, no real OCR engine i
         "OTHER",
       ),
     ).rejects.toThrow(OcrNotApplicableError);
+  });
+});
+
+describe("DocumentsService — entity linking", () => {
+  let service: DocumentsService;
+  const mockStorage = { save: jest.fn().mockResolvedValue("key-1"), read: jest.fn(), delete: jest.fn() };
+  const mockAiQueue = { enqueue: jest.fn().mockResolvedValue({}), registerHandler: jest.fn() };
+  const mockPrisma2 = { client: { document: { create: jest.fn().mockResolvedValue({ id: "doc1" }), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({ id: "doc1", entityType: "POLICY", entityId: "p1" }), findMany: jest.fn().mockResolvedValue([]) } } };
+  const ents = { validateLink: jest.fn(), validateDocumentType: jest.fn().mockReturnValue(null) };
+  const recon = { reconcile: jest.fn().mockResolvedValue({ supported: true }) };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    ents.validateLink.mockResolvedValue({ entityType: "POLICY", entityId: "p1" });
+    mockPrisma2.client.document.findUnique.mockResolvedValue({ id: "doc1", userId: "user-1", entityType: null, entityId: null, ocrStatus: "DONE", storageKey: "k" });
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DocumentsService,
+        { provide: PrismaService, useValue: mockPrisma2 },
+        { provide: LocalDiskStorageAdapter, useValue: mockStorage },
+        { provide: AiQueueService, useValue: mockAiQueue },
+        { provide: DocumentEntityService, useValue: ents },
+        { provide: DocumentReconciliationService, useValue: recon },
+      ],
+    }).compile();
+    service = moduleRef.get(DocumentsService);
+  });
+
+  it("verifies the link BEFORE storing anything on upload, and refuses a foreign record", async () => {
+    ents.validateLink.mockRejectedValue(new Error("not found"));
+    await expect(service.upload("user-1", fakeFile(), { category: "OTHER" as never, entityType: "POLICY", entityId: "victim" } as never)).rejects.toThrow();
+    expect(mockStorage.save).not.toHaveBeenCalled();
+    expect(ents.validateLink).toHaveBeenCalledWith("user-1", "POLICY", "victim");
+  });
+
+  it("saves the verified link on the new document", async () => {
+    await service.upload("user-1", fakeFile(), { category: "OTHER" as never, entityType: "POLICY", entityId: "p1" } as never);
+    expect(mockPrisma2.client.document.create.mock.calls[0][0].data).toMatchObject({ entityType: "POLICY", entityId: "p1" });
+  });
+
+  it("re-verifies on re-link, then reconciles an already-OCR'd document", async () => {
+    await service.update("user-1", "doc1", { entityType: "POLICY", entityId: "p1" } as never);
+    expect(ents.validateLink).toHaveBeenCalledWith("user-1", "POLICY", "p1");
+    expect(recon.reconcile).toHaveBeenCalledWith("user-1", "doc1");
+  });
+
+  it("unlinks with null + null, and an edit that does not touch the link never re-validates it", async () => {
+    ents.validateLink.mockResolvedValue({ entityType: null, entityId: null });
+    await service.update("user-1", "doc1", { entityType: null, entityId: null } as never);
+    expect(mockPrisma2.client.document.update.mock.calls[0][0].data).toMatchObject({ entityType: null, entityId: null });
+
+    ents.validateLink.mockClear();
+    await service.update("user-1", "doc1", { tags: ["x"] } as never);
+    expect(ents.validateLink).not.toHaveBeenCalled();
+  });
+
+  it("lists documents by entity only after verifying the caller owns that entity", async () => {
+    await service.listByEntity("user-1", "POLICY", "p1");
+    expect(mockPrisma2.client.document.findMany.mock.calls[0][0].where).toMatchObject({ userId: "user-1", entityType: "POLICY", entityId: "p1" });
   });
 });
