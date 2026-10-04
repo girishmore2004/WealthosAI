@@ -12,6 +12,8 @@ import { RagController } from "./rag.controller";
 import { ReportsModule } from "../../reports/reports.module";
 import { DashboardModule } from "../../dashboard/dashboard.module";
 import { AiModule } from "../ai.module";
+import { FinancialFactsModule } from "../../common/financial-facts/financial-facts.module";
+import { FinancialCoreModule } from "../../financial-core/financial-core.module";
 
 // Imports AiModule for AiGatewayService/AiQueueService (query rewriting, reranking,
 // synthesis, and indexing all call through the gateway; indexing also enqueues/
@@ -19,7 +21,9 @@ import { AiModule } from "../ai.module";
 // dependency is one-directional, both register independently in AppModule — so
 // there's no module cycle to work around here.
 @Module({
-  imports: [AiModule, ReportsModule, DashboardModule],
+  // FinancialFactsModule / FinancialCoreModule: the index now also holds structured facts about
+  // the user's own records (FINANCIAL_FACT), built from FinancialFactsService and DataHealthService.
+  imports: [AiModule, ReportsModule, DashboardModule, FinancialFactsModule, FinancialCoreModule],
   controllers: [RagController],
   providers: [
     ChunkerService,
