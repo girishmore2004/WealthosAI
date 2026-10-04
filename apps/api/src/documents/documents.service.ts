@@ -6,6 +6,8 @@ import { DocumentStorageAdapter } from "./adapters/document-storage.adapter";
 import { LocalDiskStorageAdapter } from "./adapters/local-disk-storage.adapter";
 import { AiQueueService } from "../ai/ops/ai-queue.service";
 import { detectFileType, extensionFor } from "./file-signature.util";
+import { DocumentEntityService } from "./document-entity.service";
+import { DocumentReconciliationService } from "./document-reconciliation.service";
 
 export const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 export const ALLOWED_MIME_TYPES = [
@@ -23,6 +25,8 @@ export class DocumentsService {
     private prisma: PrismaService,
     @Inject(LocalDiskStorageAdapter) private storage: DocumentStorageAdapter,
     private aiQueue: AiQueueService,
+    private entities: DocumentEntityService,
+    private reconciliation: DocumentReconciliationService,
   ) {}
 
   // OCR now runs OFF the request path — closes the previously-flagged gap: running it
@@ -49,6 +53,11 @@ export class DocumentsService {
       throw new BadRequestException(`File type ${file.mimetype} is not supported`);
     }
 
+    // Verify the optional entity link BEFORE anything is stored: it must be a record this user
+    // owns (and entityType/entityId must come together).
+    const link = await this.entities.validateLink(userId, dto.entityType, dto.entityId);
+    const documentType = this.entities.validateDocumentType(dto.documentType);
+
     // The declared mimetype is client-controlled; require the file's real signature to match it.
     const detected = detectFileType(file.buffer);
     if (!detected || detected !== file.mimetype) {
@@ -71,6 +80,9 @@ export class DocumentsService {
         storageKey,
         tags,
         expiryDate: dto.expiryDate ? new Date(dto.expiryDate) : undefined,
+        entityType: link.entityType ?? undefined,
+        entityId: link.entityId ?? undefined,
+        documentType: documentType ?? undefined,
         ocrStatus: "PENDING",
       },
     });
@@ -102,9 +114,42 @@ export class DocumentsService {
 
   async update(userId: string, id: string, dto: UpdateDocumentDto) {
     const doc = await this.assertOwnership(userId, id);
-    return this.prisma.client.document.update({
-      where: { id: doc.id },
-      data: { ...dto, expiryDate: dto.expiryDate ? new Date(dto.expiryDate) : undefined },
+
+    const { entityType, entityId, documentType, ...rest } = dto;
+    const data: Record<string, unknown> = { ...rest, expiryDate: dto.expiryDate ? new Date(dto.expiryDate) : undefined };
+
+    // Only touch the link when the caller sent one of its fields. null + null unlinks.
+    const touchesLink = entityType !== undefined || entityId !== undefined;
+    let linkChanged = false;
+    if (touchesLink) {
+      const link = await this.entities.validateLink(userId, entityType, entityId);
+      data.entityType = link.entityType;
+      data.entityId = link.entityId;
+      linkChanged = link.entityType !== doc.entityType || link.entityId !== doc.entityId;
+    }
+    if (documentType !== undefined) data.documentType = this.entities.validateDocumentType(documentType);
+
+    const updated = await this.prisma.client.document.update({ where: { id: doc.id }, data });
+
+    // A newly linked document that already has extracted text can be checked right away.
+    // Best-effort: reconciliation never blocks or fails the edit itself.
+    if (linkChanged && updated.entityType && doc.ocrStatus === "DONE") {
+      try {
+        await this.reconciliation.reconcile(userId, doc.id);
+      } catch {
+        // Surfaced later through the data-health report; the link itself is already saved.
+      }
+    }
+    return updated;
+  }
+
+  /** Documents linked to one record (e.g. every document for a policy), scoped to the caller. */
+  async listByEntity(userId: string, entityType: string, entityId: string) {
+    // Validates the type and that the entity is the caller's own before returning anything.
+    const link = await this.entities.validateLink(userId, entityType, entityId);
+    return this.prisma.client.document.findMany({
+      where: { userId, entityType: link.entityType as never, entityId: link.entityId as string },
+      orderBy: { createdAt: "desc" },
     });
   }
 
