@@ -1,10 +1,28 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma } from "@wealthos/db";
+import { ExpenseFlowType, Prisma, Recurrence } from "@wealthos/db";
+import type { ExpenseAnalyticsDTO, ExpenseComparisonDTO, ExpenseExtremeDTO, ExpensePeriodImpactDTO } from "@wealthos/types";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateExpenseDto } from "./dto/create-expense.dto";
 import { UpdateExpenseDto } from "./dto/update-expense.dto";
 import { CreateCategoryDto } from "./dto/create-category.dto";
-import { ListExpensesQueryDto } from "./dto/list-expenses-query.dto";
+import { ExpenseSort, ListExpensesQueryDto } from "./dto/list-expenses-query.dto";
+import { ExpenseAnalyticsQueryDto } from "./dto/expense-analytics-query.dto";
+import { QuickExpenseDto } from "./dto/quick-expense.dto";
+import { percentChange, percentOf, toDecimal, toMoneyString } from "../common/financial-facts/financial-formulas";
+import {
+  DateRange,
+  ExpensePeriod,
+  addDaysUtc,
+  daysInRange,
+  isoDay,
+  parseToday,
+  previousWindow,
+  resolveCustomRange,
+  resolveExpensePeriod,
+  sameWindowLastYear,
+  startOfWeekUtc,
+  utcMidnight,
+} from "./expense-period.util";
 // Reusing the canonical merchant normalizer that Copilot Ingestion already ships, rather
 // than re-implementing normalization here. This is a read-only import of a pure,
 // side-effect-free string function (no AI/LLM call, no NestJS DI, no other file in that
@@ -19,6 +37,14 @@ export interface PagedExpensesResult {
   pageSize: number;
   totalPages: number;
 }
+
+// Analytics returns one row per calendar day, so the span is bounded (≈3 years) — longer
+// ranges should use the monthly buckets of several calls rather than one giant response.
+const MAX_ANALYTICS_DAYS = 1100;
+const ZERO = new Prisma.Decimal(0);
+
+// 1-decimal percentage as a plain number (18.055… → 18.1); null stays null.
+const pct1 = (d: Prisma.Decimal | null): number | null => (d === null ? null : Number(d.toDecimalPlaces(1, Prisma.Decimal.ROUND_HALF_UP).toString()));
 
 @Injectable()
 export class ExpensesService {
@@ -65,10 +91,14 @@ export class ExpensesService {
     }
   }
 
+  // The SPENDING view: only flowType EXPENSE rows. Every consumer of this method (dashboard,
+  // reports, coach, alerts, financial facts) therefore excludes OTHER_OUTFLOW rows from
+  // "expenses" automatically, in one place, instead of each re-filtering. The paginated page
+  // listing (listPaged) is the one that can show every kind of row.
   list(userId: string, month?: string) {
     const dateFilter = month ? this.monthRange(month) : undefined;
     return this.prisma.client.expense.findMany({
-      where: { userId, ...(dateFilter ? { spentAt: dateFilter } : {}) },
+      where: { userId, flowType: "EXPENSE", ...(dateFilter ? { spentAt: dateFilter } : {}) },
       include: { category: true },
       orderBy: { spentAt: "desc" },
     });
@@ -83,24 +113,31 @@ export class ExpensesService {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
 
+    // A server-resolved preset (Today, This Week, Last Month …) wins over raw from/to.
+    let spentAt: Prisma.DateTimeFilter | undefined;
+    if (query.period && query.period !== "CUSTOM") {
+      const r = resolveExpensePeriod(query.period as ExpensePeriod, parseToday(query.today));
+      spentAt = { gte: r.from, lt: r.toExclusive };
+    } else if (query.from || query.to) {
+      spentAt = {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lte: new Date(query.to) } : {}),
+      };
+    }
+
     const where: Prisma.ExpenseWhereInput = {
       userId,
       ...(query.categoryId ? { categoryId: query.categoryId } : {}),
-      ...(query.from || query.to
-        ? {
-            spentAt: {
-              ...(query.from ? { gte: new Date(query.from) } : {}),
-              ...(query.to ? { lte: new Date(query.to) } : {}),
-            },
-          }
-        : {}),
+      ...(spentAt ? { spentAt } : {}),
+      ...(query.flowType ? { flowType: query.flowType } : {}),
+      ...(query.paymentMethod ? { paymentMethod: query.paymentMethod } : {}),
     };
 
     const [items, total] = await Promise.all([
       this.prisma.client.expense.findMany({
         where,
         include: { category: true },
-        orderBy: { spentAt: "desc" },
+        orderBy: this.orderBy(query.sort),
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
@@ -116,14 +153,18 @@ export class ExpensesService {
     };
   }
 
-  async create(userId: string, dto: CreateExpenseDto) {
-    // Expenses are ACTUAL SPENDING. SIPs, investment contributions and emergency-fund
-    // allocations move money between buckets and are recorded as InvestmentCashflow /
-    // EmergencyFundEntry, so the legacy SAVINGS category type is refused for NEW
-    // expenses. Existing SAVINGS rows are preserved untouched (they are reconciled by
-    // the legacy migration, never deleted).
+  // Expenses are ACTUAL SPENDING. SIPs, investment contributions and emergency-fund
+  // allocations move money between buckets and are recorded as InvestmentCashflow /
+  // EmergencyFundEntry, so the legacy SAVINGS category type is refused for NEW
+  // expenses. Existing SAVINGS rows are preserved untouched (they are reconciled by
+  // the legacy migration, never deleted).
+  //
+  // Shared by create() AND update(): previously only create() enforced this, so a row
+  // created in a normal category could be PATCHed into a SAVINGS category and silently
+  // bypass the rule (and then be excluded from expense totals as "legacy savings").
+  private async assertNotSavingsCategory(categoryId: string) {
     const category = await this.prisma.client.category.findUnique({
-      where: { id: dto.categoryId },
+      where: { id: categoryId },
       select: { type: true, name: true },
     });
     if (!category) {
@@ -135,11 +176,104 @@ export class ExpensesService {
           "Record SIPs and investments as investment contributions, and emergency-fund transfers as emergency allocations.",
       );
     }
+  }
+
+  // `recurrence` (optional) saves the expense AS the recurrence template in the same write:
+  // the same fields POST /expenses/:id/recurrence/activate sets, so there is no window in which
+  // the row exists but the "repeat" the user asked for was lost. Later occurrences are produced
+  // by the recurrence engine, never created in advance.
+  async create(
+    userId: string,
+    dto: CreateExpenseDto,
+    recurrence?: { cadence: Exclude<Recurrence, "ONE_TIME">; endDate?: string },
+  ) {
+    await this.assertNotSavingsCategory(dto.categoryId);
+
+    const spentAt = new Date(dto.spentAt);
+    if (recurrence?.endDate && new Date(recurrence.endDate).getTime() < spentAt.getTime()) {
+      throw new BadRequestException("The recurrence end date cannot be before the first expense date");
+    }
 
     return this.prisma.client.expense.create({
-      data: { ...dto, userId, spentAt: new Date(dto.spentAt) },
+      data: {
+        ...dto,
+        userId,
+        spentAt,
+        ...(recurrence
+          ? {
+              isRecurring: true,
+              recurrence: recurrence.cadence,
+              recurrenceActive: true,
+              recurrenceEndDate: recurrence.endDate ? new Date(recurrence.endDate) : null,
+              nextOccurrenceAt: spentAt,
+            }
+          : {}),
+      },
       include: { category: true },
     });
+  }
+
+  // QUICK EXPENSE: a canonical Expense row (no separate "daily expense" store), saved with
+  // sensible defaults — today's date, UPI — and returned together with the figures it just
+  // changed so the UI can confirm "Today Grocery +₹500" without a second round trip.
+  async quickCreate(userId: string, dto: QuickExpenseDto) {
+    const cadence = dto.recurrence && dto.recurrence !== "ONE_TIME" ? dto.recurrence : undefined;
+    if (dto.recurrenceEndDate && !cadence) {
+      throw new BadRequestException("recurrenceEndDate needs a recurrence cadence");
+    }
+
+    const spentAt = dto.spentAt ?? isoDay(new Date());
+    const expense = await this.create(
+      userId,
+      {
+        categoryId: dto.categoryId,
+        merchant: dto.merchant,
+        amount: dto.amount,
+        spentAt,
+        paymentMethod: dto.paymentMethod ?? "UPI",
+        notes: dto.notes,
+        flowType: dto.flowType,
+      },
+      cadence ? { cadence, endDate: dto.recurrenceEndDate } : undefined,
+    );
+
+    const impact = await this.periodImpact(userId, expense.categoryId, new Date(spentAt), expense.flowType);
+    return { expense, impact };
+  }
+
+  // What a just-saved expense changed: that category's and ALL categories' totals for the
+  // expense's own day, month and year (UTC calendar). Same filters as the analytics endpoint
+  // (flow type, legacy SAVINGS rows excluded), so these numbers always agree with it.
+  async periodImpact(userId: string, categoryId: string, date: Date, flowType: ExpenseFlowType = "EXPENSE"): Promise<ExpensePeriodImpactDTO> {
+    const day = utcMidnight(date);
+    const ranges: Record<"day" | "month" | "year", DateRange> = {
+      day: { from: day, toExclusive: addDaysUtc(day, 1) },
+      month: { from: new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), 1)), toExclusive: new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth() + 1, 1)) },
+      year: { from: new Date(Date.UTC(day.getUTCFullYear(), 0, 1)), toExclusive: new Date(Date.UTC(day.getUTCFullYear() + 1, 0, 1)) },
+    };
+    const sum = async (r: DateRange, withCategory: boolean) => {
+      const agg = await this.prisma.client.expense.aggregate({
+        where: this.spendingWhere(userId, r, flowType, withCategory ? categoryId : undefined),
+        _sum: { amount: true },
+      });
+      return toMoneyString(toDecimal(agg._sum.amount));
+    };
+    const [dayCat, dayAll, monthCat, monthAll, yearCat, yearAll] = await Promise.all([
+      sum(ranges.day, true),
+      sum(ranges.day, false),
+      sum(ranges.month, true),
+      sum(ranges.month, false),
+      sum(ranges.year, true),
+      sum(ranges.year, false),
+    ]);
+    return {
+      basis: "ACTUAL",
+      date: isoDay(day),
+      flowType,
+      day: { categoryTotal: dayCat, allCategoriesTotal: dayAll },
+      month: { categoryTotal: monthCat, allCategoriesTotal: monthAll },
+      year: { categoryTotal: yearCat, allCategoriesTotal: yearAll },
+    };
   }
 
   // Ownership enforced atomically as part of the write (updateMany scoped by
@@ -149,6 +283,12 @@ export class ExpensesService {
   // than leaking which case occurred via a 403/404 split (same pattern already applied
   // to Income; matches the codebase's own precedent, e.g. GET /ai/jobs/:id).
   async update(userId: string, id: string, dto: UpdateExpenseDto) {
+    // Only re-validated when the caller is actually changing the category, so ordinary
+    // edits (merchant, notes, amount) cost no extra query.
+    if (dto.categoryId !== undefined) {
+      await this.assertNotSavingsCategory(dto.categoryId);
+    }
+
     const result = await this.prisma.client.expense.updateMany({
       where: { id, userId },
       data: { ...dto, spentAt: dto.spentAt ? new Date(dto.spentAt) : undefined },
@@ -251,7 +391,7 @@ export class ExpensesService {
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
     const expenses = await this.prisma.client.expense.findMany({
-      where: { userId, spentAt: { gte: threeMonthsAgo }, merchant: { not: null } },
+      where: { userId, flowType: "EXPENSE", spentAt: { gte: threeMonthsAgo }, merchant: { not: null } },
       orderBy: { spentAt: "desc" },
     });
 
@@ -281,6 +421,202 @@ export class ExpensesService {
         lastSeenAt: rows[0].spentAt.toISOString(),
         sourceExpenseIds: rows.map((r) => r.id),
       }));
+  }
+
+  // ---- filters / sorting -----------------------------------------------------------------
+
+  // Newest is the default. A createdAt tiebreaker keeps page boundaries stable when several
+  // expenses share a date (otherwise rows can repeat or vanish between pages).
+  private orderBy(sort?: ExpenseSort): Prisma.ExpenseOrderByWithRelationInput[] {
+    switch (sort) {
+      case "OLDEST":
+        return [{ spentAt: "asc" }, { createdAt: "asc" }];
+      case "HIGHEST":
+        return [{ amount: "desc" }, { spentAt: "desc" }];
+      case "LOWEST":
+        return [{ amount: "asc" }, { spentAt: "desc" }];
+      default:
+        return [{ spentAt: "desc" }, { createdAt: "desc" }];
+    }
+  }
+
+  // The ONE definition of "an expense counts here": the user's rows, in the range, of the
+  // requested flow type, excluding legacy SAVINGS-category rows (those are reconciled by the
+  // legacy migration and are not spending).
+  private spendingWhere(userId: string, r: DateRange, flowType: ExpenseFlowType, categoryId?: string): Prisma.ExpenseWhereInput {
+    return {
+      userId,
+      flowType,
+      spentAt: { gte: r.from, lt: r.toExclusive },
+      category: { type: { not: "SAVINGS" } },
+      ...(categoryId ? { categoryId } : {}),
+    };
+  }
+
+  private resolveRange(period: string | undefined, from: string | undefined, to: string | undefined, today: Date): DateRange {
+    if (period && period !== "CUSTOM") return resolveExpensePeriod(period as ExpensePeriod, today);
+    if (from && to) return resolveCustomRange(from, to);
+    if (period === "CUSTOM" || from || to) throw new BadRequestException("A custom range needs both from and to dates");
+    return resolveExpensePeriod("THIS_MONTH", today);
+  }
+
+  // Per-day totals computed IN THE DATABASE (one grouped query), so a chart never requires
+  // downloading transactions. Dates bucket on the UTC calendar day, matching how expense dates
+  // are stored.
+  private async dailyTotals(userId: string, r: DateRange, flowType: ExpenseFlowType, categoryId?: string) {
+    const categorySql = categoryId ? Prisma.sql`AND e."categoryId" = ${categoryId}` : Prisma.empty;
+    return this.prisma.client.$queryRaw<Array<{ day: Date; total: Prisma.Decimal; count: number }>>(Prisma.sql`
+      SELECT (e."spentAt" AT TIME ZONE 'UTC')::date AS day,
+             SUM(e."amount") AS total,
+             COUNT(*)::int AS count
+      FROM "Expense" e
+      JOIN "Category" c ON c."id" = e."categoryId"
+      WHERE e."userId" = ${userId}
+        AND e."spentAt" >= ${r.from}
+        AND e."spentAt" < ${r.toExclusive}
+        AND e."flowType" = ${flowType}::"ExpenseFlowType"
+        AND c."type" <> 'SAVINGS'
+        ${categorySql}
+      GROUP BY 1
+      ORDER BY 1
+    `);
+  }
+
+  // ---- analytics ---------------------------------------------------------------------------
+  //
+  // GET /expenses/analytics. Everything is aggregated in Postgres and only aggregates come back
+  // (a daily series, category totals, two extreme transactions) — never the transaction list.
+  // Powers the expense summary, the category drill-down (pass categoryId) and the trend charts.
+  async analytics(userId: string, query: ExpenseAnalyticsQueryDto): Promise<ExpenseAnalyticsDTO> {
+    const today = parseToday(query.today);
+    const range = this.resolveRange(query.period, query.from, query.to, today);
+    const days = daysInRange(range);
+    if (days > MAX_ANALYTICS_DAYS) {
+      throw new BadRequestException(`The date range is too long (${days} days); the maximum is ${MAX_ANALYTICS_DAYS}.`);
+    }
+
+    const flowType: ExpenseFlowType = query.flowType ?? "EXPENSE";
+    const categoryId = query.categoryId;
+    const whereFor = (r: DateRange, withCategory = true) => this.spendingWhere(userId, r, flowType, withCategory ? categoryId : undefined);
+    const previous = previousWindow(range);
+    const lastYear = sameWindowLastYear(range);
+    const sumOnly = { _sum: { amount: true } } as const;
+    const withCategory = { category: { select: { name: true } } } as const;
+
+    const [agg, largest, smallest, dailyRows, categoryGroups, previousAgg, lastYearAgg, overallAgg] = await Promise.all([
+      this.prisma.client.expense.aggregate({ where: whereFor(range), _sum: { amount: true }, _count: { _all: true } }),
+      this.prisma.client.expense.findFirst({ where: whereFor(range), orderBy: [{ amount: "desc" }, { spentAt: "desc" }], include: withCategory }),
+      this.prisma.client.expense.findFirst({ where: whereFor(range), orderBy: [{ amount: "asc" }, { spentAt: "desc" }], include: withCategory }),
+      this.dailyTotals(userId, range, flowType, categoryId),
+      this.prisma.client.expense.groupBy({ by: ["categoryId"], where: whereFor(range), _sum: { amount: true }, _count: { _all: true } }),
+      this.prisma.client.expense.aggregate({ where: whereFor(previous), ...sumOnly }),
+      this.prisma.client.expense.aggregate({ where: whereFor(lastYear), ...sumOnly }),
+      // With a category filter, also the all-category total so "share of total expenses" is real.
+      categoryId ? this.prisma.client.expense.aggregate({ where: whereFor(range, false), ...sumOnly }) : Promise.resolve(null),
+    ]);
+
+    const total = toDecimal(agg._sum.amount);
+    const count = agg._count._all;
+
+    // Daily series, zero-filled for charts, but never into the future (those days haven't happened).
+    const lastDay = new Date(Math.min(addDaysUtc(range.toExclusive, -1).getTime(), today.getTime()));
+    const byDay = new Map(dailyRows.map((r) => [isoDay(r.day), r]));
+    const daily: Array<{ date: string; total: Prisma.Decimal; count: number }> = [];
+    for (let d = range.from; d.getTime() <= lastDay.getTime(); d = addDaysUtc(d, 1)) {
+      const row = byDay.get(isoDay(d));
+      daily.push({ date: isoDay(d), total: row ? toDecimal(row.total) : ZERO, count: row ? row.count : 0 });
+    }
+
+    // Days that actually had spending. Highest/lowest are chosen among these (a ₹0 day is "no spending").
+    const spendDays = daily.filter((d) => d.count > 0);
+    let highestDay: (typeof daily)[number] | null = null;
+    let lowestDay: (typeof daily)[number] | null = null;
+    for (const d of spendDays) {
+      if (!highestDay || d.total.gt(highestDay.total)) highestDay = d;
+      if (!lowestDay || d.total.lt(lowestDay.total)) lowestDay = d;
+    }
+
+    // Weekly (Monday-start) and monthly buckets are folded from the already-aggregated daily rows.
+    const weekly = new Map<string, { total: Prisma.Decimal; count: number }>();
+    const monthly = new Map<string, { total: Prisma.Decimal; count: number }>();
+    const bump = (m: Map<string, { total: Prisma.Decimal; count: number }>, key: string, d: { total: Prisma.Decimal; count: number }) => {
+      const cur = m.get(key) ?? { total: ZERO, count: 0 };
+      m.set(key, { total: cur.total.plus(d.total), count: cur.count + d.count });
+    };
+    for (const d of daily) {
+      const date = new Date(`${d.date}T00:00:00.000Z`);
+      bump(weekly, isoDay(startOfWeekUtc(date)), d);
+      bump(monthly, d.date.slice(0, 7), d);
+    }
+
+    // Average per day divides by the days that have ELAPSED in the range (a month in progress is
+    // not diluted by its future days); never by less than 1.
+    const elapsedDays = Math.max(1, Math.min(days, Math.round((today.getTime() - range.from.getTime()) / 86_400_000) + 1));
+
+    const categoryIds = categoryGroups.map((g) => g.categoryId);
+    const categories = categoryIds.length
+      ? await this.prisma.client.category.findMany({ where: { id: { in: categoryIds } }, select: { id: true, name: true, type: true, icon: true } })
+      : [];
+    const categoryById = new Map(categories.map((c) => [c.id, c]));
+
+    const extreme = (row: (NonNullable<typeof largest>) | null): ExpenseExtremeDTO | null =>
+      row
+        ? { id: row.id, amount: toMoneyString(toDecimal(row.amount)), spentAt: row.spentAt.toISOString(), merchant: row.merchant, categoryName: row.category.name }
+        : null;
+
+    const compare = (r: DateRange, a: { _sum: { amount: Prisma.Decimal | null } }): ExpenseComparisonDTO => {
+      const prevTotal = toDecimal(a._sum.amount);
+      return {
+        from: isoDay(r.from),
+        to: isoDay(addDaysUtc(r.toExclusive, -1)),
+        total: toMoneyString(prevTotal),
+        change: toMoneyString(total.minus(prevTotal)),
+        changePercent: pct1(percentChange(total, prevTotal)),
+      };
+    };
+    const lastYearTotal = toDecimal(lastYearAgg._sum.amount);
+
+    return {
+      basis: "ACTUAL",
+      currency: "INR",
+      period: { from: isoDay(range.from), to: isoDay(addDaysUtc(range.toExclusive, -1)), days, elapsedDays },
+      filters: { categoryId: categoryId ?? null, flowType },
+      totals: {
+        total: toMoneyString(total),
+        transactionCount: count,
+        averagePerTransaction: count > 0 ? toMoneyString(total.div(count)) : null,
+        averagePerDay: toMoneyString(total.div(elapsedDays)),
+        largest: extreme(largest),
+        smallest: extreme(smallest),
+      },
+      highestDay: highestDay ? { date: highestDay.date, total: toMoneyString(highestDay.total) } : null,
+      lowestDay: lowestDay ? { date: lowestDay.date, total: toMoneyString(lowestDay.total) } : null,
+      daily: daily.map((d) => ({ date: d.date, total: toMoneyString(d.total), count: d.count })),
+      weekly: [...weekly.entries()].map(([weekStart, v]) => ({ weekStart, total: toMoneyString(v.total), count: v.count })),
+      monthly: [...monthly.entries()].map(([month, v]) => ({ month, total: toMoneyString(v.total), count: v.count })),
+      categories: categoryGroups
+        .map((g) => {
+          const c = categoryById.get(g.categoryId);
+          const catTotal = toDecimal(g._sum.amount);
+          return {
+            categoryId: g.categoryId,
+            name: c?.name ?? "Unknown",
+            type: c?.type ?? "NEED",
+            icon: c?.icon ?? null,
+            total: catTotal,
+            count: g._count._all,
+            sharePercent: pct1(percentOf(catTotal, total)),
+          };
+        })
+        .sort((a, b) => b.total.comparedTo(a.total))
+        .map((c) => ({ ...c, total: toMoneyString(c.total) })),
+      comparison: compare(previous, previousAgg),
+      // Year-over-year only when the same window a year ago actually had spending.
+      yearOverYear: lastYearTotal.gt(0) ? compare(lastYear, lastYearAgg) : null,
+      overall: overallAgg
+        ? { total: toMoneyString(toDecimal(overallAgg._sum.amount)), sharePercent: pct1(percentOf(total, toDecimal(overallAgg._sum.amount))) }
+        : null,
+    };
   }
 
   private monthRange(month: string) {
