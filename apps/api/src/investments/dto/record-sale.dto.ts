@@ -27,4 +27,12 @@ export class RecordSaleDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  // Recording a sale for TAX only writes a realized-gain event. The proceeds also reach your cash
+  // only if a SALE cashflow exists on the investment's ledger. Set this to record BOTH in one
+  // atomic write (and under one idempotency key, so a retry can't double-count the proceeds).
+  // Omitted/false = the original behaviour exactly: tax record only, cash untouched.
+  @IsOptional()
+  @IsBoolean()
+  alsoRecordCashflow?: boolean;
 }
