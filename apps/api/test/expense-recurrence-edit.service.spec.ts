@@ -62,7 +62,7 @@ function build(rows: Row[] = seed(), categoryType = "NEED") {
 }
 
 const strip = (o: Row) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
-const get = (rows: Row[], id: string) => rows.find((r) => r.id === id)!;
+const get = (rows: Row[], id: string): any => rows.find((r) => r.id === id)!;
 const amounts = (rows: Row[]) => Object.fromEntries(rows.filter((r) => r.userId === "u1").map((r) => [r.id, Number(r.amount)]));
 
 describe("ExpenseRecurrenceEditService — edit scopes (spec Part 11)", () => {
