@@ -295,3 +295,187 @@ export function computeNetWorth(i: NetWorthInput): NetWorth {
   const totalLiabilities = i.loans.plus(i.creditCardOutstanding).plus(i.otherLiabilities);
   return { totalAssets, totalLiabilities, netWorth: totalAssets.minus(totalLiabilities) };
 }
+
+// --- Receivables (money given that is expected back) ------------------------------------
+//
+// Giving ₹5,000 to a friend is NOT spending: cash falls by ₹5,000 and a receivable ASSET of
+// ₹5,000 appears, so net worth is unchanged and no expense is recorded. Each repayment
+// moves value back from the receivable into cash. Outstanding is always derived from the
+// repayment ledger, never stored.
+
+export type ReceivableStatusName = "OUTSTANDING" | "PARTIALLY_RETURNED" | "FULLY_RETURNED" | "OVERDUE" | "CANCELLED";
+
+/** Receivable Outstanding = Total Given - Total Returned. Deliberately not clamped: a negative
+ *  result means the data is wrong and must be visible, not hidden. */
+export function receivableOutstanding(given: Dec, returned: Dec): Dec {
+  return given.minus(returned);
+}
+
+/** The PERSISTED status implied by how much has come back (never OVERDUE / CANCELLED). */
+export function receivableStatusFor(original: Dec, returned: Dec): "OUTSTANDING" | "PARTIALLY_RETURNED" | "FULLY_RETURNED" {
+  if (returned.lte(0)) return "OUTSTANDING";
+  if (returned.gte(original)) return "FULLY_RETURNED";
+  return "PARTIALLY_RETURNED";
+}
+
+const MS_PER_DAY = 86_400_000;
+/** Whole UTC days since the epoch — receivable dates are calendar dates, compared in UTC. */
+export const utcDayNumber = (d: Date): number => Math.floor(d.getTime() / MS_PER_DAY);
+
+/** Days from `now` until `expectedReturnAt` (negative = days overdue); null with no due date. */
+export function daysUntilDue(expectedReturnAt: Date | null, now: Date): number | null {
+  return expectedReturnAt ? utcDayNumber(expectedReturnAt) - utcDayNumber(now) : null;
+}
+
+const OPEN_STATUSES: ReceivableStatusName[] = ["OUTSTANDING", "PARTIALLY_RETURNED"];
+export const isOpenReceivable = (status: ReceivableStatusName): boolean => OPEN_STATUSES.includes(status);
+
+/** Persisted status, upgraded to OVERDUE at read time when an open receivable is past its due
+ *  date. Due TODAY is not overdue. */
+export function effectiveReceivableStatus(status: ReceivableStatusName, expectedReturnAt: Date | null, now: Date): ReceivableStatusName {
+  if (!isOpenReceivable(status)) return status;
+  const days = daysUntilDue(expectedReturnAt, now);
+  return days !== null && days < 0 ? "OVERDUE" : status;
+}
+
+/** "Due soon" = open, not overdue, due within `withinDays` (inclusive of today). */
+export function isDueSoon(status: ReceivableStatusName, expectedReturnAt: Date | null, now: Date, withinDays = 7): boolean {
+  if (!isOpenReceivable(status)) return false;
+  const days = daysUntilDue(expectedReturnAt, now);
+  return days !== null && days >= 0 && days <= withinDays;
+}
+
+// --- Period-over-period comparison ----------------------------------------------------------
+
+/** Change vs a previous value, in percent: (current - previous) / |previous| * 100. Null when the
+ *  previous value is zero — "+∞%" is not a number worth showing, so the caller shows "new". */
+export function percentChange(current: Dec, previous: Dec): Dec | null {
+  return previous.isZero() ? null : current.minus(previous).div(previous.abs()).times(100);
+}
+
+/** part / whole * 100. Null when the whole is zero. */
+export function percentOf(part: Dec, whole: Dec): Dec | null {
+  return whole.isZero() ? null : part.div(whole).times(100);
+}
+
+// --- Contribution cadence --------------------------------------------------------------------
+
+export type CadenceName = "WEEKLY" | "BIWEEKLY" | "MONTHLY" | "QUARTERLY" | "YEARLY";
+
+/** How many periods fit in a year. 52 / 26 / 12 / 4 / 1 — used to express any cadence per month or per year. */
+export const PERIODS_PER_YEAR: Record<CadenceName, number> = { WEEKLY: 52, BIWEEKLY: 26, MONTHLY: 12, QUARTERLY: 4, YEARLY: 1 };
+
+/** Annual contribution = amount per period x periods per year. */
+export function annualContribution(amountPerPeriod: Dec, cadence: CadenceName): Dec {
+  return amountPerPeriod.times(PERIODS_PER_YEAR[cadence]);
+}
+
+/** Monthly equivalent = annual contribution / 12 (a weekly ₹1,000 is ₹4,333.33 a month; a biweekly one ₹2,166.67). */
+export function monthlyEquivalent(amountPerPeriod: Dec, cadence: CadenceName): Dec {
+  return annualContribution(amountPerPeriod, cadence).div(12);
+}
+
+// --- Growth projection (a PROJECTION, never an actual) -----------------------------------------
+//
+// Deterministic compound-growth maths for "what could this become?". Everything it returns is an
+// ASSUMPTION-DRIVEN projection and must be labelled PROJECTED wherever it is shown: it assumes a
+// constant annual return, never overwrites any actual value, and is not a guarantee.
+//
+// Conventions (kept simple and stated so the numbers can be reproduced by hand):
+//   * the periodic rate is the nominal annual rate / periods per year (12% a year monthly = 1% a month);
+//   * the existing value and the contributions compound on that same periodic schedule;
+//   * a contribution is made at the START of each period, as a SIP is debited, so it earns that
+//     period's return (an annuity-due). ₹10,000 a month at 12% for 10 years is therefore ₹23,23,391
+//     (contributions at the END of each month would give ₹23,00,387).
+
+export interface GrowthProjectionInput {
+  /** Value today (ACTUAL) — the starting point only; it is never changed. */
+  currentValue: Dec;
+  contributionPerPeriod: Dec;
+  cadence: CadenceName;
+  /** Assumed constant annual return, in percent (12 = 12%). */
+  annualReturnPercent: Dec;
+  /** Whole years ahead. */
+  years: number;
+  /** How many periods will actually contribute (a schedule with an end date); null = every period. */
+  contributionPeriods?: number | null;
+}
+
+export interface GrowthProjection {
+  years: number;
+  periods: number;
+  contributionPeriods: number;
+  /** contributionPerPeriod x contributionPeriods — only the NEW money put in over the horizon. */
+  totalContributions: Dec;
+  /** What would be in the pot with no growth at all: current value + total contributions. */
+  principal: Dec;
+  projectedValue: Dec;
+  /** projectedValue - principal: the projected growth on top of what was put in. */
+  projectedGain: Dec;
+}
+
+export function projectGrowth(input: GrowthProjectionInput): GrowthProjection {
+  const ppy = PERIODS_PER_YEAR[input.cadence];
+  const years = Math.max(0, Math.floor(input.years));
+  const periods = years * ppy;
+  const contributing = Math.min(periods, Math.max(0, input.contributionPeriods ?? periods));
+  const r = input.annualReturnPercent.div(100).div(ppy);
+
+  let lump: Dec;
+  let annuity: Dec;
+  if (r.isZero()) {
+    lump = input.currentValue;
+    annuity = input.contributionPerPeriod.times(contributing);
+  } else {
+    const growth = (n: number) => r.plus(1).pow(n);
+    lump = input.currentValue.times(growth(periods));
+    // Contributions run for `contributing` periods (each made at the START of its period, hence the
+    // extra (1 + r)), then the pot keeps compounding to the horizon.
+    annuity = input.contributionPerPeriod.times(growth(contributing).minus(1)).div(r).times(r.plus(1)).times(growth(periods - contributing));
+  }
+
+  const totalContributions = input.contributionPerPeriod.times(contributing);
+  const principal = input.currentValue.plus(totalContributions);
+  const projectedValue = lump.plus(annuity);
+  return { years, periods, contributionPeriods: contributing, totalContributions, principal, projectedValue, projectedGain: projectedValue.minus(principal) };
+}
+
+// --- Emergency fund target & contribution plan ----------------------------------------------
+//
+// Target = months x average monthly ESSENTIAL expenses (or a fixed amount). Progress, remaining and
+// the contribution needed are plain arithmetic on top of the reserve balance — all in one place, so
+// the page, the dashboard and the assistant can never show different numbers. Everything about the
+// PLAN (required contribution, months to reach) is a planning calculation, not a recommendation.
+
+/** Rupee target from "N months of essential expenses". Null when there is no essential-spending baseline yet. */
+export function emergencyTargetFromMonths(months: Dec, avgMonthlyEssential: Dec): Dec | null {
+  return avgMonthlyEssential.lte(0) ? null : months.times(avgMonthlyEssential);
+}
+
+/** What is left to reach the target (never negative: once reached, nothing remains). */
+export function emergencyRemaining(target: Dec, balance: Dec): Dec {
+  return Prisma.Decimal.max(target.minus(balance), new Prisma.Decimal(0));
+}
+
+/**
+ * Whole periods of `daysPerPeriod` (30.4375 for a month, 7 for a week) from `now` until `targetDate`,
+ * rounded UP so the plan never assumes the money arrives after the deadline. 0 when the date is today
+ * or already past.
+ */
+export function periodsUntil(targetDate: Date, now: Date, daysPerPeriod: number): number {
+  const days = utcDayNumber(targetDate) - utcDayNumber(now);
+  return days <= 0 ? 0 : Math.ceil(days / daysPerPeriod);
+}
+
+/** The contribution needed each period to close `remaining` in `periods` periods. Zero when nothing remains; null with no time left. */
+export function requiredContribution(remaining: Dec, periods: number): Dec | null {
+  if (remaining.lte(0)) return new Prisma.Decimal(0);
+  return periods > 0 ? remaining.div(periods) : null;
+}
+
+/** How many periods of `perPeriod` it takes to cover `remaining` (rounded up). Null when nothing is being contributed. */
+export function periodsToReach(remaining: Dec, perPeriod: Dec): number | null {
+  if (remaining.lte(0)) return 0;
+  return perPeriod.lte(0) ? null : remaining.div(perPeriod).ceil().toNumber();
+}
+
