@@ -53,6 +53,12 @@ export function nextOccurrenceDate(from: Date, recurrence: Recurrence): Date | n
       next.setUTCDate(next.getUTCDate() + 7);
       return next;
     }
+    case "BIWEEKLY": {
+      // Every 14 days from the previous occurrence (NOT "twice a month"): 26 per year.
+      const next = new Date(from);
+      next.setUTCDate(next.getUTCDate() + 14);
+      return next;
+    }
     case "MONTHLY":
       return atMonthOffset(1);
     case "QUARTERLY":
