@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsNumber, IsOptional, IsPositive, IsString, Max, MaxLength } from "class-validator";
+import { IsDateString, IsEnum, IsIn, IsNumber, IsOptional, IsPositive, IsString, Max, MaxLength } from "class-validator";
 import { Transform } from "class-transformer";
 import { InsuranceType, Recurrence } from "@wealthos/db";
 
@@ -31,7 +31,9 @@ export class CreatePolicyDto {
   @Max(MAX_POLICY_AMOUNT, { message: `premiumAmount cannot exceed ${MAX_POLICY_AMOUNT}` })
   premiumAmount!: number;
 
-  @IsEnum(Recurrence)
+  // Premium cycles are never every-two-weeks, and the premium-period keys have no BIWEEKLY form,
+  // so that one cadence is rejected here even though the shared Recurrence enum now has it.
+  @IsIn(["ONE_TIME", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"])
   premiumFrequency!: Recurrence;
 
   @IsNumber()
