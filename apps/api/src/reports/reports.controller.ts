@@ -20,6 +20,18 @@ export class ReportsController {
     return this.reportsService.yearlyReport(user.id, financialYear);
   }
 
+  // Batch 8: detailed monthly report (money flow, categories, daily spending, narrative).
+  @Get("monthly/detail")
+  monthlyDetail(@CurrentUser() user: User, @Query("month") month?: string) {
+    return this.reportsService.monthlyDetail(user.id, month);
+  }
+
+  // Batch 8: January-to-December view for a calendar year, with totals and category report.
+  @Get("yearly/months")
+  yearlyMonths(@CurrentUser() user: User, @Query("year") year?: string) {
+    return this.reportsService.yearlyMonths(user.id, year);
+  }
+
   @Get("monthly/export.csv")
   async monthlyCsv(@CurrentUser() user: User, @Query("month") month: string | undefined, @Res() res: Response) {
     const csv = await this.reportsService.monthlyReportCsv(user.id, month);
