@@ -22,7 +22,7 @@ export interface FactSourceInput {
   cashFlow: { month: string; income: string; expenses: string; investmentContributions: string; emergencyAllocations: string };
   emergency: { emergencyCash: string; coverageMonths: string | null; avgMonthlyEssentialExpenses: string };
   policies: Array<{ id: string; provider: string; type: string; premiumAmount: string; premiumFrequency: string; coverageAmount: string; renewalDate: Date; nomineeName: string | null; policyNumber: string | null }>;
-  investments: Array<{ id: string; name: string; type: string; currentValue: string; valuedAt: Date | null; contributions: string; withdrawals: string; sipActive: boolean; monthlyContribution: string | null }>;
+  investments: Array<{ id: string; name: string; type: string; currentValue: string; valuedAt: Date | null; contributions: string; withdrawals: string; sipActive: boolean; monthlyContribution: string | null; contributionFrequency?: string | null }>;
   loans: Array<{ id: string; lender: string; type: string; outstandingPrincipal: string; emiAmount: string; interestRateAnnual: string }>;
   dataHealth: Array<{ code: string; message: string; count: number; amount?: string }>;
 }
@@ -82,7 +82,11 @@ export function buildFinancialFactSources(input: FactSourceInput, today: Date): 
       `${inv.name} (${lower(inv.type)})`,
       `Investment: ${inv.name} (${lower(inv.type)}). Current value ${formatINR(inv.currentValue)}${inv.valuedAt ? ` as of ${day(inv.valuedAt)}` : " (legacy value, no dated valuation)"}. ` +
         `Contributions to date ${formatINR(inv.contributions)}, withdrawals ${formatINR(inv.withdrawals)}. ` +
-        (inv.sipActive && inv.monthlyContribution ? `Active monthly SIP of ${formatINR(inv.monthlyContribution)}.` : "No active recurring contribution."),
+        (inv.sipActive && inv.monthlyContribution
+          ? // `monthlyContribution` is the amount PER PERIOD; name the real cadence so the assistant never
+            // calls a weekly SIP "monthly". Unset / MONTHLY keeps the original wording exactly.
+            `Active ${(inv.contributionFrequency ?? "MONTHLY").toLowerCase()} SIP of ${formatINR(inv.monthlyContribution)}.`
+          : "No active recurring contribution."),
       { entityType: "INVESTMENT", entityId: inv.id },
     );
   }
