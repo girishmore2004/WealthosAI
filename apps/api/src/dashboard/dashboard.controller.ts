@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Put, UseGuards } from "@nestjs/common";
 import { DashboardService } from "./dashboard.service";
+import { DashboardOverviewService } from "./dashboard-overview.service";
 import { UpsertBudgetDto } from "./dto/upsert-budget.dto";
 import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -8,11 +9,20 @@ import { User } from "@wealthos/db";
 @UseGuards(SessionAuthGuard)
 @Controller("dashboard")
 export class DashboardController {
-  constructor(private dashboardService: DashboardService) {}
+  constructor(
+    private dashboardService: DashboardService,
+    private overviewService: DashboardOverviewService,
+  ) {}
 
   @Get("summary")
   summary(@CurrentUser() user: User) {
     return this.dashboardService.getSummary(user.id);
+  }
+
+  // Batch 8: the money-flow dashboard (ACTUAL basis only) - see DashboardOverviewService.
+  @Get("overview")
+  overview(@CurrentUser() user: User) {
+    return this.overviewService.overview(user.id);
   }
 
   // NEW: closes the audit's top-priority-flagged gap — real, user-defined budgets now
