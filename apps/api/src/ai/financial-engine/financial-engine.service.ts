@@ -44,7 +44,7 @@ const HANDOFFS: Partial<Record<FinancialIntent, { to: HandoffTarget; reason: str
 // mentioned rather than silently ignored.
 const HEALTH_INTENTS: FinancialIntent[] = [
   "FINANCIAL_CALCULATION", "FINANCIAL_SUMMARY", "INVESTMENT_ANALYSIS", "EXPENSE_ANALYSIS", "INCOME_ANALYSIS",
-  "CASH_FLOW", "NET_WORTH", "EMERGENCY_FUND", "INSURANCE", "SCENARIO",
+  "CASH_FLOW", "NET_WORTH", "EMERGENCY_FUND", "INSURANCE", "SCENARIO", "EXPENSE_BREAKDOWN",
 ];
 
 const EMPTY_VERIFICATION: VerificationResult = { passed: true, issues: [] };
@@ -102,9 +102,25 @@ export class FinancialEngineService {
     let core: ToolResult[] = [];
     switch (routed.intent) {
       case "FINANCIAL_CALCULATION":
+        // "this year" questions about spending / investing use the yearly facts; every other
+        // calculation (and every question that names no period) is about the current month.
+        core =
+          routed.span === "YEAR" && (routed.metric === "SPENT" || routed.metric === "INVESTED")
+            ? [await t.getYearToDate(userId)]
+            : [await t.getCashFlow(userId)];
+        break;
       case "EXPENSE_ANALYSIS":
       case "INCOME_ANALYSIS":
         core = [await t.getCashFlow(userId)];
+        break;
+      case "RECEIVABLES":
+        core = [await t.getReceivablesSummary(userId)];
+        break;
+      case "EXPENSE_BREAKDOWN":
+        core = [await t.getExpenseBreakdown(userId)];
+        break;
+      case "INVESTMENT_PROJECTION":
+        core = routed.projection ? [await t.projectPortfolio(userId, routed.projection)] : [];
         break;
       case "NET_WORTH":
         core = [await t.getNetWorth(userId)];
@@ -113,9 +129,16 @@ export class FinancialEngineService {
       case "FINANCIAL_SUMMARY":
         core = await t.getFinancialFacts(userId);
         break;
-      case "EMERGENCY_FUND":
+      case "EMERGENCY_FUND": {
         core = [await t.calculateEmergencyCoverage(userId)];
+        try {
+          core.push(await t.getEmergencyFundOverview(userId));
+        } catch (err) {
+          // The coverage answer is still correct without the target/progress detail.
+          this.logger.error(`Emergency fund overview failed: ${(err as Error).name}`);
+        }
         break;
+      }
       case "INVESTMENT_ANALYSIS":
         core = [await t.getInvestmentSummary(userId)];
         break;
