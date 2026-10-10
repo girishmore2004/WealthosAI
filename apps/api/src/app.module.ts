@@ -32,6 +32,8 @@ import { MlInsightsModule } from "./ai/ml-insights/ml-insights.module";
 import { CopilotIngestionModule } from "./ai/copilot-ingestion/copilot-ingestion.module";
 import { FinancialCoreModule } from "./financial-core/financial-core.module";
 import { FinancialEngineModule } from "./ai/financial-engine/financial-engine.module";
+import { ReceivablesModule } from "./receivables/receivables.module";
+import { TransfersModule } from "./transfers/transfers.module";
 
 @Module({
   imports: [
@@ -67,6 +69,8 @@ import { FinancialEngineModule } from "./ai/financial-engine/financial-engine.mo
     CopilotIngestionModule,
     FinancialCoreModule,
     FinancialEngineModule,
+    ReceivablesModule,
+    TransfersModule,
   ],
 })
 export class AppModule {}
