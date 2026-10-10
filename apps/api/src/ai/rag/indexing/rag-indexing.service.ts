@@ -332,7 +332,7 @@ export class RagIndexingService implements OnModuleInit {
           id: i.id, name: i.name, type: i.type,
           currentValue: (i.valuations[0]?.value ?? i.currentValue).toString(), valuedAt: i.valuations[0]?.valuedAt ?? null,
           contributions: (totals.get(i.id)?.contributions ?? 0).toFixed(2), withdrawals: (totals.get(i.id)?.withdrawals ?? 0).toFixed(2),
-          sipActive: i.sipActive, monthlyContribution: i.monthlyContribution?.toString() ?? null,
+          sipActive: i.sipActive, monthlyContribution: i.monthlyContribution?.toString() ?? null, contributionFrequency: i.contributionFrequency,
         })),
         loans: loans.map((l) => ({ id: l.id, lender: l.lender, type: l.type, outstandingPrincipal: l.outstandingPrincipal.toString(), emiAmount: l.emiAmount.toString(), interestRateAnnual: l.interestRateAnnual.toString() })),
         dataHealth: health.issues.map((i) => ({ code: i.code, message: i.message, count: i.count, amount: i.amount })),
