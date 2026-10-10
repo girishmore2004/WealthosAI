@@ -1,6 +1,9 @@
 import { Module, forwardRef } from "@nestjs/common";
 import { DashboardController } from "./dashboard.controller";
 import { DashboardService } from "./dashboard.service";
+import { DashboardOverviewService } from "./dashboard-overview.service";
+import { ReceivablesModule } from "../receivables/receivables.module";
+import { FinancialCoreModule } from "../financial-core/financial-core.module";
 import { IncomeModule } from "../income/income.module";
 import { ExpensesModule } from "../expenses/expenses.module";
 import { InvestmentsModule } from "../investments/investments.module";
@@ -18,9 +21,11 @@ import { FinancialFactsModule } from "../common/financial-facts/financial-facts.
     forwardRef(() => AlertsModule),
     PropertyModule,
     FinancialFactsModule,
+    ReceivablesModule,
+    FinancialCoreModule,
   ],
   controllers: [DashboardController],
-  providers: [DashboardService],
+  providers: [DashboardService, DashboardOverviewService],
   exports: [DashboardService],
 })
 export class DashboardModule {}
