@@ -29,7 +29,7 @@
 //           <p className="text-sm text-ink-soft">Monthly and yearly summaries, built from your existing data.</p>
 //         </div>
 //         <div className="flex gap-1 rounded-sm border border-line p-0.5">
-//           {(["monthly", "yearly"] as const).map((v) => (
+//           {(["monthly", "yearly", "detail", "months"] as const).map((v) => (
 //             <button
 //               key={v}
 //               onClick={() => setView(v)}
@@ -160,15 +160,20 @@ import type { MonthlyReportDTO, YearlyReportDTO } from "@wealthos/types";
 import { api, ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
 import { formatINR, formatPercent } from "@/lib/format";
+import { MonthlyDetailReport, YearByMonthReport } from "@/components/reports/DetailedReports";
+
+type ReportView = "monthly" | "yearly" | "detail" | "months";
+const VIEW_LABEL: Record<ReportView, string> = { monthly: "Monthly", yearly: "Financial year", detail: "Month detail", months: "Jan–Dec" };
 
 export default function ReportsPage() {
-  const [view, setView] = useState<"monthly" | "yearly">("monthly");
+  const [view, setView] = useState<ReportView>("monthly");
   const [monthly, setMonthly] = useState<MonthlyReportDTO | null>(null);
   const [yearly, setYearly] = useState<YearlyReportDTO | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setError(null);
+    if (view === "detail" || view === "months") return;
     if (view === "monthly") {
       api.reports.monthly().then(setMonthly).catch((err) => setError(err instanceof ApiError ? err.message : "Could not load the report."));
     } else {
@@ -188,9 +193,9 @@ export default function ReportsPage() {
             <button
               key={v}
               onClick={() => setView(v)}
-              className={`rounded-md px-3 py-1.5 text-sm capitalize transition-colors ${view === v ? "bg-marigold-50 font-medium text-marigold-600" : "text-ink-soft hover:text-ink"}`}
+              className={`rounded-md px-3 py-1.5 text-sm transition-colors ${view === v ? "bg-marigold-50 font-medium text-marigold-600" : "text-ink-soft hover:text-ink"}`}
             >
-              {v}
+              {VIEW_LABEL[v]}
             </button>
           ))}
         </div>
@@ -298,6 +303,9 @@ export default function ReportsPage() {
           </a>
         </>
       )}
+
+      {view === "detail" && <MonthlyDetailReport />}
+      {view === "months" && <YearByMonthReport />}
 
       {((view === "monthly" && !monthly) || (view === "yearly" && !yearly)) && !error && (
         <p className="text-sm text-ink-faint">Loading report…</p>
