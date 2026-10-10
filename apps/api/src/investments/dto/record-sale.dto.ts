@@ -1,4 +1,4 @@
-import { IsDateString, IsNumber, IsOptional, IsPositive, IsString, Max, MaxLength } from "class-validator";
+import { IsBoolean, IsDateString, IsNumber, IsOptional, IsPositive, IsString, Max, MaxLength } from "class-validator";
 import { MAX_INVESTMENT_AMOUNT } from "./create-investment.dto";
 
 // POST /investments/:id/realized-gains (audit item #11) — an explicit, user-initiated
