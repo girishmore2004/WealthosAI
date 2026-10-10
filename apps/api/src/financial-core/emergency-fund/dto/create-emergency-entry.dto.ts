@@ -20,6 +20,14 @@ export class CreateEmergencyEntryDto {
   @IsDateString()
   occurredAt!: string;
 
+  // The source of money added ("Monthly contribution", "Bonus" …) or the reason it was used
+  // ("Medical emergency" …). Short; notes holds anything longer.
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @MaxLength(100)
+  reason?: string;
+
   @IsOptional()
   @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
   @IsString()
