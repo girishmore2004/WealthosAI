@@ -181,6 +181,11 @@ export class DashboardService {
       emergencyFundBasis,
       emergencyFundAmount: emergencyFundAmount.toFixed(2),
       monthlyIncomeBasis: "FORECAST",
+      // The actual-basis rate (recorded income vs recorded expenses; can be negative; null with no
+      // recorded income). `savingsRate` above keeps its legacy forecast-income meaning, now named.
+      savingsRateActual:
+        cashFlow.savingsRate === null ? null : Number(toDecimal(cashFlow.savingsRate).times(100).toDecimalPlaces(1, Prisma.Decimal.ROUND_HALF_UP).toString()),
+      savingsRateBasis: "FORECAST_INCOME_VS_ACTUAL_EXPENSES",
       availableCash: position.cash.available,
       emergencyCash: position.cash.emergency,
       totalCash: position.cash.total,
