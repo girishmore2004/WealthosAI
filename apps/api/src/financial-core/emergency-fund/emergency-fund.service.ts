@@ -245,7 +245,7 @@ export class EmergencyFundService {
 
     return this.prisma.client.emergencyFundPlan.upsert({
       where: { userId },
-      create: { userId, ...(data as Prisma.EmergencyFundPlanUncheckedCreateInput) },
+      create: { ...(data as Prisma.EmergencyFundPlanUncheckedCreateInput), userId },
       update: data,
     });
   }
