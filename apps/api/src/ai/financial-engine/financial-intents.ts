@@ -1,4 +1,4 @@
-import { CalculationMetric, RoutedIntent, ScenarioParams } from "./financial-types";
+import { CalculationMetric, ProjectionParams, RoutedIntent, ScenarioParams } from "./financial-types";
 
 // Deterministic, rule-based intent router. No model call: routing must be reproducible and
 // auditable, and it decides whether a question is answered from authoritative tools,
@@ -52,8 +52,22 @@ function metricFor(q: string): CalculationMetric | undefined {
   return undefined;
 }
 
+// "what will my SIP become in 10 years", "how much will my investments be worth after 15 years at 12%".
+function projectionParams(q: string): ProjectionParams | null {
+  if (!has(q, /\b(sip|sips|investments?|portfolio|mutual funds?)\b/)) return null;
+  if (!has(q, /\b(become|worth|grow|growth|reach|be|value|projection|project)\b/)) return null;
+  const m = q.match(/\b(?:in|after|over|for|next)\s+(\d{1,2})\s*(?:years?|yrs?)\b/) ?? q.match(/\b(\d{1,2})\s*[- ]?\s*(?:years?|yrs?)\b/);
+  if (!m) return null;
+  const years = Number(m[1]);
+  if (!Number.isInteger(years) || years < 1 || years > 50) return null;
+  return { years, annualReturn: parsePercent(q) };
+}
+
 export function routeIntent(question: string): RoutedIntent {
   const q = question.toLowerCase().trim();
+
+  const projection = has(q, /\bwhat if\b|\bif i (increase|decrease|raise|cut|reduce|lower)\b/) ? null : projectionParams(q);
+  if (projection) return { intent: "INVESTMENT_PROJECTION", projection };
 
   if (has(q, /\bwhat (happens|would happen|will happen)\b|\bwhat if\b|\bif i (increase|decrease|raise|cut|reduce|lower|get a (raise|hike))\b|\bsuppose\b/)) {
     return { intent: "SCENARIO", scenario: scenarioParams(q) };
@@ -66,7 +80,10 @@ export function routeIntent(question: string): RoutedIntent {
   }
 
   const metric = metricFor(q);
-  if (metric) return { intent: "FINANCIAL_CALCULATION", metric };
+  if (metric) return has(q, /\bthis year\b|\byear to date\b|\bytd\b/) ? { intent: "FINANCIAL_CALCULATION", metric, span: "YEAR" } : { intent: "FINANCIAL_CALCULATION", metric };
+
+  if (has(q, /\b(receivables?|owe me|owes me|owed to me|money i (gave|lent|loaned)|i (lent|loaned)|who owes)\b/) && !has(q, /\b(emi|mortgage)\b/)) return { intent: "RECEIVABLES" };
+  if (has(q, /\b(daily average|average (daily|per day)|per day|top (spending )?categor(y|ies)|biggest (spending )?categor(y|ies)|categor(y|ies)\b.{0,40}\b(change|changed|compared|increase|decrease|up|down)|largest (expense|transaction)|highest spending day|essential vs|discretionary)\b/)) return { intent: "EXPENSE_BREAKDOWN" };
 
   if (has(q, /\bemergency (fund|cash|reserve|coverage)\b|\bmonths? of (expenses|coverage)\b|\bemergency\b/)) return { intent: "EMERGENCY_FUND" };
   if (has(q, /\bnet worth\b/)) return { intent: "NET_WORTH" };
