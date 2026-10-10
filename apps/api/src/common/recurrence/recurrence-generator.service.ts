@@ -1,7 +1,9 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { Expense, Income, Prisma, Recurrence } from "@wealthos/db";
 import { PrismaService } from "../../prisma/prisma.service";
+import { isUniqueViolation } from "../utils/prisma-errors.util";
 import { computeMissedOccurrences } from "./recurrence.util";
+import { resolveExpenseRule } from "./recurrence-template.util";
 
 type SourceType = "INCOME" | "EXPENSE";
 
@@ -218,37 +220,44 @@ export class RecurrenceGeneratorService {
 
   private async tryGenerateIncomeRow(userId: string, template: Income, occurrenceDate: Date): Promise<boolean> {
     try {
-      const generatedRecord = await this.prisma.client.income.create({
-        data: {
-          userId,
-          source: template.source,
-          label: template.label,
-          amount: template.amount,
-          currency: template.currency,
-          recurrence: template.recurrence,
-          receivedAt: occurrenceDate,
-          notes: template.notes,
-          generatedFromRecurringId: template.id,
-          // A generated row is not itself an active recurrence template — it's one
-          // materialized occurrence of the template above. Only the original template
-          // row (template.id) drives further generation.
-          recurrenceActive: false,
-        },
-      });
+      // ONE transaction for the row AND its idempotency log entry. The unique constraint
+      // that detects "already generated" lives on RecurringEventLog, so without a shared
+      // transaction a concurrent run would insert the Income row first and only then lose
+      // the log insert — leaving a duplicate, un-logged row behind. Now the loser's row
+      // is rolled back together with its failed log insert.
+      await this.prisma.client.$transaction(async (tx) => {
+        const generatedRecord = await tx.income.create({
+          data: {
+            userId,
+            source: template.source,
+            label: template.label,
+            amount: template.amount,
+            currency: template.currency,
+            recurrence: template.recurrence,
+            receivedAt: occurrenceDate,
+            notes: template.notes,
+            generatedFromRecurringId: template.id,
+            // A generated row is not itself an active recurrence template — it's one
+            // materialized occurrence of the template above. Only the original template
+            // row (template.id) drives further generation.
+            recurrenceActive: false,
+          },
+        });
 
-      await this.prisma.client.recurringEventLog.create({
-        data: {
-          userId,
-          sourceType: "INCOME",
-          sourceId: template.id,
-          occurrenceDate,
-          generatedRecordId: generatedRecord.id,
-        },
+        await tx.recurringEventLog.create({
+          data: {
+            userId,
+            sourceType: "INCOME",
+            sourceId: template.id,
+            occurrenceDate,
+            generatedRecordId: generatedRecord.id,
+          },
+        });
       });
 
       return true;
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      if (isUniqueViolation(err)) {
         // Idempotency in action: this exact occurrence was already generated (by a
         // prior run or a concurrent one) — not an error, just nothing new to do.
         return false;
@@ -286,35 +295,45 @@ export class RecurrenceGeneratorService {
 
   private async tryGenerateExpenseRow(userId: string, template: Expense, occurrenceDate: Date): Promise<boolean> {
     try {
-      const generatedRecord = await this.prisma.client.expense.create({
-        data: {
-          userId,
-          categoryId: template.categoryId,
-          merchant: template.merchant,
-          amount: template.amount,
-          currency: template.currency,
-          spentAt: occurrenceDate,
-          paymentMethod: template.paymentMethod,
-          notes: template.notes,
-          isRecurring: true,
-          generatedFromRecurringId: template.id,
-          recurrenceActive: false,
-        },
-      });
+      // Same atomicity rule as tryGenerateIncomeRow(): row + log entry commit or roll
+      // back together, so a lost idempotency race can never leave a duplicate expense.
+      // The values a new occurrence is created with come from the template's RULE (its snapshot
+      // when one was edited, otherwise the template row's own fields) — never directly from the
+      // template row, so correcting one historical record can't change the future.
+      const rule = resolveExpenseRule(template);
+      await this.prisma.client.$transaction(async (tx) => {
+        const generatedRecord = await tx.expense.create({
+          data: {
+            userId,
+            categoryId: rule.categoryId,
+            merchant: rule.merchant,
+            amount: rule.amount,
+            currency: template.currency,
+            spentAt: occurrenceDate,
+            paymentMethod: rule.paymentMethod,
+            notes: rule.notes,
+            // An "other outflow" template must generate other-outflow rows, not ordinary expenses.
+            flowType: rule.flowType,
+            isRecurring: true,
+            generatedFromRecurringId: template.id,
+            recurrenceActive: false,
+          },
+        });
 
-      await this.prisma.client.recurringEventLog.create({
-        data: {
-          userId,
-          sourceType: "EXPENSE",
-          sourceId: template.id,
-          occurrenceDate,
-          generatedRecordId: generatedRecord.id,
-        },
+        await tx.recurringEventLog.create({
+          data: {
+            userId,
+            sourceType: "EXPENSE",
+            sourceId: template.id,
+            occurrenceDate,
+            generatedRecordId: generatedRecord.id,
+          },
+        });
       });
 
       return true;
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      if (isUniqueViolation(err)) {
         return false;
       }
       throw err;
