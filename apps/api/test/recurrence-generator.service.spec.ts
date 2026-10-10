@@ -7,17 +7,22 @@ import { PrismaService } from "../src/prisma/prisma.service";
 describe("RecurrenceGeneratorService", () => {
   let service: RecurrenceGeneratorService;
 
-  const mockPrisma = {
-    client: {
-      income: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
-      expense: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
-      recurringEventLog: { create: jest.fn() },
-      auditLog: { create: jest.fn() },
-    },
+  // Generation now writes the row and its RecurringEventLog entry inside ONE interactive
+  // transaction. The mock runs the callback against the same mocked client, so every
+  // existing assertion on income.create / expense.create / recurringEventLog.create still
+  // holds; a rejection inside the callback propagates exactly like a rolled-back transaction.
+  const client = {
+    income: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
+    expense: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
+    recurringEventLog: { create: jest.fn() },
+    auditLog: { create: jest.fn() },
+    $transaction: jest.fn(),
   };
+  const mockPrisma = { client };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    client.$transaction.mockImplementation(async (fn: (tx: typeof client) => Promise<unknown>) => fn(client));
     const moduleRef = await Test.createTestingModule({
       providers: [RecurrenceGeneratorService, { provide: PrismaService, useValue: mockPrisma }],
     }).compile();
