@@ -23,6 +23,7 @@ const BASE_CURRENCY = "INR";
 const RECURRENCE_MONTHLY_MULTIPLIER: Record<string, number> = {
   ONE_TIME: 0,
   WEEKLY: 4.33,
+  BIWEEKLY: 2.17, // 26 periods a year / 12, on the same rounding convention as WEEKLY
   MONTHLY: 1,
   QUARTERLY: 1 / 3,
   YEARLY: 1 / 12,
@@ -35,6 +36,7 @@ const RECURRENCE_MONTHLY_MULTIPLIER: Record<string, number> = {
 // totals agree to the cent; see the doc comment on monthlyForecastBreakdown().
 const RECURRENCE_MONTHLY_MULTIPLIER_DECIMAL: Partial<Record<Recurrence, string>> = {
   WEEKLY: "4.33",
+  BIWEEKLY: "2.17",
   MONTHLY: "1",
   QUARTERLY: "0.333333333333",
   YEARLY: "0.083333333333",
@@ -273,6 +275,7 @@ export class IncomeService {
     const byRecurrenceTotals: Record<Recurrence, Prisma.Decimal> = {
       ONE_TIME: new Prisma.Decimal(0),
       WEEKLY: new Prisma.Decimal(0),
+      BIWEEKLY: new Prisma.Decimal(0),
       MONTHLY: new Prisma.Decimal(0),
       QUARTERLY: new Prisma.Decimal(0),
       YEARLY: new Prisma.Decimal(0),
