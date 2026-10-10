@@ -48,7 +48,8 @@ export function verifyAnswer(text: string, tools: ToolResult[]): VerificationRes
   // a negative as a shortfall) plus the amounts attached to data-health warnings.
   const allowedMoney: Prisma.Decimal[] = facts.filter((f) => f.kind === "MONEY").map((f) => D(f.value).abs());
   for (const t of tools) for (const w of t.warnings) if (w.amount !== undefined) allowedMoney.push(D(w.amount).abs());
-  const ratios = facts.filter((f) => f.kind === "RATIO").map((f) => D(f.value));
+  // Compared by absolute value, like money: "spending was 12.5% lower" is backed by a -0.125 ratio.
+  const ratios = facts.filter((f) => f.kind === "RATIO").map((f) => D(f.value).abs());
 
   // 1. Money
   for (const raw of text.match(MONEY_RE) ?? []) {
@@ -60,7 +61,7 @@ export function verifyAnswer(text: string, tools: ToolResult[]): VerificationRes
 
   // 1b/2. Percentages, with an explicit check for the "multiplied by 100 twice" bug.
   for (const raw of text.match(PERCENT_RE) ?? []) {
-    const value = D(raw.replace(/[%\s]/g, ""));
+    const value = D(raw.replace(/[%\s]/g, "")).abs();
     if (ratios.some((r) => nearlyEqual(r.times(100), value, PERCENT_TOLERANCE))) continue;
     if (ratios.some((r) => nearlyEqual(r.times(10000), value, 0.6))) {
       issues.push({ code: "DOUBLE_PERCENT_SCALE", detail: `${raw.trim()} looks like a ratio multiplied by 100 twice.` });
