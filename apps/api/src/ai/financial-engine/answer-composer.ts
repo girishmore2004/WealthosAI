@@ -52,6 +52,13 @@ export function composeAnswer(routed: RoutedIntent, tools: ToolResult[]): string
 
   switch (routed.intent) {
     case "FINANCIAL_CALCULATION": {
+      const ytd = tool(tools, "getYearToDate");
+      if (ytd && routed.metric === "INVESTED") {
+        return `This year you have invested ${m(ytd, "yearInvested") ?? "nothing recorded"} in actual investment contributions. Investments are not counted as spending.` + missingNote(tools);
+      }
+      if (ytd && routed.metric === "SPENT") {
+        return `This year you have spent ${m(ytd, "yearExpenses") ?? "nothing recorded"} on actual expenses; investments, emergency-fund transfers, money lent and transfers between your own accounts are not spending.`;
+      }
       switch (routed.metric) {
         case "INVESTED": {
           const invested = m(cf, "investmentContributions");
@@ -82,7 +89,7 @@ export function composeAnswer(routed: RoutedIntent, tools: ToolResult[]): string
     case "NET_WORTH":
       return (
         `Your net worth is ${m(pos, "netWorth")}: assets of ${m(pos, "totalAssets")} ` +
-        `(${m(pos, "availableCash")} available cash, ${m(pos, "emergencyCash")} emergency cash, ${m(pos, "investmentValue")} investments, ${m(pos, "property")} property) ` +
+        `(${m(pos, "availableCash")} available cash, ${m(pos, "emergencyCash")} emergency cash, ${m(pos, "investmentValue")} investments, ${m(pos, "property")} property${pos?.facts.receivables ? `, ${m(pos, "receivables")} owed to you` : ""}) ` +
         `minus ${m(pos, "totalLiabilities")} in liabilities.` + dataHealthNote(tools, [...MONEY_CODES, ...INVEST_CODES])
       );
 
@@ -99,9 +106,13 @@ export function composeAnswer(routed: RoutedIntent, tools: ToolResult[]): string
       if (!months) {
         return `Your emergency cash is ${m(ec, "emergencyCash") ?? "not recorded"}, but I can't work out coverage because there are no essential expenses recorded in recent complete months.` + dataHealthNote(tools, MONEY_CODES);
       }
+      const ov = tool(tools, "getEmergencyFundOverview");
+      const targetPart = ov?.facts.targetAmount
+        ? ` Your target is ${m(ov, "targetAmount")}${ov.facts.progress ? `, so you are ${r(ov, "progress")} of the way there with ${m(ov, "remaining")} to go` : ""}.`
+        : "";
       return (
         `Your emergency cash of ${m(ec, "emergencyCash")} covers about ${new Prisma.Decimal(months).toDecimalPlaces(1).toFixed(1)} months of essential expenses ` +
-        `(average ${m(ec, "avgMonthlyEssentialExpenses")} per month).` + dataHealthNote(tools, ["EMERGENCY_AS_EXPENSE"])
+        `(average ${m(ec, "avgMonthlyEssentialExpenses")} per month).` + targetPart + dataHealthNote(tools, ["EMERGENCY_AS_EXPENSE"])
       );
     }
 
@@ -109,7 +120,7 @@ export function composeAnswer(routed: RoutedIntent, tools: ToolResult[]): string
       const inv = tool(tools, "getInvestmentSummary");
       return (
         `Your investments are currently worth ${m(inv, "investmentValue")}. You have contributed ${m(inv, "lifetimeContributions")} in total and withdrawn ${m(inv, "lifetimeWithdrawals")}; ` +
-        `${m(inv, "monthContributions")} went in this month.` + dataHealthNote(tools, INVEST_CODES)
+        `${m(inv, "monthContributions")} went in this month${inv?.facts.yearContributions ? ` and ${m(inv, "yearContributions")} so far in the current calendar year` : ""}.` + dataHealthNote(tools, INVEST_CODES)
       );
     }
 
@@ -125,6 +136,46 @@ export function composeAnswer(routed: RoutedIntent, tools: ToolResult[]): string
         `This month: ${m(cf, "income")} income, ${m(cf, "expenses")} spending, ${m(cf, "investmentContributions")} invested` +
         `${r(cf, "savingsRate") ? `; savings rate ${r(cf, "savingsRate")}, investment rate ${r(cf, "investmentRate")}` : ""}.` + dataHealthNote(tools, MONEY_CODES)
       );
+
+    case "RECEIVABLES": {
+      const rc = tool(tools, "getReceivablesSummary");
+      if (!rc || rc.facts.outstanding.value === "0.00") return "You don't have any outstanding receivables recorded." + missingNote(tools);
+      const overdue = rc.facts.overdueCount?.value !== "0" ? ` ${m(rc, "overdueAmount")} of it is overdue.` : "";
+      const due = rc.facts.dueSoonCount?.value !== "0" ? ` ${m(rc, "dueSoonAmount")} is due soon.` : "";
+      return (
+        `Others currently owe you ${m(rc, "outstanding")} across ${rc.facts.activeCount.value} receivable${rc.facts.activeCount.value === "1" ? "" : "s"}.${due}${overdue} ` +
+        `In the current calendar month you have received ${m(rc, "returnedThisMonth")} back. Money you lend is an asset, not an expense, and repayments are not income.`
+      );
+    }
+
+    case "EXPENSE_BREAKDOWN": {
+      const eb = tool(tools, "getExpenseBreakdown");
+      if (!eb) return "";
+      const top = eb.rows?.[0];
+      const topPart = top
+        ? ` ${top.label} is your biggest category at ${formatINR(top.facts.total.value)}${top.facts.share ? `, ${pct(top.facts.share.value)} of your spending` : ""}` +
+          `${top.facts.change ? `, ${new Prisma.Decimal(top.facts.change.value).isNegative() ? "down" : "up"} ${pct(top.facts.change.value)} from last month (${formatINR(top.facts.previousTotal.value)})` : ""}.`
+        : "";
+      const monthPart = eb.facts.monthChange
+        ? ` Overall spending is ${new Prisma.Decimal(eb.facts.monthChange.value).isNegative() ? "lower" : "higher"} by ${pct(eb.facts.monthChange.value)} than last month (${m(eb, "previousMonthExpenses")}).`
+        : "";
+      return (
+        `This month you spent ${m(eb, "monthExpenses")}, about ${m(eb, "averagePerDay")} per day across ${eb.facts.transactionCount.value} transaction${eb.facts.transactionCount.value === "1" ? "" : "s"}. ` +
+        `${m(eb, "essential")} was essential and ${m(eb, "discretionary")} was discretionary.${topPart}${monthPart}` +
+        `${eb.facts.largestExpense ? ` Your largest single expense was ${m(eb, "largestExpense")}.` : ""}` + dataHealthNote(tools, MONEY_CODES)
+      );
+    }
+
+    case "INVESTMENT_PROJECTION": {
+      const pj = tool(tools, "projectPortfolio");
+      if (!pj) return "";
+      if (!pj.facts.projectedValue) return `I can't produce a projected value yet.${missingNote(tools)}`;
+      return (
+        `Projected, not a promise: if your investments and active schedules continue for ${pj.facts.years.value} years at the assumed return, they could be worth about ${m(pj, "projectedValue")}. ` +
+        `That is ${m(pj, "valueToday")} you hold today plus ${m(pj, "totalContributions")} of new contributions, with ${m(pj, "projectedGain")} of assumed growth. ` +
+        `Real returns vary and can be negative, and your recorded investments stay unchanged.`
+      );
+    }
 
     case "INSURANCE": {
       const ins = tool(tools, "getInsuranceSummary");
