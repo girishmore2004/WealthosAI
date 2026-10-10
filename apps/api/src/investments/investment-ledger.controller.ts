@@ -59,6 +59,14 @@ export class InvestmentLedgerController {
     return this.ledger.addValuation(user.id, id, dto);
   }
 
+  // The schedule with its derived figures: next date, monthly / annual equivalents, planned vs due
+  // vs remaining contributions, and what has actually been recorded.
+  @RateLimit(300, 3600)
+  @Get(":id/sip-schedule")
+  schedule(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.ledger.getSipSchedule(user.id, id);
+  }
+
   @RateLimit(300, 3600)
   @Put(":id/sip-schedule")
   setSchedule(@CurrentUser() user: User, @Param("id") id: string, @Body() dto: SipScheduleDto) {
