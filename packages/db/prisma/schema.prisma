@@ -48,6 +48,7 @@ enum IncomeSource {
 enum Recurrence {
   ONE_TIME
   WEEKLY
+  BIWEEKLY // every 14 days
   MONTHLY
   QUARTERLY
   YEARLY
@@ -200,6 +201,10 @@ model User {
   emergencyFundEntries EmergencyFundEntry[]  // NEW (financial-core upgrade)
   documentDiscrepancies DocumentDiscrepancy[] // NEW (document entity linking)
   loanPayments         LoanPayment[]         // NEW (loan EMI split)
+  emergencyFundPlan    EmergencyFundPlan?    // NEW (emergency fund target + contribution plan)
+  receivables          Receivable[]          // NEW (money-flow: money given / receivable)
+  receivableRepayments ReceivableRepayment[] // NEW (money-flow: money given / receivable)
+  accountTransfers     AccountTransfer[]     // NEW (money-flow: internal transfers)
   suggestionRankingProfile SuggestionRankingProfile?
 
   @@index([householdId])
@@ -426,6 +431,11 @@ model Income {
   @@index([recurrenceActive, nextOccurrenceAt])
 }
 
+enum ExpenseFlowType {
+  EXPENSE
+  OTHER_OUTFLOW
+}
+
 model Expense {
   id             String        @id @default(cuid())
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -466,9 +476,27 @@ model Expense {
   sourceId        String?
   sourceReference String?
 
+  // What KIND of money movement this row is. EXPENSE = ordinary spending (counts in expense
+  // totals, expense rate and savings rate). OTHER_OUTFLOW = a genuine cash outflow that is
+  // not lifestyle spending: it still reduces cash but is excluded from expense analytics.
+  // Distinct from Category.type (NEED/WANT/SAVINGS), which only classifies BEHAVIOR.
+  // Investments, emergency-fund money, receivables and transfers are NOT represented here:
+  // they live in their own ledgers.
+  flowType ExpenseFlowType @default(EXPENSE)
+
+  // RULE VALUES for future occurrences, on the recurrence TEMPLATE row only. The template row is
+  // also the first real occurrence, so without this its own fields would double as the rule and
+  // editing that one historical row would silently change every future generated row. When
+  // null (every existing row) the generator falls back to the row's own values, so nothing
+  // changes until a rule is edited. Shape: { categoryId, merchant, amount, paymentMethod,
+  // notes, flowType } — see common/recurrence/recurrence-template.util.ts.
+  recurrenceTemplate Json?
+
   @@unique([userId, sourceType, sourceId, sourceReference], map: "Expense_source_idempotency_key")
   @@index([userId, spentAt])
   @@index([categoryId])
+  @@index([userId, flowType, spentAt])
+  @@index([userId, categoryId, spentAt])
   @@index([recurrenceActive, nextOccurrenceAt])
 }
 
@@ -612,6 +640,14 @@ model Investment {
   contributionStartDate DateTime?
   contributionEndDate   DateTime?
   sipActive             Boolean   @default(false)
+  // How often the contribution recurs. WEEKLY / BIWEEKLY anchor on contributionStartDate (every
+  // 7 / 14 days); MONTHLY / QUARTERLY / YEARLY use contributionDay. `monthlyContribution` keeps
+  // its original column name for backward compatibility but now means "amount PER PERIOD".
+  // Existing schedules are MONTHLY (the default), so they behave exactly as before.
+  contributionFrequency Recurrence @default(MONTHLY)
+  // The user's ASSUMED annual return in percent, used only for projections (never overwrites
+  // any actual value). Optional.
+  expectedAnnualReturn  Decimal?  @db.Decimal(6, 3)
 
   @@index([userId])
   @@index([goalId])
@@ -1786,6 +1822,9 @@ model EmergencyFundEntry {
   origin          String                 @default("MANUAL") // | "LEGACY_EXPENSE_MIGRATION"
   // Provenance for the legacy migration; not a foreign key (the Expense is preserved).
   sourceExpenseId String?
+  // Why: the SOURCE of money added ("Monthly contribution", "Bonus" …) or the REASON money was used
+  // ("Medical emergency", "Job loss" …). Short free text; notes stays for longer detail.
+  reason          String?
   notes           String?
   createdAt       DateTime               @default(now())
 
@@ -1861,3 +1900,112 @@ model LoanPayment {
   @@unique([loanId, period], map: "LoanPayment_idempotency_key")
   @@index([userId, paidAt])
 }
+
+
+// --- Money flow: receivables (money given) and internal transfers --------------------------
+//
+// A Receivable is money the user handed to someone else that is EXPECTED BACK. It is not
+// an expense: giving ₹5,000 to a friend moves ₹5,000 from cash into a receivable asset
+// (net worth unchanged, spending unchanged). Repayments move it back. Only the original
+// amount and the dated repayments are stored: returned and outstanding amounts are always
+// DERIVED from the repayment ledger (outstanding = originalAmount - sum(repayments)), so a
+// cached total can never drift from its history.
+//
+// OVERDUE is part of the enum for API/UI use but is never persisted: it is derived at read
+// time from expectedReturnAt, so a row can never be stuck "overdue" after a date edit.
+enum ReceivableStatus {
+  OUTSTANDING
+  PARTIALLY_RETURNED
+  FULLY_RETURNED
+  OVERDUE
+  CANCELLED
+}
+
+model Receivable {
+  id               String           @id @default(cuid())
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           String
+  person           String
+  purpose          String?
+  originalAmount   Decimal          @db.Decimal(14, 2)
+  currency         String           @default("INR")
+  givenAt          DateTime
+  expectedReturnAt DateTime?
+  // Persisted: OUTSTANDING | PARTIALLY_RETURNED | FULLY_RETURNED | CANCELLED.
+  status           ReceivableStatus @default(OUTSTANDING)
+  paymentMethod    PaymentMethod    @default(UPI)
+  notes            String?
+  // CANCELLED means "entered by mistake / void": excluded from every total. Only allowed
+  // while there is no repayment history.
+  cancelledAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  repayments       ReceivableRepayment[]
+
+  @@index([userId, status])
+  @@index([userId, givenAt])
+  @@index([userId, expectedReturnAt])
+}
+
+model ReceivableRepayment {
+  id            String        @id @default(cuid())
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  // NoAction (not Cascade): a receivable with repayment history can never be deleted by
+  // accident; history is only removed deliberately, one repayment at a time.
+  receivable    Receivable    @relation(fields: [receivableId], references: [id], onDelete: NoAction)
+  receivableId  String
+  amount        Decimal       @db.Decimal(14, 2)
+  returnedAt    DateTime
+  paymentMethod PaymentMethod @default(UPI)
+  // Optional client-supplied key so a double-clicked / retried submission records ONE
+  // repayment. NULLs never collide, so repayments without a key are unrestricted.
+  idempotencyKey String?
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  @@unique([receivableId, idempotencyKey], map: "ReceivableRepayment_idempotency_key")
+  @@index([userId, returnedAt])
+  @@index([receivableId])
+}
+
+// Money moved between the user's OWN accounts (Bank A -> Bank B, Bank -> Wallet). It is not
+// income, not an expense and not an investment, so it never enters expense, savings or
+// cash-flow totals; it is recorded only so the money-flow picture can show it explicitly.
+// Accounts are free-text labels for now (no balances) — the minimum abstraction needed.
+model AccountTransfer {
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  fromAccount   String
+  toAccount     String
+  amount        Decimal  @db.Decimal(14, 2)
+  currency      String   @default("INR")
+  transferredAt DateTime
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, transferredAt])
+}
+
+
+// The user's emergency-fund TARGET and contribution PLAN. One row per user. Kept apart from the
+// ledger (EmergencyFundEntry, the only record of what is actually in the reserve) and apart from
+// Goal (whose "current amount" is typed in by hand and would compete with the ledger).
+//
+// The target is EITHER a fixed amount OR a number of months of essential expenses — never both
+// (the service clears the other when one is set). With months, the rupee target is derived from
+// the user's average essential spending every time it is read, so it follows their life.
+model EmergencyFundPlan {
+  id                  String    @id @default(cuid())
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId              String    @unique
+  targetAmount        Decimal?  @db.Decimal(14, 2)
+  targetMonths        Decimal?  @db.Decimal(4, 1)
+  // What the user intends to add each month, and by when they want to be done. Planning inputs only.
+  monthlyContribution Decimal?  @db.Decimal(14, 2)
+  targetDate          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
