@@ -54,6 +54,9 @@ export type FinancialIntent =
   | "LOAN"
   | "RETIREMENT"
   | "GOAL"
+  | "RECEIVABLES"
+  | "EXPENSE_BREAKDOWN"
+  | "INVESTMENT_PROJECTION"
   | "TAX"
   | "DOCUMENT_QUERY"
   | "TRANSACTION_QUERY"
@@ -73,10 +76,20 @@ export interface ScenarioParams {
   percent: string | null; // e.g. "10" for 10%
 }
 
+// "What will my SIP become in 10 years (at 12%)". annualReturn is a percent string such as "12", or
+// null when the question named none (then only each holding's own stored expected return is used).
+export interface ProjectionParams {
+  years: number;
+  annualReturn: string | null;
+}
+
 export interface RoutedIntent {
   intent: FinancialIntent;
   metric?: CalculationMetric;
   scenario?: ScenarioParams;
+  // "MONTH" (default) or "YEAR" for FINANCIAL_CALCULATION questions that said "this year".
+  span?: "MONTH" | "YEAR";
+  projection?: ProjectionParams;
 }
 
 // Where a question is sent when the deterministic engine deliberately does not answer it.
