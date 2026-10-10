@@ -162,7 +162,7 @@ export class ExpensesService {
   // Shared by create() AND update(): previously only create() enforced this, so a row
   // created in a normal category could be PATCHed into a SAVINGS category and silently
   // bypass the rule (and then be excluded from expense totals as "legacy savings").
-  private async assertNotSavingsCategory(categoryId: string) {
+  async assertNotSavingsCategory(categoryId: string) {
     const category = await this.prisma.client.category.findUnique({
       where: { id: categoryId },
       select: { type: true, name: true },
@@ -239,6 +239,65 @@ export class ExpensesService {
 
     const impact = await this.periodImpact(userId, expense.categoryId, new Date(spentAt), expense.flowType);
     return { expense, impact };
+  }
+
+  // GET /expenses/summary: today / this month / this year in one cheap call (three indexed
+  // aggregates), so the expense page header does not need three full analytics requests.
+  // `today` is the caller's local date (YYYY-MM-DD); ranges are UTC calendar days like everywhere else.
+  async periodTotals(userId: string, todayStr: string | undefined, flowType: ExpenseFlowType = "EXPENSE") {
+    const today = parseToday(todayStr);
+    const ranges = {
+      today: resolveExpensePeriod("TODAY", today),
+      month: resolveExpensePeriod("THIS_MONTH", today),
+      year: resolveExpensePeriod("THIS_YEAR", today),
+    };
+    const sum = async (r: DateRange) => {
+      const agg = await this.prisma.client.expense.aggregate({ where: this.spendingWhere(userId, r, flowType), _sum: { amount: true } });
+      return toMoneyString(toDecimal(agg._sum.amount));
+    };
+    const [todayTotal, monthTotal, yearTotal] = await Promise.all([sum(ranges.today), sum(ranges.month), sum(ranges.year)]);
+    return { basis: "ACTUAL" as const, currency: "INR", date: isoDay(today), flowType, today: todayTotal, month: monthTotal, year: yearTotal };
+  }
+
+  // Recurring vs one-time spending over [from, toExclusive). "Recurring" = a row that is flagged as
+  // recurring, is the template of a recurrence rule, or was generated from one. Same filters as the
+  // analytics endpoint (flow type EXPENSE, legacy SAVINGS rows out), so recurring + oneTime always
+  // equals the analytics total for the same window.
+  async recurringSplit(userId: string, from: Date, toExclusive: Date) {
+    const range: DateRange = { from, toExclusive };
+    const base = this.spendingWhere(userId, range, "EXPENSE");
+    const recurringClause: Prisma.ExpenseWhereInput = {
+      OR: [{ isRecurring: true }, { recurrence: { not: null } }, { generatedFromRecurringId: { not: null } }],
+    };
+    const [all, recurring] = await Promise.all([
+      this.prisma.client.expense.aggregate({ where: base, _sum: { amount: true } }),
+      this.prisma.client.expense.aggregate({ where: { AND: [base, recurringClause] }, _sum: { amount: true } }),
+    ]);
+    const total = toDecimal(all._sum.amount);
+    const rec = toDecimal(recurring._sum.amount);
+    const percent = percentOf(rec, total);
+    return {
+      recurring: toMoneyString(rec),
+      oneTime: toMoneyString(total.minus(rec)),
+      recurringPercent: percent === null ? null : Number(percent.toDecimalPlaces(1, Prisma.Decimal.ROUND_HALF_UP).toString()),
+    };
+  }
+
+  // The biggest individual expenses in [from, toExclusive), largest first (ties: newest first).
+  async largestTransactions(userId: string, from: Date, toExclusive: Date, limit = 5): Promise<ExpenseExtremeDTO[]> {
+    const rows = await this.prisma.client.expense.findMany({
+      where: this.spendingWhere(userId, { from, toExclusive }, "EXPENSE"),
+      orderBy: [{ amount: "desc" }, { spentAt: "desc" }],
+      take: Math.min(Math.max(limit, 1), 20),
+      include: { category: { select: { name: true } } },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      amount: toMoneyString(toDecimal(r.amount)),
+      spentAt: r.spentAt.toISOString(),
+      merchant: r.merchant ?? null,
+      categoryName: r.category.name,
+    }));
   }
 
   // What a just-saved expense changed: that category's and ALL categories' totals for the
@@ -503,7 +562,7 @@ export class ExpensesService {
     const sumOnly = { _sum: { amount: true } } as const;
     const withCategory = { category: { select: { name: true } } } as const;
 
-    const [agg, largest, smallest, dailyRows, categoryGroups, previousAgg, lastYearAgg, overallAgg] = await Promise.all([
+    const [agg, largest, smallest, dailyRows, categoryGroups, previousAgg, lastYearAgg, overallAgg, previousCategoryGroups] = await Promise.all([
       this.prisma.client.expense.aggregate({ where: whereFor(range), _sum: { amount: true }, _count: { _all: true } }),
       this.prisma.client.expense.findFirst({ where: whereFor(range), orderBy: [{ amount: "desc" }, { spentAt: "desc" }], include: withCategory }),
       this.prisma.client.expense.findFirst({ where: whereFor(range), orderBy: [{ amount: "asc" }, { spentAt: "desc" }], include: withCategory }),
@@ -513,7 +572,10 @@ export class ExpensesService {
       this.prisma.client.expense.aggregate({ where: whereFor(lastYear), ...sumOnly }),
       // With a category filter, also the all-category total so "share of total expenses" is real.
       categoryId ? this.prisma.client.expense.aggregate({ where: whereFor(range, false), ...sumOnly }) : Promise.resolve(null),
+      // Same grouping over the comparison window, so every category row can show its own change.
+      this.prisma.client.expense.groupBy({ by: ["categoryId"], where: whereFor(previous), _sum: { amount: true } }),
     ]);
+    const previousByCategory = new Map(previousCategoryGroups.map((g) => [g.categoryId, toDecimal(g._sum.amount)]));
 
     const total = toDecimal(agg._sum.amount);
     const count = agg._count._all;
@@ -598,6 +660,7 @@ export class ExpensesService {
         .map((g) => {
           const c = categoryById.get(g.categoryId);
           const catTotal = toDecimal(g._sum.amount);
+          const catPrevious = previousByCategory.get(g.categoryId) ?? ZERO;
           return {
             categoryId: g.categoryId,
             name: c?.name ?? "Unknown",
@@ -606,10 +669,12 @@ export class ExpensesService {
             total: catTotal,
             count: g._count._all,
             sharePercent: pct1(percentOf(catTotal, total)),
+            previousTotal: catPrevious,
+            changePercent: pct1(percentChange(catTotal, catPrevious)),
           };
         })
         .sort((a, b) => b.total.comparedTo(a.total))
-        .map((c) => ({ ...c, total: toMoneyString(c.total) })),
+        .map((c) => ({ ...c, total: toMoneyString(c.total), previousTotal: toMoneyString(c.previousTotal) })),
       comparison: compare(previous, previousAgg),
       // Year-over-year only when the same window a year ago actually had spending.
       yearOverYear: lastYearTotal.gt(0) ? compare(lastYear, lastYearAgg) : null,
