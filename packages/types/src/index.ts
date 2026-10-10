@@ -66,7 +66,7 @@ export type IncomeSource =
   | "BONUS"
   | "PENSION"
   | "OTHER";
-export type Recurrence = "ONE_TIME" | "WEEKLY" | "MONTHLY" | "QUARTERLY" | "YEARLY";
+export type Recurrence = "ONE_TIME" | "WEEKLY" | "BIWEEKLY" | "MONTHLY" | "QUARTERLY" | "YEARLY";
 export type PaymentMethod = "CASH" | "UPI" | "CARD" | "BANK_TRANSFER" | "WALLET" | "OTHER";
 
 export interface UserDTO {
@@ -159,6 +159,11 @@ export interface ExpenseDTO {
   recurrenceEndDate: string | null;
   nextOccurrenceAt: string | null;
   generatedFromRecurringId: string | null;
+  // Absent on rows from older API versions; treat missing as "EXPENSE".
+  flowType?: ExpenseFlowType;
+  // Values future occurrences are generated with (null = the row's own values). Only set on a
+  // recurrence template that has had its rule edited.
+  recurrenceTemplate?: ExpenseRuleValuesDTO | null;
 }
 
 export interface CategoryBreakdownDTO {
@@ -245,6 +250,12 @@ export interface DashboardSummaryDTO {
   // explicit rather than only documented in a code comment, so a user comparing the two
   // pages (or the AI Coach explaining the difference) has a concrete field to point to.
   monthlyIncomeBasis: "FORECAST";
+  // ACTUAL-basis savings rate for the month (percent, 1 dp, may be NEGATIVE), computed from recorded
+  // income and recorded expenses only. null when no income has been recorded this month.
+  // `savingsRate` above keeps its legacy meaning (forecast income vs actual expenses, floored at 0)
+  // for older clients; `savingsRateBasis` names exactly what it is.
+  savingsRateActual?: number | null;
+  savingsRateBasis?: "FORECAST_INCOME_VS_ACTUAL_EXPENSES";
   // NEW (financial-core upgrade) — all optional so older clients/fixtures keep working.
   // `cashBalance` above is now exactly `availableCash` (it never included reserved money);
   // the three cash concepts are surfaced explicitly instead of one ambiguous balance.
@@ -349,6 +360,16 @@ export interface InvestmentDTO {
   liquidity: Liquidity;
   goalId: string | null;
   notes: string | null;
+  // Recurring-contribution schedule (present on rows from the API; absent when none is set).
+  // monthlyContribution is the amount PER PERIOD despite its legacy name.
+  monthlyContribution?: string | null;
+  contributionDay?: number | null;
+  contributionFrequency?: Recurrence;
+  contributionStartDate?: string | null;
+  contributionEndDate?: string | null;
+  sipActive?: boolean;
+  // The user's ASSUMED annual return in percent, used only by projections.
+  expectedAnnualReturn?: string | null;
 }
 
 export interface InvestmentSummaryDTO {
@@ -1570,4 +1591,623 @@ export interface DataHealthReportDTO {
   issues: DataHealthIssueDTO[];
   checks: Array<{ label: string; ok: boolean }>;
   notChecked: string[];
+}
+
+// --- Money flow: receivables (money given) & internal transfers -------------------------------
+// A receivable is money handed to someone that is expected BACK. It is never an expense:
+// cash falls, a receivable asset rises, net worth and spending are unchanged. returned /
+// outstanding are always derived from the repayment ledger.
+
+export type ReceivableStatus = "OUTSTANDING" | "PARTIALLY_RETURNED" | "FULLY_RETURNED" | "OVERDUE" | "CANCELLED";
+
+export interface ReceivableRepaymentDTO {
+  id: string;
+  receivableId: string;
+  amount: string;
+  returnedAt: string;
+  paymentMethod: PaymentMethod;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface ReceivableDTO {
+  id: string;
+  person: string;
+  purpose: string | null;
+  originalAmount: string;
+  returnedAmount: string;
+  outstandingAmount: string;
+  currency: string;
+  givenAt: string;
+  expectedReturnAt: string | null;
+  // Stored status vs. read-time status: effectiveStatus upgrades an open, past-due
+  // receivable to OVERDUE. Render effectiveStatus; use status only for edit rules.
+  status: ReceivableStatus;
+  effectiveStatus: ReceivableStatus;
+  // Negative = days overdue; null when no expected return date was set.
+  daysUntilDue: number | null;
+  paymentMethod: PaymentMethod;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  // Present on the detail endpoint only (newest first).
+  repayments?: ReceivableRepaymentDTO[];
+}
+
+export interface ReceivableSummaryDTO {
+  basis: "ACTUAL";
+  currency: string;
+  totalOutstanding: string;
+  activeCount: number;
+  dueSoon: { amount: string; count: number; withinDays: number };
+  overdue: { amount: string; count: number };
+  returnedThisMonth: string;
+  largest: { id: string; person: string; outstandingAmount: string } | null;
+}
+
+export interface RecordRepaymentResultDTO {
+  receivable: ReceivableDTO;
+  repayment: ReceivableRepaymentDTO;
+  // true when the same idempotencyKey was already recorded: nothing new was written.
+  duplicate: boolean;
+}
+
+export interface AccountTransferDTO {
+  id: string;
+  fromAccount: string;
+  toAccount: string;
+  amount: string;
+  currency: string;
+  transferredAt: string;
+  notes: string | null;
+  createdAt: string;
+}
+
+// --- Expense flow type, analytics, quick expense, money flow ----------------------------------
+// EXPENSE = ordinary spending. OTHER_OUTFLOW = a genuine cash outflow that is not lifestyle
+// spending (reduces cash, excluded from expense totals). Investments, emergency-fund money,
+// receivables and transfers are separate ledgers, never expense rows.
+
+export type ExpenseFlowType = "EXPENSE" | "OTHER_OUTFLOW";
+
+export interface ExpenseExtremeDTO {
+  id: string;
+  amount: string;
+  spentAt: string;
+  merchant: string | null;
+  categoryName: string;
+}
+
+export interface ExpenseComparisonDTO {
+  from: string;
+  to: string;
+  total: string;
+  // current − comparison (negative = spent less).
+  change: string;
+  // null when the comparison total is zero (nothing to compare against).
+  changePercent: number | null;
+}
+
+export interface ExpenseAnalyticsDTO {
+  basis: "ACTUAL";
+  currency: string;
+  // `to` is the last INCLUDED day. elapsedDays = days of the range that have happened so far
+  // (what averagePerDay divides by).
+  period: { from: string; to: string; days: number; elapsedDays: number };
+  filters: { categoryId: string | null; flowType: ExpenseFlowType };
+  totals: {
+    total: string;
+    transactionCount: number;
+    averagePerTransaction: string | null;
+    averagePerDay: string;
+    largest: ExpenseExtremeDTO | null;
+    smallest: ExpenseExtremeDTO | null;
+  };
+  // Chosen among days that had spending.
+  highestDay: { date: string; total: string } | null;
+  lowestDay: { date: string; total: string } | null;
+  // Zero-filled up to today (never into the future).
+  daily: Array<{ date: string; total: string; count: number }>;
+  weekly: Array<{ weekStart: string; total: string; count: number }>;
+  monthly: Array<{ month: string; total: string; count: number }>;
+  categories: Array<{
+    categoryId: string;
+    name: string;
+    type: string;
+    icon: string | null;
+    total: string;
+    count: number;
+    sharePercent: number | null;
+    // The same category over the comparison window, and the change vs it (null when it was 0).
+    previousTotal: string;
+    changePercent: number | null;
+  }>;
+  // vs the previous calendar month / year for whole months / years, else the previous same-length window.
+  comparison: ExpenseComparisonDTO;
+  // null unless the same window a year earlier had spending.
+  yearOverYear: ExpenseComparisonDTO | null;
+  // Present only for a category drill-down: all-category total and this category's share of it.
+  overall: { total: string; sharePercent: number | null } | null;
+}
+
+export interface ExpensePeriodImpactDTO {
+  basis: "ACTUAL";
+  date: string;
+  flowType: ExpenseFlowType;
+  day: { categoryTotal: string; allCategoriesTotal: string };
+  month: { categoryTotal: string; allCategoriesTotal: string };
+  year: { categoryTotal: string; allCategoriesTotal: string };
+}
+
+export interface QuickExpenseResultDTO {
+  expense: ExpenseDTO;
+  impact: ExpensePeriodImpactDTO;
+}
+
+export interface MoneyFlowDTO {
+  basis: "ACTUAL";
+  period: "MONTHLY";
+  asOfDate: string;
+  currency: string;
+  month: string;
+  income: string;
+  outflows: { expenses: string; investments: string; emergencyFund: string; receivablesGiven: string; otherOutflow: string };
+  // Between the user's own accounts: not income, not an outflow, in no total.
+  internalTransfers: string;
+  inflows: { receivableRepayments: string; investmentProceeds: string };
+  // expenses + investments + emergency fund + receivables given + other outflow (transfers excluded).
+  totalGenuineOutflow: string;
+  netCashFlow: string;
+  percentOfIncome: {
+    expenses: number | null;
+    investments: number | null;
+    emergencyFund: number | null;
+    receivablesGiven: number | null;
+    otherOutflow: number | null;
+  };
+  // Ratios (0.25 = 25%), null when no income was recorded.
+  savingsRate: string | null;
+  investmentRate: string | null;
+  expenseRate: string | null;
+  dataHealth: Array<{ code: string; severity?: string; message: string; count: number; amount?: string }>;
+}
+
+export interface ExpenseSummaryDTO {
+  basis: "ACTUAL";
+  currency: string;
+  date: string;
+  flowType: ExpenseFlowType;
+  today: string;
+  month: string;
+  year: string;
+}
+
+// --- Emergency fund (ledger rows and the summary the backend already serves) -----------------
+export type EmergencyEntryType = "ALLOCATE" | "RELEASE" | "WITHDRAWAL" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT";
+
+export interface EmergencyFundEntryDTO {
+  id: string;
+  userId: string;
+  type: EmergencyEntryType;
+  amount: string;
+  occurredAt: string;
+  notes: string | null;
+  createdAt: string;
+  // The source of money added or the reason it was used (short free text).
+  reason?: string | null;
+}
+
+export interface EmergencyFundSummaryDTO {
+  basis: "ACTUAL";
+  emergencyCash: string;
+  availableCash: string;
+  totalCash: string;
+  // Emergency Cash / average monthly NEED expenses; null with no essential-expense baseline.
+  coverageMonths: string | null;
+  avgMonthlyEssentialExpenses: string;
+  monthsOfData: number;
+}
+
+// --- Recurrence rules & contribution schedules -------------------------------------------------
+
+export interface ExpenseRuleValuesDTO {
+  categoryId: string;
+  merchant: string | null;
+  amount: string;
+  paymentMethod: PaymentMethod;
+  notes: string | null;
+  flowType: ExpenseFlowType;
+}
+
+// Which occurrences an edit applies to. THIS = just that row; FUTURE = that row, every later
+// already-generated occurrence and the rule for ones not yet generated; RULE (the dedicated
+// rule endpoint) = only occurrences not yet generated. Earlier rows are never changed.
+export type RecurrenceEditScope = "THIS" | "FUTURE" | "RULE";
+export type RecurrenceDeleteMode = "THIS" | "FUTURE";
+
+export interface SipScheduleSummaryDTO {
+  investmentId: string;
+  active: boolean;
+  frequency: Recurrence;
+  amountPerPeriod: string | null;
+  contributionDay: number | null;
+  startDate: string | null;
+  endDate: string | null;
+  expectedAnnualReturn: string | null;
+  // amountPerPeriod expressed per month / per year (e.g. weekly ₹1,000 = ₹4,333.33 / month).
+  monthlyEquivalent: string | null;
+  annualContribution: string | null;
+  // The next date a contribution is due on or after today (null when finished or inactive).
+  nextContributionDate: string | null;
+  // Occurrences between start and end (null for an open-ended schedule), how many are due so far,
+  // and how many remain in the future. Planned total = amountPerPeriod x plannedCount.
+  plannedCount: number | null;
+  dueSoFarCount: number;
+  remainingCount: number | null;
+  plannedTotal: string | null;
+  // Contributions actually recorded (all CONTRIBUTION cashflows, however they were created).
+  actualCount: number;
+  actualAmount: string;
+}
+
+// --- Investment ledger (cashflows, valuations, metrics) ----------------------------------------
+// Mirrors the existing ledger API. Cashflow types keep their financial meaning: a CONTRIBUTION moves
+// cash into the investment, a WITHDRAWAL / SALE brings it back, a DIVIDEND is cash income, a FEE is a
+// genuine cost, an EMPLOYER_CONTRIBUTION raises the asset without being the user's own cash, INTEREST
+// is growth already inside the value, and TRANSFER_IN / TRANSFER_OUT move money between holdings.
+
+export type InvestmentCashflowType =
+  | "CONTRIBUTION"
+  | "WITHDRAWAL"
+  | "SALE"
+  | "DIVIDEND"
+  | "FEE"
+  | "EMPLOYER_CONTRIBUTION"
+  | "INTEREST"
+  | "TRANSFER_IN"
+  | "TRANSFER_OUT";
+
+export interface InvestmentCashflowDTO {
+  id: string;
+  userId: string;
+  investmentId: string;
+  type: InvestmentCashflowType;
+  amount: string;
+  occurredAt: string;
+  notes: string | null;
+  // MANUAL (typed in), RECURRING (generated by a schedule) or a migration source.
+  origin: string;
+  periodKey: string | null;
+  createdAt?: string;
+}
+
+export interface InvestmentValuationDTO {
+  id: string;
+  userId: string;
+  investmentId: string;
+  value: string;
+  valuedAt: string;
+  origin: string;
+  createdAt?: string;
+}
+
+export interface InvestmentMetricsDTO {
+  investmentId: string;
+  name: string;
+  type: InvestmentType;
+  basis: "ACTUAL";
+  period: "LIFETIME";
+  asOfDate: string;
+  // Where currentValue came from: a dated VALUATION, or the legacy currentValue field.
+  valuationSource: "VALUATION" | "LEGACY_CURRENT_VALUE";
+  grossContributions: string;
+  employerContributions: string;
+  withdrawals: string;
+  netContributions: string;
+  costBasis: string;
+  currentValue: string;
+  unrealizedGain: string;
+  realizedGain: string;
+  dividends: string;
+  fees: string;
+  totalReturn: string;
+  // A ratio (0.05 = 5%), null when nothing has been invested.
+  returnRatio: string | null;
+}
+
+// --- Projection (PROJECTED — never an actual, never a guarantee) --------------------------------
+
+export interface ProjectionScenarioDTO {
+  years: number;
+  // Only the NEW money put in over the horizon.
+  totalContributions: string;
+  // Current value + total contributions: what would be there with no growth at all.
+  principal: string;
+  projectedValue: string;
+  // projectedValue - principal.
+  projectedGain: string;
+}
+
+export interface ProjectionCurvePointDTO {
+  year: number;
+  principal: string;
+  projectedValue: string;
+}
+
+export interface ProjectionDTO {
+  basis: "PROJECTED";
+  // Always shown with the numbers: a projection is an assumption, not a promise.
+  disclaimer: string;
+  assumptions: {
+    currentValue: string;
+    contributionPerPeriod: string;
+    frequency: Recurrence;
+    annualReturnPercent: string;
+  };
+  scenarios: ProjectionScenarioDTO[];
+  curve: ProjectionCurvePointDTO[];
+}
+
+export interface PortfolioProjectionHoldingDTO {
+  id: string;
+  name: string;
+  type: InvestmentType;
+  currentValue: string;
+  // The return assumption used for this holding, where it came from, and whether it was projected.
+  annualReturnPercent: string | null;
+  rateSource: "INVESTMENT" | "DEFAULT" | "NONE";
+  contributionPerPeriod: string | null;
+  frequency: Recurrence | null;
+  included: boolean;
+}
+
+export interface PortfolioProjectionDTO {
+  basis: "PROJECTED";
+  disclaimer: string;
+  // The recorded value today (ACTUAL), shown beside — never replaced by — the projection.
+  actual: { basis: "ACTUAL"; currentValue: string; holdings: number };
+  defaultAnnualReturnPercent: string | null;
+  // Sums over the INCLUDED holdings only; excluded ones are listed in `holdings`.
+  includedValueToday: string;
+  scenarios: ProjectionScenarioDTO[];
+  curve: ProjectionCurvePointDTO[];
+  holdings: PortfolioProjectionHoldingDTO[];
+  includedCount: number;
+  excludedCount: number;
+}
+
+// --- Investment analytics (ACTUAL, derived from the ledger) --------------------------------------
+
+export interface InvestmentAnalyticsDTO {
+  basis: "ACTUAL";
+  // Oldest to newest ("2026-05" … "2026-10"), ending with the current month.
+  months: string[];
+  contributionTrend: Array<{ month: string; contributions: string; employer: string; withdrawals: string }>;
+  // Sum of each holding's latest valuation at or before month end; null when none had a valuation yet.
+  valueTrend: Array<{ month: string; value: string | null; holdingsValued: number }>;
+  // value - net invested, over holdings that have BOTH a ledger and a valuation; null when none do.
+  gainTrend: Array<{ month: string; gain: string | null; coveredHoldings: number }>;
+  // The CURRENT recorded value split three ways (largest first); percent is of the total, 1 dp.
+  allocation: {
+    totalValue: string;
+    byType: Array<{ key: string; value: string; percent: number }>;
+    byRisk: Array<{ key: string; value: string; percent: number }>;
+    byLiquidity: Array<{ key: string; value: string; percent: number }>;
+  };
+  overview: {
+    holdings: number;
+    holdingsWithLedger: number;
+    activeSchedules: number;
+    // What the active schedules PLAN to put in (a plan, not what has happened).
+    plannedMonthlyContribution: string;
+    plannedAnnualContribution: string;
+    // What has actually been recorded as the user's own contributions.
+    actualContributionsThisMonth: string;
+    actualContributionsThisYear: string;
+  };
+}
+
+// --- Emergency fund overview, ledger and plan --------------------------------------------------
+// Balance and coverage are ACTUAL (from the shared financial facts); the target is a TARGET; the
+// required contribution and estimated finish date are ESTIMATED planning calculations, not advice.
+
+export interface EmergencyFundLedgerRowDTO {
+  id: string;
+  type: EmergencyEntryType;
+  // As entered (positive, except a signed ADJUSTMENT).
+  amount: string;
+  // What it did to the reserve: positive adds, negative takes out.
+  effect: string;
+  // The reserve balance AFTER this entry.
+  balanceAfter: string;
+  occurredAt: string;
+  reason: string | null;
+  notes: string | null;
+  origin: string;
+}
+
+export interface EmergencyFundOverviewDTO {
+  basis: "ACTUAL";
+  currency: string;
+  balance: string;
+  coverage: {
+    // Balance / average monthly essential expenses; null with no essential-spending history.
+    months: string | null;
+    avgMonthlyEssentialExpenses: string;
+    monthsOfData: number;
+  };
+  target: {
+    basis: "TARGET";
+    mode: "AMOUNT" | "MONTHS" | null;
+    // The rupee target (for MONTHS: months x average essential spending); null when none is set.
+    amount: string | null;
+    months: string | null;
+    // Months were chosen but there is no spending history yet to turn them into a rupee amount.
+    needsExpenseHistory: boolean;
+  };
+  progress: { percent: number | null; remaining: string | null; reached: boolean };
+  plan: {
+    basis: "ESTIMATED";
+    monthlyContribution: string | null;
+    targetDate: string | null;
+    // What it would take each month / week to reach the target by the target date.
+    requiredMonthly: string | null;
+    requiredWeekly: string | null;
+    // At the planned monthly contribution: how many months to go, and roughly when.
+    monthsToTargetAtPlan: number | null;
+    estimatedFinishDate: string | null;
+  };
+  totals: {
+    contributions: string;
+    withdrawals: string;
+    adjustments: string;
+    contributedThisMonth: string;
+    contributedThisYear: string;
+    withdrawnThisYear: string;
+  };
+  last: {
+    contribution: { date: string; amount: string } | null;
+    withdrawal: { date: string; amount: string } | null;
+  };
+  // Oldest to newest, the last 12 months: balance at month end, money added, money used.
+  trend: Array<{ month: string; closingBalance: string; added: string; used: string }>;
+  entryCount: number;
+}
+
+
+
+// --- Batch 8: dashboard overview, detailed reports (all ACTUAL unless labelled) -------------------
+export interface DashboardOverviewDTO {
+  basis: "ACTUAL";
+  asOfDate: string;
+  month: string;
+  currency: string;
+  // Where did this month's money go. The same numbers as the Money Flow endpoint and the reports.
+  moneyFlow: MoneyFlowDTO;
+  // Ratios as percent (1 dp). null when no income was recorded - never fabricated, never floored.
+  savingsRate: number | null;
+  investmentRate: number | null;
+  expenseRate: number | null;
+  expenses: {
+    today: string;
+    month: string;
+    year: string;
+    averagePerDay: string;
+    essential: string;
+    discretionary: string;
+    topCategory: { name: string; total: string; sharePercent: number | null } | null;
+    largest: ExpenseExtremeDTO | null;
+    highestDay: { date: string; total: string } | null;
+    comparison: ExpenseComparisonDTO;
+  };
+  investments: {
+    totalValue: string;
+    contributedThisMonth: string;
+    contributedThisYear: string;
+    plannedMonthlyContribution: string;
+    activeSchedules: number;
+    holdings: number;
+  };
+  emergencyFund: {
+    balance: string;
+    targetAmount: string | null;
+    progressPercent: number | null;
+    coverageMonths: string | null;
+    contributedThisMonth: string;
+  };
+  receivables: {
+    outstanding: string;
+    activeCount: number;
+    dueSoon: { amount: string; count: number; withinDays: number };
+    overdue: { amount: string; count: number };
+  };
+  wealth: {
+    netWorth: string;
+    availableCash: string;
+    emergencyCash: string;
+    investments: string;
+    receivables: string;
+    property: string;
+    liabilities: string;
+  };
+  // Deterministic sentences built from the numbers above. Never produced by an LLM.
+  narrative: string[];
+  dataHealth: Array<{ code: string; severity?: string; message: string; count: number; amount?: string }>;
+}
+
+export interface ReportCategoryRowDTO {
+  categoryId: string;
+  category: string;
+  type: string;
+  amount: string;
+  percentOfTotal: number | null;
+  previousAmount: string;
+  changePercent: number | null;
+}
+
+export interface MonthlyReportDetailDTO {
+  basis: "ACTUAL";
+  month: string;
+  currency: string;
+  moneyFlow: MoneyFlowDTO;
+  income: string;
+  expenses: string;
+  investments: string;
+  emergencyFund: string;
+  receivablesGiven: string;
+  receivableRepayments: string;
+  otherOutflow: string;
+  internalTransfers: string;
+  netCashFlow: string;
+  savingsRate: number | null;
+  investmentRate: number | null;
+  expenseRate: number | null;
+  // income - expenses - other outflow. Investments, emergency money and receivables stay assets, so
+  // they are not a loss of net worth. Excludes market-value changes and loan principal.
+  netWorthChange: { basis: "ESTIMATED"; amount: string; note: string };
+  categories: ReportCategoryRowDTO[];
+  topCategories: ReportCategoryRowDTO[];
+  dailySpending: Array<{ date: string; total: string; count: number }>;
+  averagePerDay: string;
+  highestDay: { date: string; total: string } | null;
+  recurringVsOneTime: { recurring: string; oneTime: string; recurringPercent: number | null };
+  largestTransactions: ExpenseExtremeDTO[];
+  comparison: ExpenseComparisonDTO;
+  narrative: string[];
+  dataHealth: Array<{ code: string; severity?: string; message: string; count: number; amount?: string }>;
+}
+
+export interface YearlyMonthRowDTO {
+  month: string;
+  income: string;
+  expenses: string;
+  investments: string;
+  emergencyFund: string;
+  receivablesGiven: string;
+  otherOutflow: string;
+  netCashFlow: string;
+  savingsRate: number | null;
+}
+
+export interface YearlyMonthsReportDTO {
+  basis: "ACTUAL";
+  year: number;
+  currency: string;
+  // January to December, always 12 rows (months with no activity are zero).
+  months: YearlyMonthRowDTO[];
+  totals: {
+    income: string;
+    expenses: string;
+    investments: string;
+    emergencyFund: string;
+    receivablesGiven: string;
+    otherOutflow: string;
+    netCashFlow: string;
+    savingsRate: number | null;
+  };
+  categories: ReportCategoryRowDTO[];
+  comparison: ExpenseComparisonDTO;
+  highestExpenseMonth: { month: string; total: string } | null;
+  lowestExpenseMonth: { month: string; total: string } | null;
+  narrative: string[];
 }
