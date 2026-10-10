@@ -13,7 +13,7 @@ import {
   registerDecorator,
 } from "class-validator";
 import { Transform } from "class-transformer";
-import { PaymentMethod } from "@wealthos/db";
+import { ExpenseFlowType, PaymentMethod } from "@wealthos/db";
 
 // Expense.amount is Decimal(14, 2) in the schema — 14 total digits, 2 after the decimal
 // point, so the largest value the column can actually hold is 999999999999.99. Without
@@ -30,7 +30,7 @@ export const MAX_EXPENSE_AMOUNT = 999999999999.99;
 // silently skews categoryBreakdown()'s "this month" totals and the subscription
 // detector's 3-month lookback window. A 1-day grace window absorbs timezone differences
 // between the client's local date and the server's clock.
-function IsNotFarFutureDate(maxFutureDays = 1, validationOptions?: ValidationOptions) {
+export function IsNotFarFutureDate(maxFutureDays = 1, validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
     registerDecorator({
       name: "isNotFarFutureDate",
@@ -88,4 +88,12 @@ export class CreateExpenseDto {
   @IsOptional()
   @IsBoolean()
   isRecurring?: boolean;
+
+  // EXPENSE (default) = ordinary spending. OTHER_OUTFLOW = a genuine cash outflow that is not
+  // lifestyle spending (kept out of expense analytics, still reduces cash). Investments,
+  // emergency-fund money, receivables and transfers are NOT expenses and use their own
+  // endpoints; this field only distinguishes the two kinds of outflow an Expense row can be.
+  @IsOptional()
+  @IsEnum(ExpenseFlowType)
+  flowType?: ExpenseFlowType;
 }
