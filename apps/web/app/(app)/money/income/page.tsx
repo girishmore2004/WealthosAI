@@ -220,7 +220,7 @@ const SOURCES: IncomeSource[] = [
   "PENSION",
   "OTHER",
 ];
-const RECURRENCES: Recurrence[] = ["ONE_TIME", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"];
+const RECURRENCES: Recurrence[] = ["ONE_TIME", "WEEKLY", "BIWEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"];
 
 const EDIT_FIELDS: EditField[] = [
   { key: "source", label: "Source", type: "select", options: SOURCES.map((s) => ({ value: s, label: s })) },
