@@ -60,7 +60,19 @@ describe("LegacyMigrationService", () => {
 
 describe("EmergencyFundService", () => {
   const build = (balanceRows: Array<{ type: string; _sum: { amount: unknown } }>) => {
-    const db = { emergencyFundEntry: { groupBy: jest.fn().mockResolvedValue(balanceRows), create: jest.fn().mockResolvedValue({ id: "n" }), deleteMany: jest.fn() } };
+    const db = {
+      emergencyFundEntry: {
+        groupBy: jest.fn().mockResolvedValue(balanceRows),
+        create: jest.fn().mockResolvedValue({ id: "n" }),
+        findFirst: jest.fn().mockResolvedValue(null),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $transaction: jest.fn(),
+    };
+    // Balance-dependent writes run in one transaction (with a per-user advisory lock);
+    // the mock executes the callback against the same mocked client.
+    db.$transaction.mockImplementation(async (fn: (tx: typeof db) => Promise<unknown>) => fn(db));
     return { db, svc: new EmergencyFundService({ client: db } as never, {} as never) };
   };
   const dto = (type: string, amount: number) => ({ type, amount, occurredAt: "2026-09-01T00:00:00Z" }) as never;
@@ -79,11 +91,12 @@ describe("EmergencyFundService", () => {
     expect(db.emergencyFundEntry.create).toHaveBeenCalledTimes(1);
   });
 
-  it("delete is ownership-scoped", async () => {
+  it("delete is ownership-scoped (foreign or missing id is a 404 and deletes nothing)", async () => {
     const { db, svc } = build([]);
-    db.emergencyFundEntry.deleteMany.mockResolvedValue({ count: 0 });
+    db.emergencyFundEntry.findFirst.mockResolvedValue(null);
     await expect(svc.remove("u1", "x")).rejects.toBeInstanceOf(NotFoundException);
-    expect(db.emergencyFundEntry.deleteMany).toHaveBeenCalledWith({ where: { id: "x", userId: "u1" } });
+    expect(db.emergencyFundEntry.findFirst).toHaveBeenCalledWith({ where: { id: "x", userId: "u1" } });
+    expect(db.emergencyFundEntry.deleteMany).not.toHaveBeenCalled();
   });
 });
 
