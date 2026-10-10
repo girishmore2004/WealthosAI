@@ -377,20 +377,44 @@ export class InvestmentsService {
     const gainAmount = dto.proceeds - dto.costBasisPortion;
     const financialYear = currentFinancialYear(saleDate);
 
-    return this.prisma.client.realizedGainEvent.create({
-      data: {
-        userId,
-        investmentId,
-        investmentType: investment.type,
-        saleDate,
-        proceeds: dto.proceeds,
-        costBasisPortion: dto.costBasisPortion,
-        gainAmount,
-        holdingPeriodDays,
-        gainCategory,
-        financialYear,
-        notes: dto.notes,
-      },
+    const eventData = {
+      userId,
+      investmentId,
+      investmentType: investment.type,
+      saleDate,
+      proceeds: dto.proceeds,
+      costBasisPortion: dto.costBasisPortion,
+      gainAmount,
+      holdingPeriodDays,
+      gainCategory,
+      financialYear,
+      notes: dto.notes,
+    };
+
+    // Default: the tax record alone, exactly as before — cash is not touched.
+    if (!dto.alsoRecordCashflow) {
+      return this.prisma.client.realizedGainEvent.create({ data: eventData });
+    }
+
+    // Opt-in: the tax event AND the SALE cashflow that moves the proceeds into cash, in ONE
+    // transaction. The cashflow is keyed to the event ("sale:<eventId>") so it can exist at most once
+    // per sale, and the sale can never be half-recorded (proceeds in cash with no tax event, or the
+    // reverse). Afterwards the holding's value should be updated with a valuation.
+    return this.prisma.client.$transaction(async (tx) => {
+      const event = await tx.realizedGainEvent.create({ data: eventData });
+      await tx.investmentCashflow.create({
+        data: {
+          userId,
+          investmentId,
+          type: "SALE",
+          amount: dto.proceeds,
+          occurredAt: saleDate,
+          periodKey: `sale:${event.id}`,
+          origin: "MANUAL",
+          notes: dto.notes ? `Sale — ${dto.notes}` : "Sale",
+        },
+      });
+      return event;
     });
   }
 
