@@ -23,6 +23,9 @@ function advanceDueDate(current: Date, recurrence: Recurrence): Date {
     case "WEEKLY":
       next.setDate(next.getDate() + 7);
       return next;
+    case "BIWEEKLY":
+      next.setDate(next.getDate() + 14);
+      return next;
     case "MONTHLY":
       next.setMonth(next.getMonth() + 1);
       return next;
