@@ -23,6 +23,8 @@ import {
   investmentCashInflow,
   investmentCashOutflow,
   investmentRate,
+  percentOf,
+  receivableOutstanding,
   savingsRate,
   sumDecimals,
   toDecimal,
@@ -65,6 +67,30 @@ export interface FinancialPosition extends FactMeta {
   totalAssets: string;
   totalLiabilities: string;
   netWorth: string;
+  // Money given to others that is expected back. An ASSET (it is already inside
+  // totalAssets / netWorth): cash fell when it was given, so it is never an expense.
+  receivables: { given: string; returned: string; outstanding: string };
+  dataHealth: DataHealthWarning[];
+}
+
+export interface MoneyFlow {
+  basis: "ACTUAL";
+  period: "MONTHLY";
+  asOfDate: string;
+  currency: string;
+  month: string;
+  income: string;
+  outflows: { expenses: string; investments: string; emergencyFund: string; receivablesGiven: string; otherOutflow: string };
+  // Between the user's OWN accounts: not income, not an outflow, in no total.
+  internalTransfers: string;
+  inflows: { receivableRepayments: string; investmentProceeds: string };
+  // expenses + investments + emergency fund + receivables given + other outflow (transfers excluded).
+  totalGenuineOutflow: string;
+  netCashFlow: string;
+  percentOfIncome: { expenses: number | null; investments: number | null; emergencyFund: number | null; receivablesGiven: number | null; otherOutflow: number | null };
+  savingsRate: string | null;
+  investmentRate: string | null;
+  expenseRate: string | null;
   dataHealth: DataHealthWarning[];
 }
 
@@ -74,6 +100,17 @@ export interface MonthlyCashFlow extends FactMeta {
   expenses: string;
   investmentContributions: string;
   emergencyAllocations: string;
+  // Money given out as receivables / repaid back this month. Neither is income or expense.
+  receivablesGiven: string;
+  receivableRepayments: string;
+  // Genuine cash outflows that are not lifestyle spending (Expense rows with flowType
+  // OTHER_OUTFLOW). They reduce cash but are NOT in `expenses`, the expense rate or the savings rate.
+  otherOutflows: string;
+  // Cash that came back from investments (sales, withdrawals, dividends…) — never ordinary income.
+  investmentProceeds: string;
+  // Moves between the user's own accounts: shown for the money-flow picture, never part of
+  // income, expenses, savings or net cash flow.
+  internalTransfers: string;
   netCashFlow: string;
   // Ratios: 0.25 means 25%. Null when income is zero. Format with formatRatioAsPercent().
   savingsRate: string | null;
@@ -403,11 +440,23 @@ export class FinancialFactsService {
   ): Promise<FinancialPosition> {
     const asOf = opts.asOf ?? new Date();
 
-    const [incomeAgg, expenseAgg, unmigrated, cashflowRows, emergencyRows, investments, propertyAgg, loanAgg] =
+    const [
+      incomeAgg,
+      expenseAgg,
+      unmigrated,
+      cashflowRows,
+      emergencyRows,
+      investments,
+      propertyAgg,
+      loanAgg,
+      receivableGivenAgg,
+      receivableReturnedAgg,
+      otherOutflowAgg,
+    ] =
       await Promise.all([
         this.prisma.client.income.aggregate({ where: { userId, receivedAt: { lte: asOf } }, _sum: { amount: true } }),
         this.prisma.client.expense.aggregate({
-          where: { userId, spentAt: { lte: asOf }, category: { type: { not: "SAVINGS" } } },
+          where: { userId, spentAt: { lte: asOf }, flowType: "EXPENSE", category: { type: { not: "SAVINGS" } } },
           _sum: { amount: true },
         }),
         this.loadUnmigratedSavingsExpenses(userId, { lte: asOf }),
@@ -431,6 +480,20 @@ export class FinancialFactsService {
         }),
         this.prisma.client.property.aggregate({ where: { userId }, _sum: { currentValue: true } }),
         this.prisma.client.loan.aggregate({ where: { userId }, _sum: { outstandingPrincipal: true } }),
+        // Receivables: CANCELLED rows are void (entered by mistake) and count nowhere.
+        this.prisma.client.receivable.aggregate({
+          where: { userId, givenAt: { lte: asOf }, status: { not: "CANCELLED" } },
+          _sum: { originalAmount: true },
+        }),
+        this.prisma.client.receivableRepayment.aggregate({
+          where: { userId, returnedAt: { lte: asOf }, receivable: { status: { not: "CANCELLED" } } },
+          _sum: { amount: true },
+        }),
+        // Genuine outflows that are not spending: cash left, but they are not "expenses".
+        this.prisma.client.expense.aggregate({
+          where: { userId, spentAt: { lte: asOf }, flowType: "OTHER_OUTFLOW", category: { type: { not: "SAVINGS" } } },
+          _sum: { amount: true },
+        }),
       ]);
 
     const totals = this.foldCashflows(cashflowRows);
@@ -448,6 +511,14 @@ export class FinancialFactsService {
     const expenses = toDecimal(expenseAgg._sum.amount);
     const unclassifiedOutflow = sumDecimals(unmigrated.map((r) => r.amount as Prisma.Decimal.Value));
 
+    // Receivables: giving money is a cash OUTFLOW into an asset (not an expense); each
+    // repayment is a cash INFLOW out of that asset (not income). The outstanding balance is
+    // carried in Net Worth as an asset below, so the two sides cancel and net worth is
+    // unchanged by lending.
+    const receivableGiven = toDecimal(receivableGivenAgg._sum.originalAmount);
+    const receivableReturned = toDecimal(receivableReturnedAgg._sum.amount);
+    const receivableOutstandingAmount = receivableOutstanding(receivableGiven, receivableReturned);
+
     const cash = computeCashModel({
       income,
       expenses,
@@ -456,7 +527,8 @@ export class FinancialFactsService {
       emergencyAvailableCashDelta: emergencyAvailDelta,
       emergencyCashAmount,
       unclassifiedOutflow,
-      otherCashInflow: toDecimal(opts.openingAvailableCash),
+      otherCashOutflow: receivableGiven.plus(toDecimal(otherOutflowAgg._sum.amount)),
+      otherCashInflow: toDecimal(opts.openingAvailableCash).plus(receivableReturned),
     });
 
     const warnings = this.legacyWarnings(unmigrated);
@@ -501,7 +573,7 @@ export class FinancialFactsService {
       investments: investmentValue,
       property,
       business: ZERO, // Business has no valuation field in the schema; not guessed.
-      otherAssets: ZERO,
+      otherAssets: receivableOutstandingAmount,
       loans,
       creditCardOutstanding: ZERO, // credit-card balances are modeled as Loan(type=CREDIT_CARD)
       otherLiabilities: ZERO,
@@ -527,6 +599,11 @@ export class FinancialFactsService {
       totalAssets: toMoneyString(nw.totalAssets),
       totalLiabilities: toMoneyString(nw.totalLiabilities),
       netWorth: toMoneyString(nw.netWorth),
+      receivables: {
+        given: toMoneyString(receivableGiven),
+        returned: toMoneyString(receivableReturned),
+        outstanding: toMoneyString(receivableOutstandingAmount),
+      },
       dataHealth: warnings,
     };
   }
@@ -539,13 +616,13 @@ export class FinancialFactsService {
     const targetMonth = month ?? currentMonthString();
     const { start, end } = monthRange(targetMonth);
 
-    const [incomeAgg, expenseAgg, unmigrated, cashflowRows, emergencyRows] = await Promise.all([
+    const [incomeAgg, expenseAgg, unmigrated, cashflowRows, emergencyRows, receivableGivenAgg, receivableReturnedAgg, transferAgg, otherOutflowAgg] = await Promise.all([
       this.prisma.client.income.aggregate({
         where: { userId, receivedAt: { gte: start, lt: end } },
         _sum: { amount: true },
       }),
       this.prisma.client.expense.aggregate({
-        where: { userId, spentAt: { gte: start, lt: end }, category: { type: { not: "SAVINGS" } } },
+        where: { userId, spentAt: { gte: start, lt: end }, flowType: "EXPENSE", category: { type: { not: "SAVINGS" } } },
         _sum: { amount: true },
       }),
       this.loadUnmigratedSavingsExpenses(userId, { gte: start, lt: end }),
@@ -559,6 +636,22 @@ export class FinancialFactsService {
         where: { userId, occurredAt: { gte: start, lt: end }, type: "ALLOCATE" },
         _sum: { amount: true },
       }),
+      this.prisma.client.receivable.aggregate({
+        where: { userId, givenAt: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+        _sum: { originalAmount: true },
+      }),
+      this.prisma.client.receivableRepayment.aggregate({
+        where: { userId, returnedAt: { gte: start, lt: end }, receivable: { status: { not: "CANCELLED" } } },
+        _sum: { amount: true },
+      }),
+      this.prisma.client.accountTransfer.aggregate({
+        where: { userId, transferredAt: { gte: start, lt: end } },
+        _sum: { amount: true },
+      }),
+      this.prisma.client.expense.aggregate({
+        where: { userId, spentAt: { gte: start, lt: end }, flowType: "OTHER_OUTFLOW", category: { type: { not: "SAVINGS" } } },
+        _sum: { amount: true },
+      }),
     ]);
 
     const income = toDecimal(incomeAgg._sum.amount);
@@ -566,6 +659,11 @@ export class FinancialFactsService {
     const totals = this.foldCashflows(cashflowRows);
     const contributions = totals.contributions;
     const allocations = sumDecimals(emergencyRows.map((r) => r._sum.amount));
+    const receivablesGiven = toDecimal(receivableGivenAgg._sum.originalAmount);
+    const receivableRepayments = toDecimal(receivableReturnedAgg._sum.amount);
+    const internalTransfers = toDecimal(transferAgg._sum.amount);
+    const otherOutflows = toDecimal(otherOutflowAgg._sum.amount);
+    const investmentProceeds = investmentCashInflow(totals);
 
     const ratio = (d: Dec | null) => (d === null ? null : d.toString());
     return {
@@ -578,17 +676,80 @@ export class FinancialFactsService {
       expenses: toMoneyString(expenses),
       investmentContributions: toMoneyString(contributions),
       emergencyAllocations: toMoneyString(allocations),
+      receivablesGiven: toMoneyString(receivablesGiven),
+      receivableRepayments: toMoneyString(receivableRepayments),
+      otherOutflows: toMoneyString(otherOutflows),
+      investmentProceeds: toMoneyString(investmentProceeds),
+      internalTransfers: toMoneyString(internalTransfers),
+      // Net cash flow respects every transaction class: money lent leaves cash, repayments
+      // return to it, and internal transfers net to zero so they are excluded entirely.
       netCashFlow: toMoneyString(
         income
           .minus(expenses)
           .minus(contributions)
           .minus(allocations)
-          .plus(investmentCashInflow(totals)),
+          .plus(investmentProceeds)
+          .minus(receivablesGiven)
+          .plus(receivableRepayments)
+          .minus(otherOutflows),
       ),
       savingsRate: ratio(savingsRate(income, expenses)),
       investmentRate: ratio(investmentRate(contributions, income)),
       expenseRate: ratio(expenseRate(expenses, income)),
       dataHealth: this.legacyWarnings(unmigrated),
+    };
+  }
+
+  // WHERE DID MY MONEY GO? One month, split by what KIND of movement each rupee was — never
+  // lumped into "expenses". Built from the same getMonthlyCashFlow() numbers (so it can never
+  // disagree with the dashboard or reports) and shaped for display:
+  //   income → expenses / investments / emergency fund / receivables given / other outflow,
+  //   with internal transfers shown separately because they are not an outflow at all.
+  // percentOfIncome uses the canonical percentOf(); null when no income was recorded.
+  async getMoneyFlow(userId: string, month?: string): Promise<MoneyFlow> {
+    const cf = await this.getMonthlyCashFlow(userId, month);
+    const income = toDecimal(cf.income);
+    const parts = {
+      expenses: toDecimal(cf.expenses),
+      investments: toDecimal(cf.investmentContributions),
+      emergencyFund: toDecimal(cf.emergencyAllocations),
+      receivablesGiven: toDecimal(cf.receivablesGiven),
+      otherOutflow: toDecimal(cf.otherOutflows),
+    };
+    const totalGenuineOutflow = sumDecimals(Object.values(parts));
+    const share = (d: Dec) => {
+      const p = percentOf(d, income);
+      return p === null ? null : Number(p.toDecimalPlaces(1, Prisma.Decimal.ROUND_HALF_UP).toString());
+    };
+    return {
+      basis: "ACTUAL",
+      period: "MONTHLY",
+      asOfDate: cf.asOfDate,
+      currency: cf.currency,
+      month: cf.month,
+      income: cf.income,
+      outflows: {
+        expenses: cf.expenses,
+        investments: cf.investmentContributions,
+        emergencyFund: cf.emergencyAllocations,
+        receivablesGiven: cf.receivablesGiven,
+        otherOutflow: cf.otherOutflows,
+      },
+      internalTransfers: cf.internalTransfers,
+      inflows: { receivableRepayments: cf.receivableRepayments, investmentProceeds: cf.investmentProceeds },
+      totalGenuineOutflow: toMoneyString(totalGenuineOutflow),
+      netCashFlow: cf.netCashFlow,
+      percentOfIncome: {
+        expenses: share(parts.expenses),
+        investments: share(parts.investments),
+        emergencyFund: share(parts.emergencyFund),
+        receivablesGiven: share(parts.receivablesGiven),
+        otherOutflow: share(parts.otherOutflow),
+      },
+      savingsRate: cf.savingsRate,
+      investmentRate: cf.investmentRate,
+      expenseRate: cf.expenseRate,
+      dataHealth: cf.dataHealth,
     };
   }
 
@@ -604,7 +765,7 @@ export class FinancialFactsService {
     const [ledger, needs] = await Promise.all([
       this.prisma.client.emergencyFundEntry.groupBy({ by: ["type"], where: { userId }, _sum: { amount: true } }),
       this.prisma.client.expense.findMany({
-        where: { userId, spentAt: { gte: windowStart, lt: windowEnd }, category: { type: "NEED" } },
+        where: { userId, flowType: "EXPENSE", spentAt: { gte: windowStart, lt: windowEnd }, category: { type: "NEED" } },
         select: { amount: true, spentAt: true },
       }),
     ]);
