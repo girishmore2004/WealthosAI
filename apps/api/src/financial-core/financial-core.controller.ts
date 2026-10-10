@@ -32,6 +32,14 @@ export class FinancialCoreController {
     return this.facts.getMonthlyCashFlow(user.id, month);
   }
 
+  // WHERE DID MY MONEY GO? One month split into expenses / investments / emergency fund /
+  // receivables / other outflow, with internal transfers shown separately (never an outflow).
+  @RateLimit(120, 3600)
+  @Get("money-flow")
+  moneyFlow(@CurrentUser() user: User, @Query("month") month?: string) {
+    return this.facts.getMoneyFlow(user.id, month);
+  }
+
   @RateLimit(120, 3600)
   @Get("emergency-coverage")
   coverage(@CurrentUser() user: User) {
