@@ -5,6 +5,9 @@ import type {
   OptimizedScenarioDTO,
   OptimizationConstraintsDTO,
   DashboardSummaryDTO,
+  DashboardOverviewDTO,
+  MonthlyReportDetailDTO,
+  YearlyMonthsReportDTO,
   DataHealthReportDTO,
   DocumentDiscrepancyDTO,
   ExpenseDTO,
@@ -56,6 +59,30 @@ import type {
   IngestionBatchSummaryDTO,
   IngestionReviewItemDTO,
   ApproveReviewItemInput,
+  ExpenseAnalyticsDTO,
+  ExpenseFlowType,
+  ExpenseSummaryDTO,
+  QuickExpenseResultDTO,
+  MoneyFlowDTO,
+  ReceivableDTO,
+  ReceivableSummaryDTO,
+  RecordRepaymentResultDTO,
+  RecurrenceDeleteMode,
+  AccountTransferDTO,
+  EmergencyEntryType,
+  EmergencyFundEntryDTO,
+  EmergencyFundSummaryDTO,
+  EmergencyFundOverviewDTO,
+  EmergencyFundLedgerRowDTO,
+  InvestmentCashflowDTO,
+  InvestmentCashflowType,
+  InvestmentValuationDTO,
+  InvestmentMetricsDTO,
+  InvestmentAnalyticsDTO,
+  PortfolioProjectionDTO,
+  ProjectionDTO,
+  SipScheduleSummaryDTO,
+  Recurrence,
 } from "@wealthos/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -106,6 +133,140 @@ async function downloadFile(path: string): Promise<Blob> {
   return res.blob();
 }
 
+// Builds "?a=1&b=2" from a params object, skipping undefined / null / empty values, so callers
+// never hand-assemble query strings (and never send "undefined" to the API).
+function qs(params: Record<string, string | number | boolean | null | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+  }
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+export type ExpensePeriodName = "TODAY" | "YESTERDAY" | "THIS_WEEK" | "LAST_WEEK" | "THIS_MONTH" | "LAST_MONTH" | "THIS_YEAR" | "LAST_YEAR" | "CUSTOM";
+export type ExpenseSortName = "NEWEST" | "OLDEST" | "HIGHEST" | "LOWEST";
+
+export interface ExpenseListParams {
+  page?: number;
+  pageSize?: number;
+  categoryId?: string;
+  from?: string;
+  to?: string;
+  period?: ExpensePeriodName;
+  today?: string;
+  flowType?: ExpenseFlowType;
+  paymentMethod?: string;
+  sort?: ExpenseSortName;
+}
+
+export interface ExpenseAnalyticsParams {
+  period?: ExpensePeriodName;
+  from?: string;
+  to?: string;
+  today?: string;
+  categoryId?: string;
+  flowType?: ExpenseFlowType;
+}
+
+export interface QuickExpenseInput {
+  categoryId: string;
+  amount: number;
+  merchant?: string;
+  spentAt?: string;
+  paymentMethod?: string;
+  notes?: string;
+  flowType?: ExpenseFlowType;
+  recurrence?: string;
+  recurrenceEndDate?: string;
+}
+
+export interface EmergencyPlanInput {
+  // Send ONE kind of target (an amount OR months of essential expenses); sending one clears the other.
+  // null clears; omitted leaves it alone.
+  targetAmount?: number | null;
+  targetMonths?: number | null;
+  monthlyContribution?: number | null;
+  targetDate?: string | null;
+}
+
+export interface UseEmergencyMoneyInput {
+  amount: number;
+  occurredAt: string;
+  reason?: string;
+  notes?: string;
+  // Present = the money was SPENT: the expense is recorded in the same transaction.
+  expense?: { categoryId: string; merchant?: string };
+}
+
+export interface CashflowInput {
+  type: InvestmentCashflowType;
+  amount: number;
+  occurredAt: string;
+  notes?: string;
+}
+
+export interface SipScheduleInput {
+  // The amount PER PERIOD (the field keeps its original name for backward compatibility).
+  monthlyContribution: number;
+  frequency?: Exclude<Recurrence, "ONE_TIME">;
+  contributionDay?: number;
+  startDate: string;
+  endDate?: string;
+  active: boolean;
+  expectedAnnualReturn?: number;
+  // Required by the server when the start date is before this month (past contributions become actuals).
+  confirmBackfill?: boolean;
+}
+
+export interface ProjectionParams {
+  // REQUIRED: the return assumption is always an explicit choice.
+  annualReturn: number;
+  currentValue?: number;
+  contribution?: number;
+  frequency?: Exclude<Recurrence, "ONE_TIME">;
+  years?: number[];
+}
+
+export interface SaleInput {
+  saleDate: string;
+  proceeds: number;
+  costBasisPortion: number;
+  notes?: string;
+  // Also record the SALE cashflow so the proceeds reach cash, atomically with the tax record.
+  alsoRecordCashflow?: boolean;
+}
+
+export interface RecurrenceRuleInput {
+  recurrence?: string;
+  endDate?: string;
+  clearEndDate?: boolean;
+  amount?: number;
+  categoryId?: string;
+  merchant?: string;
+  paymentMethod?: string;
+  notes?: string;
+}
+
+export interface CreateReceivableInput {
+  person: string;
+  amount: number;
+  givenAt: string;
+  purpose?: string;
+  expectedReturnAt?: string;
+  paymentMethod?: string;
+  notes?: string;
+}
+
+export interface RecordRepaymentInput {
+  amount: number;
+  returnedAt: string;
+  paymentMethod?: string;
+  notes?: string;
+  // Re-sending the same key records ONE repayment (guards double-clicks and retries).
+  idempotencyKey?: string;
+}
+
 export const api = {
   auth: {
     requestOtp: (email: string) =>
@@ -123,10 +284,53 @@ export const api = {
   },
   dashboard: {
     summary: () => request<DashboardSummaryDTO>("/dashboard/summary"),
+    // Money-flow overview: every figure is ACTUAL and comes from the same facts as the reports.
+    overview: () => request<DashboardOverviewDTO>("/dashboard/overview"),
   },
   // NEW: authoritative financial-core read surface (reconciliation / data health).
   financialCore: {
     dataHealth: () => request<DataHealthReportDTO>("/financial-core/data-health"),
+    // WHERE DID MY MONEY GO? One month split into expenses / investments / emergency fund /
+    // receivables / other outflow, with internal transfers shown separately.
+    moneyFlow: (month?: string) => request<MoneyFlowDTO>(`/financial-core/money-flow${qs({ month })}`),
+  },
+  // Money given that is expected back. Never an expense: cash falls, a receivable asset rises.
+  receivables: {
+    list: (scope?: "ALL" | "ACTIVE" | "CLOSED" | "CANCELLED") => request<ReceivableDTO[]>(`/receivables${qs({ scope })}`),
+    summary: () => request<ReceivableSummaryDTO>("/receivables/summary"),
+    get: (id: string) => request<ReceivableDTO>(`/receivables/${id}`),
+    create: (data: CreateReceivableInput) => request<ReceivableDTO>("/receivables", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<CreateReceivableInput>) =>
+      request<ReceivableDTO>(`/receivables/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    recordRepayment: (id: string, data: RecordRepaymentInput) =>
+      request<RecordRepaymentResultDTO>(`/receivables/${id}/repayments`, { method: "POST", body: JSON.stringify(data) }),
+    removeRepayment: (id: string, repaymentId: string) =>
+      request<ReceivableDTO>(`/receivables/${id}/repayments/${repaymentId}`, { method: "DELETE" }),
+    cancel: (id: string) => request<ReceivableDTO>(`/receivables/${id}/cancel`, { method: "POST" }),
+    remove: (id: string) => request<{ deleted: true }>(`/receivables/${id}`, { method: "DELETE" }),
+  },
+  // Money moved between the user's OWN accounts: not income, not an expense, not an investment.
+  transfers: {
+    list: (params: { from?: string; to?: string } = {}) => request<AccountTransferDTO[]>(`/transfers${qs({ ...params })}`),
+    create: (data: { fromAccount: string; toAccount: string; amount: number; transferredAt: string; notes?: string }) =>
+      request<AccountTransferDTO>("/transfers", { method: "POST", body: JSON.stringify(data) }),
+    remove: (id: string) => request<{ deleted: true }>(`/transfers/${id}`, { method: "DELETE" }),
+  },
+  // Reserved cash, tracked separately from expenses. Coverage maths lives on the server.
+  emergencyFund: {
+    summary: () => request<EmergencyFundSummaryDTO>("/emergency-fund/summary"),
+    // Everything the page shows in one call: balance, coverage, target, progress, plan, totals, trend.
+    overview: () => request<EmergencyFundOverviewDTO>("/emergency-fund/overview"),
+    // The history, newest first, each row with the balance after it.
+    ledger: () => request<EmergencyFundLedgerRowDTO[]>("/emergency-fund/ledger"),
+    entries: () => request<EmergencyFundEntryDTO[]>("/emergency-fund/entries"),
+    create: (data: { type: EmergencyEntryType; amount: number; occurredAt: string; reason?: string; notes?: string }) =>
+      request<EmergencyFundEntryDTO>("/emergency-fund/entries", { method: "POST", body: JSON.stringify(data) }),
+    // USE MONEY: a withdrawal, optionally with the genuine expense it paid for, in one transaction.
+    use: (data: UseEmergencyMoneyInput) =>
+      request<{ entry: EmergencyFundEntryDTO; expense: ExpenseDTO | null }>("/emergency-fund/use", { method: "POST", body: JSON.stringify(data) }),
+    setPlan: (data: EmergencyPlanInput) => request<unknown>("/emergency-fund/plan", { method: "PUT", body: JSON.stringify(data) }),
+    remove: (id: string) => request<{ deleted: true }>(`/emergency-fund/entries/${id}`, { method: "DELETE" }),
   },
   income: {
     list: () => request<IncomeDTO[]>("/income"),
@@ -159,16 +363,18 @@ export const api = {
   expenses: {
     list: (month?: string) => request<ExpenseDTO[]>(`/expenses${month ? `?month=${month}` : ""}`),
     // NEW (audit item #16): same rationale as income.listPaged() above.
-    listPaged: (params: { page?: number; pageSize?: number; categoryId?: string; from?: string; to?: string } = {}) => {
-      const qs = new URLSearchParams();
-      if (params.page) qs.set("page", String(params.page));
-      if (params.pageSize) qs.set("pageSize", String(params.pageSize));
-      if (params.categoryId) qs.set("categoryId", params.categoryId);
-      if (params.from) qs.set("from", params.from);
-      if (params.to) qs.set("to", params.to);
-      const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      return request<PagedResult<ExpenseDTO>>(`/expenses/paged${suffix}`);
-    },
+    listPaged: (params: ExpenseListParams = {}) =>
+      request<PagedResult<ExpenseDTO>>(`/expenses/paged${qs({ ...params })}`),
+    // Today / this month / this year totals in one cheap call (the page header).
+    summary: (today?: string, flowType?: ExpenseFlowType) =>
+      request<ExpenseSummaryDTO>(`/expenses/summary${qs({ today, flowType })}`),
+    // Aggregated analytics (daily/weekly/monthly series, categories, extremes, comparisons).
+    // Pass categoryId for a category drill-down.
+    analytics: (params: ExpenseAnalyticsParams = {}) =>
+      request<ExpenseAnalyticsDTO>(`/expenses/analytics${qs({ ...params })}`),
+    // Quick Expense: defaults to today / UPI and returns what the new expense changed.
+    quickCreate: (data: QuickExpenseInput) =>
+      request<QuickExpenseResultDTO>("/expenses/quick", { method: "POST", body: JSON.stringify(data) }),
     categories: () => request<CategoryDTO[]>("/categories"),
     create: (data: {
       categoryId: string;
@@ -177,10 +383,23 @@ export const api = {
       spentAt: string;
       paymentMethod: string;
       notes?: string;
+      flowType?: ExpenseFlowType;
     }) => request<ExpenseDTO>("/expenses", { method: "POST", body: JSON.stringify(data) }),
-    remove: (id: string) => request<void>(`/expenses/${id}`, { method: "DELETE" }),
-    update: (id: string, data: Partial<{ categoryId: string; merchant: string; amount: number; spentAt: string; paymentMethod: string; notes: string }>) =>
-      request<ExpenseDTO>(`/expenses/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    // mode (recurring expenses only): THIS (default) deletes one row; FUTURE deletes an auto-generated
+    // occurrence and every later one (the rule and earlier history are kept). Deleting the template of
+    // an ACTIVE recurrence is refused by the server — stop the recurrence first.
+    remove: (id: string, mode?: RecurrenceDeleteMode) =>
+      request<void>(`/expenses/${id}${qs({ mode })}`, { method: "DELETE" }),
+    // scope (recurring expenses only): THIS (default) edits one row; FUTURE edits it, every later
+    // generated occurrence and the rule for ones not yet generated. Earlier rows never change.
+    update: (
+      id: string,
+      data: Partial<{ categoryId: string; merchant: string; amount: number; spentAt: string; paymentMethod: string; notes: string }>,
+      scope?: "THIS" | "FUTURE",
+    ) => request<ExpenseDTO>(`/expenses/${id}${qs({ scope })}`, { method: "PATCH", body: JSON.stringify(data) }),
+    // Edits the repeat RULE only (cadence, end date, amount …); never changes an existing expense.
+    updateRule: (id: string, data: RecurrenceRuleInput) =>
+      request<ExpenseDTO>(`/expenses/${id}/recurrence`, { method: "PATCH", body: JSON.stringify(data) }),
     subscriptions: () => request<DetectedSubscriptionDTO[]>("/expenses/subscriptions"),
     breakdown: (month?: string) =>
       request<CategoryBreakdownDTO[]>(`/expenses/breakdown${month ? `?month=${month}` : ""}`),
@@ -209,6 +428,33 @@ export const api = {
       request<InvestmentDTO>(`/investments/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     rebalance: (data: { targets: { type: string; percent: number }[]; cashAvailable?: number; noSellTypes?: string[] }) =>
       request<RebalancePlanDTO>("/investments/rebalance", { method: "POST", body: JSON.stringify(data) }),
+
+    // --- ledger: every contribution, withdrawal, sale, dividend, fee … for one holding ---
+    cashflows: (id: string) => request<InvestmentCashflowDTO[]>(`/investments/${id}/cashflows`),
+    addCashflow: (id: string, data: CashflowInput) =>
+      request<InvestmentCashflowDTO>(`/investments/${id}/cashflows`, { method: "POST", body: JSON.stringify(data) }),
+    removeCashflow: (id: string, cashflowId: string) => request<{ deleted: true }>(`/investments/${id}/cashflows/${cashflowId}`, { method: "DELETE" }),
+    // --- dated valuations: what the holding was WORTH (a valuation is never a contribution) ---
+    valuations: (id: string) => request<InvestmentValuationDTO[]>(`/investments/${id}/valuations`),
+    addValuation: (id: string, data: { value: number; valuedAt: string }) =>
+      request<InvestmentValuationDTO>(`/investments/${id}/valuations`, { method: "POST", body: JSON.stringify(data) }),
+    metrics: (id: string) => request<InvestmentMetricsDTO>(`/investments/${id}/metrics`),
+    // --- recurring contributions (SIP) ---
+    sipSchedule: (id: string) => request<SipScheduleSummaryDTO>(`/investments/${id}/sip-schedule`),
+    setSipSchedule: (id: string, data: SipScheduleInput) =>
+      request<InvestmentDTO>(`/investments/${id}/sip-schedule`, { method: "PUT", body: JSON.stringify(data) }),
+    generateSip: (id: string) => request<{ created: string[]; alreadyExisted: string[] }>(`/investments/${id}/sip/generate`, { method: "POST" }),
+    generateAllSip: () => request<unknown>("/investments/sip/generate", { method: "POST" }),
+    // --- a sale: tax record, optionally with the cash effect in the same atomic write ---
+    recordSale: (id: string, data: SaleInput) =>
+      request<unknown>(`/investments/${id}/realized-gains`, { method: "POST", body: JSON.stringify(data) }),
+    // --- ACTUAL ledger-derived trends and allocation ---
+    analytics: (months?: number) => request<InvestmentAnalyticsDTO>(`/investments/analytics${qs({ months })}`),
+    // --- PROJECTIONS (assumptions, never actuals, never guarantees) ---
+    projection: (p: ProjectionParams) =>
+      request<ProjectionDTO>(`/investments/projection${qs({ annualReturn: p.annualReturn, currentValue: p.currentValue, contribution: p.contribution, frequency: p.frequency, years: p.years?.join(",") })}`),
+    portfolioProjection: (p: { annualReturn?: number; years?: number[] } = {}) =>
+      request<PortfolioProjectionDTO>(`/investments/projection/portfolio${qs({ annualReturn: p.annualReturn, years: p.years?.join(",") })}`),
   },
   loans: {
     list: () => request<LoanDTO[]>("/loans"),
@@ -462,6 +708,10 @@ export const api = {
     monthly: (month?: string) => request<MonthlyReportDTO>(`/reports/monthly${month ? `?month=${month}` : ""}`),
     yearly: (financialYear?: string) =>
       request<YearlyReportDTO>(`/reports/yearly${financialYear ? `?financialYear=${financialYear}` : ""}`),
+    // Detailed monthly report (money flow, categories, daily spending, deterministic narrative).
+    monthlyDetail: (month?: string) => request<MonthlyReportDetailDTO>(`/reports/monthly/detail${qs({ month })}`),
+    // January to December for a calendar year, with totals and the category report.
+    yearlyMonths: (year?: number | string) => request<YearlyMonthsReportDTO>(`/reports/yearly/months${qs({ year })}`),
     monthlyCsvUrl: (month?: string) => `${API_URL}/reports/monthly/export.csv${month ? `?month=${month}` : ""}`,
     yearlyCsvUrl: (financialYear?: string) =>
       `${API_URL}/reports/yearly/export.csv${financialYear ? `?financialYear=${financialYear}` : ""}`,
