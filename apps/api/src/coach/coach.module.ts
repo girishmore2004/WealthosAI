@@ -12,6 +12,7 @@ import { IncomeModule } from "../income/income.module";
 import { DashboardModule } from "../dashboard/dashboard.module";
 import { AlertsModule } from "../alerts/alerts.module";
 import { AiModule } from "../ai/ai.module";
+import { FinancialEngineModule } from "../ai/financial-engine/financial-engine.module";
 import { FinancialFactsModule } from "../common/financial-facts/financial-facts.module";
 
 @Module({
@@ -29,6 +30,8 @@ import { FinancialFactsModule } from "../common/financial-facts/financial-facts.
     // NEW — required so CoachService can inject RagAutoReindexService (audit item #7).
     AiModule,
     FinancialFactsModule,
+    // Fallback for questions the keyword intents do not cover.
+    FinancialEngineModule,
   ],
   controllers: [CoachController],
   providers: [CoachService],
