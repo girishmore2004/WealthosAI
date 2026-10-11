@@ -22,11 +22,13 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+      # Same install command as ci.yml (npm ci fails when the lockfile is slightly out of sync).
+      - run: npm install
       - run: npm run db:generate
       - name: Seed
         env:
           DATABASE_URL: ${{ secrets.DEMO_SEED_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DEMO_SEED_DATABASE_URL }}
           DIRECT_DATABASE_URL: ${{ secrets.DEMO_SEED_DATABASE_URL }}
           SEED_EMAIL: ${{ inputs.email }}
           SEED_CONFIRM: ${{ inputs.confirm }}
