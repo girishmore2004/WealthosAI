@@ -309,13 +309,32 @@ export class CoachService {
   }
 
   private async answerInsurance(userId: string): Promise<GroundedAnswer> {
-    const gaps = await this.insuranceService.gapAnalysis(userId);
-    const uncovered = gaps.filter((g) => !g.hasCoverage || Number(g.gap) > 0);
-    if (uncovered.length === 0) {
-      return { answer: "Your logged coverage meets the rule-of-thumb benchmarks I check against.", dataSources: ["insurance"] };
+    const [policies, gaps] = await Promise.all([this.insuranceService.list(userId), this.insuranceService.gapAnalysis(userId)]);
+    if (policies.length === 0) {
+      return { answer: "No insurance policies are logged yet, so there is no premium or cover to report.", dataSources: ["insurance"] };
     }
+
+    // Premiums are stored per policy at their own frequency; turn each into a yearly figure.
+    const PER_YEAR: Record<string, number> = { ONE_TIME: 1, WEEKLY: 52, MONTHLY: 12, QUARTERLY: 4, YEARLY: 1 };
+    const yearly = (p: { premiumAmount: unknown; premiumFrequency: string }) => Number(p.premiumAmount) * (PER_YEAR[p.premiumFrequency] ?? 1);
+    const totalYearly = policies.reduce((sum, p) => sum + yearly(p), 0);
+    const totalCover = policies.reduce((sum, p) => sum + Number(p.coverageAmount), 0);
+    const label = (type: string) => type.toLowerCase().replace(/_/g, " ");
+    const lines = policies.map(
+      (p) => `${label(p.type)} with ${p.provider}: cover ${formatINR(Number(p.coverageAmount))}, premium ${formatINR(yearly(p))} a year`,
+    );
+
+    const uncovered = gaps.filter((g) => !g.hasCoverage || Number(g.gap) > 0);
+    const gapText =
+      uncovered.length === 0
+        ? "Your logged cover meets the rule-of-thumb benchmarks I check against."
+        : `Possible gaps against rule-of-thumb benchmarks: ${uncovered.map((g) => `${label(g.type)} is short by about ${formatINR(Number(g.gap))}`).join("; ")}. These are not personalized advice.`;
+
     return {
-      answer: `Potential coverage gaps: ${uncovered.map((g) => `${g.type.toLowerCase()} (${g.message})`).join("; ")}. These are rule-of-thumb benchmarks, not personalized advice.`,
+      answer:
+        `You have ${policies.length} polic${policies.length === 1 ? "y" : "ies"} with total cover of ${formatINR(totalCover)}. ` +
+        `Together the premiums come to ${formatINR(totalYearly)} a year (about ${formatINR(totalYearly / 12)} a month). ` +
+        `${lines.join("; ")}. ${gapText}`,
       dataSources: ["insurance"],
     };
   }
