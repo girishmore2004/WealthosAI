@@ -70,6 +70,28 @@ const MAX_OUTPUT_TOKENS = 1024;
 @Injectable()
 export class AiGatewayService {
   private readonly logger = new Logger(AiGatewayService.name);
+  // Circuit breaker: a model that just failed is skipped for a cooldown instead of costing
+  // every following call a failed round trip first (e.g. a decommissioned model returns
+  // HTTP 400/404 on every single request). The last candidate in a chain is never skipped.
+  private readonly modelCooldownUntil = new Map<string, number>();
+
+  private isCoolingDown(model: string): boolean {
+    const until = this.modelCooldownUntil.get(model);
+    if (until === undefined) return false;
+    if (until <= Date.now()) {
+      this.modelCooldownUntil.delete(model);
+      return false;
+    }
+    return true;
+  }
+
+  private markModelFailed(model: string, err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = /HTTP (\d{3})/.exec(msg)?.[1];
+    const permanent = status === "400" || status === "403" || status === "404"; // bad/decommissioned model or key scope
+    this.modelCooldownUntil.set(model, Date.now() + (permanent ? 30 * 60_000 : 60_000));
+  }
+
 
   constructor(
     private groq: GroqClient,
@@ -309,6 +331,7 @@ export class AiGatewayService {
 
       for (let chainIdx = chainStartIndex; chainIdx < routing.chain.length; chainIdx++) {
         const candidateModel = routing.chain[chainIdx];
+        if (chainIdx < routing.chain.length - 1 && this.isCoolingDown(candidateModel)) continue;
         try {
           completion = await this.groq.chat({
             model: candidateModel,
@@ -324,6 +347,7 @@ export class AiGatewayService {
           break;
         } catch (err) {
           this.routingStats.record(candidateModel, taskType, "ERROR", Date.now() - attemptStartedAt);
+          this.markModelFailed(candidateModel, err);
           const isLastCandidate = chainIdx === routing.chain.length - 1;
           if (!isLastCandidate) {
             this.logger.warn(
