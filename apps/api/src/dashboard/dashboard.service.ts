@@ -142,8 +142,12 @@ export class DashboardService {
     // explicitly an approximation — goal.currentAmount is a user-entered figure, not a
     // ledger transfer out of the cash cashBalance is derived from — so it's surfaced as
     // its own clearly-labeled field rather than folded into cashBalance itself.
+    // An EMERGENCY_FUND goal is excluded when the reserve ledger exists: that money was already moved out
+    // of Available Cash by the reserve allocations, so subtracting it again counts it twice and pushes
+    // uncommitted cash negative.
     const cashEarmarkedForGoals = goals
       .filter((g) => g.investments.length === 0)
+      .filter((g) => !(g.type === "EMERGENCY_FUND" && emergencyFundBasis === "LEDGER"))
       .reduce((sum, g) => sum + Number(g.currentAmount), 0);
     const uncommittedCash = cashBalance - cashEarmarkedForGoals;
 
