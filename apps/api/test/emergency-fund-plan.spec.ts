@@ -129,7 +129,7 @@ function build(opts: { entries?: Row[]; plan?: Row | null; avgEssential?: number
     },
     category: { findUnique: jest.fn(async () => (opts.categoryType === null ? null : { type: opts.categoryType ?? "NEED", name: "Medical" })) },
     expense: { create: jest.fn(async ({ data }: any) => { const row = { id: `x${expenses.length + 1}`, ...data }; expenses.push(row); return row; }) },
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
   db.$transaction.mockImplementation(async (fn: (tx: any) => Promise<unknown>) => fn(db));
@@ -325,8 +325,8 @@ describe("EmergencyFundService.useMoney — spec Part 24 / 59", () => {
   it("takes the per-user lock before reading the balance", async () => {
     const { svc, db } = build({ entries: [alloc(7000)] });
     await svc.useMoney("u1", { amount: 100, occurredAt: "2026-10-05" } as never);
-    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(db.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(db.emergencyFundEntry.groupBy.mock.invocationCallOrder[0]);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(db.emergencyFundEntry.groupBy.mock.invocationCallOrder[0]);
   });
 });
 
