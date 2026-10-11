@@ -20,6 +20,10 @@ import { AiQueueService } from "./ai-queue.service";
 export class RagAutoReindexService {
   private readonly logger = new Logger(RagAutoReindexService.name);
 
+  // In-process throttle: the queue already de-duplicates per hour, but every call still cost
+  // a database round trip (and a log line). Remember the hour we last enqueued per user and skip.
+  private readonly lastEnqueuedHour = new Map<string, string>();
+
   constructor(private queue: AiQueueService) {}
 
   // Best-effort by design: a failed auto-reindex trigger must never fail the write
@@ -30,8 +34,11 @@ export class RagAutoReindexService {
   // catch up on anything missed.
   async triggerFor(userId: string): Promise<void> {
     try {
-      const idempotencyKey = `reindex:${new Date().toISOString().slice(0, 13)}`;
+      const hour = new Date().toISOString().slice(0, 13);
+      if (this.lastEnqueuedHour.get(userId) === hour) return;
+      const idempotencyKey = `reindex:${hour}`;
       await this.queue.enqueue("rag.reindex.user", { userId }, { userId, idempotencyKey });
+      this.lastEnqueuedHour.set(userId, hour);
     } catch (err) {
       this.logger.warn(`Auto-reindex trigger failed for user ${userId}: ${(err as Error).message}`);
     }
