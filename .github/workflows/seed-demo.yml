@@ -1,0 +1,33 @@
+name: Seed demo data
+
+# Manual only. Wipes ALL financial data of one user and loads the 7-year demo story.
+# Needs a repository secret DEMO_SEED_DATABASE_URL = the DIRECT Neon URL (host WITHOUT "-pooler").
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Login email of the account to fill with demo data"
+        required: true
+      confirm:
+        description: "Type WIPE-AND-SEED to confirm"
+        required: true
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - name: Seed
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_SEED_DATABASE_URL }}
+          DIRECT_DATABASE_URL: ${{ secrets.DEMO_SEED_DATABASE_URL }}
+          SEED_EMAIL: ${{ inputs.email }}
+          SEED_CONFIRM: ${{ inputs.confirm }}
+        run: npm run db:seed:demo -- --email "$SEED_EMAIL" --confirm "$SEED_CONFIRM"
