@@ -27,7 +27,7 @@ describe("CoachService.ask", () => {
   const mockGoals = { list: jest.fn() };
   const mockTax = { estimate: jest.fn() };
   const mockRetirement = { computePlan: jest.fn() };
-  const mockInsurance = { gapAnalysis: jest.fn() };
+  const mockInsurance = { gapAnalysis: jest.fn(), list: jest.fn() };
   const mockInvestments = { summary: jest.fn(), totalCurrentValue: jest.fn() };
   const mockExpenses = { list: jest.fn(), categoryBreakdown: jest.fn(), detectSubscriptions: jest.fn() };
   const mockLoans = { debtSummary: jest.fn(), totalOutstanding: jest.fn() };
@@ -235,6 +235,59 @@ describe("CoachService.ask", () => {
 
       expect(result.answer).toMatch(/can't compute a savings rate/);
     });
+  });
+});
+
+describe("CoachService.ask — insurance answer", () => {
+  const build = async (policies: unknown[], gaps: unknown[]) => {
+    const create = jest.fn((args) => Promise.resolve({ id: "i1", ...args.data }));
+    const none = {} as never;
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        CoachService,
+        { provide: PrismaService, useValue: { client: { coachInteraction: { create } } } },
+        { provide: GoalsService, useValue: none },
+        { provide: TaxService, useValue: none },
+        { provide: RetirementService, useValue: none },
+        { provide: InsuranceService, useValue: { list: jest.fn().mockResolvedValue(policies), gapAnalysis: jest.fn().mockResolvedValue(gaps) } },
+        { provide: InvestmentsService, useValue: none },
+        { provide: ExpensesService, useValue: none },
+        { provide: LoansService, useValue: none },
+        { provide: IncomeService, useValue: none },
+        { provide: DashboardService, useValue: none },
+        { provide: AlertsService, useValue: none },
+        { provide: RagAutoReindexService, useValue: { triggerFor: jest.fn().mockResolvedValue(undefined) } },
+        { provide: FinancialFactsService, useValue: none },
+      ],
+    }).compile();
+    return moduleRef.get(CoachService);
+  };
+
+  const policies = [
+    { type: "TERM", provider: "Suraksha Life", coverageAmount: 15000000, premiumAmount: 16500, premiumFrequency: "YEARLY" },
+    { type: "HEALTH", provider: "Arogya", coverageAmount: 1500000, premiumAmount: 1000, premiumFrequency: "MONTHLY" },
+  ];
+
+  it("adds up premiums per year across frequencies and lists each policy", async () => {
+    const service = await build(policies, []);
+    const result = await service.ask("u1", "how much premium do I pay for my insurance");
+    expect(result.answer).toContain("2 policies");
+    expect(result.answer).toContain("\u20B91,65,00,000"); // total cover 1.5 crore + 15 lakh
+    expect(result.answer).toContain("\u20B928,500 a year"); // 16,500 + 1,000 x 12
+    expect(result.answer).toContain("term with Suraksha Life");
+    expect(result.wasRefused).toBe(false);
+  });
+
+  it("states the size of each coverage gap", async () => {
+    const service = await build(policies, [{ type: "PERSONAL_ACCIDENT", hasCoverage: false, gap: "1250000", message: "x" }]);
+    const result = await service.ask("u1", "tell me about my insurance policy");
+    expect(result.answer).toContain("personal accident is short by about \u20B912,50,000");
+  });
+
+  it("says so when no policy is logged", async () => {
+    const service = await build([], []);
+    const result = await service.ask("u1", "insurance");
+    expect(result.answer).toMatch(/No insurance policies/);
   });
 });
 
