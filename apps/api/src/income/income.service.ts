@@ -256,6 +256,9 @@ export class IncomeService {
     const incomes = await this.list(userId);
     return incomes.reduce((sum, inc) => {
       if ((inc.currency ?? BASE_CURRENCY) !== BASE_CURRENCY) return sum;
+      // Rows produced by the recurrence generator are past occurrences of a series whose
+      // template row is already counted; counting them again inflates the forecast.
+      if ((inc as { generatedFromRecurringId?: string | null }).generatedFromRecurringId) return sum;
       const multiplier = RECURRENCE_MONTHLY_MULTIPLIER[inc.recurrence] ?? 0;
       return sum + Number(inc.amount) * multiplier;
     }, 0);
@@ -288,6 +291,8 @@ export class IncomeService {
     const foreignCurrencies = new Set<string>();
 
     for (const inc of incomes) {
+      // Generated occurrences are history of a series already counted via its template.
+      if ((inc as { generatedFromRecurringId?: string | null }).generatedFromRecurringId) continue;
       const currency = inc.currency ?? BASE_CURRENCY;
       if (currency !== BASE_CURRENCY) {
         foreignCount += 1;
