@@ -25,7 +25,7 @@ import {
 } from "./ai-gateway.types";
 
 const MAX_CONTEXT_TOKENS = 6000;
-const MAX_OUTPUT_TOKENS = 1024;
+const MAX_OUTPUT_TOKENS = 2048; // headroom: gpt-oss reasoning tokens count towards the limit
 
 // The AI Gateway. This is the ONE place in the codebase that talks to a model —
 // every other AI feature (Coach, RAG, Scenario Studio, Copilot Ingestion, etc.) calls
