@@ -22,7 +22,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     // Log the error name only; never echo its message (it can contain Prisma args or PII).
-    console.error(`Unhandled error: ${exception instanceof Error ? exception.name : "UnknownError"}`);
+    // For database errors also log the Prisma error CODE (e.g. P2021 = table missing, P2022 = column
+    // missing, P2024 = connection pool timeout). The code and the table/column names in `meta` carry
+    // no user data, so this makes a 500 diagnosable from the host's logs without leaking anything.
+    const code = (exception as { code?: unknown } | null)?.code;
+    const meta = (exception as { meta?: { table?: unknown; column?: unknown; modelName?: unknown } } | null)?.meta;
+    const detail =
+      typeof code === "string" && /^P\d{4}$/.test(code)
+        ? ` code=${code}${meta && typeof meta.table === "string" ? ` table=${meta.table}` : ""}${meta && typeof meta.column === "string" ? ` column=${meta.column}` : ""}${meta && typeof meta.modelName === "string" ? ` model=${meta.modelName}` : ""}`
+        : "";
+    console.error(`Unhandled error: ${exception instanceof Error ? exception.name : "UnknownError"}${detail}`);
     return res
       .status(HttpStatus.INTERNAL_SERVER_ERROR)
       .json({ statusCode: HttpStatus.INTERNAL_SERVER_ERROR, message: "Internal server error" });
