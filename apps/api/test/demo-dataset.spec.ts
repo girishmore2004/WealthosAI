@@ -108,4 +108,18 @@ describe("demo dataset", () => {
     for (const l of d.loans) expect(l.emiAmount).toBeGreaterThan(0);
     expect(d.loans.length).toBe(2);
   });
+
+  it("links every insurance premium expense to its policy, once per policy and year", () => {
+    const keys = new Set(d.policies.map((p) => p.key));
+    const seen = new Set<string>();
+    const premiums = d.expenses.filter((e) => e.categoryName === "Insurance");
+    expect(premiums.length).toBeGreaterThan(0);
+    for (const e of premiums) {
+      expect(e.policyKey && keys.has(e.policyKey)).toBe(true);
+      expect(e.sourceReference).toBe(String(e.spentAt.getUTCFullYear()));
+      const k = `${e.policyKey}|${e.sourceReference}`;
+      expect(seen.has(k)).toBe(false);
+      seen.add(k);
+    }
+  });
 });
