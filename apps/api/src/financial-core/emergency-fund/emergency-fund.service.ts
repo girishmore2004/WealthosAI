@@ -3,6 +3,7 @@ import { Prisma } from "@wealthos/db";
 import type { EmergencyFundLedgerRowDTO, EmergencyFundOverviewDTO } from "@wealthos/types";
 import { PrismaService } from "../../prisma/prisma.service";
 import { FinancialFactsService } from "../../common/financial-facts/financial-facts.service";
+import { lockKey } from "../../common/utils/advisory-lock.util";
 import {
   emergencyRemaining,
   emergencyReserveDelta,
@@ -45,7 +46,7 @@ export class EmergencyFundService {
   // Serializes balance-dependent writes for one user for the life of the transaction
   // (the lock is released automatically on commit/rollback).
   private async lockUser(tx: Prisma.TransactionClient, userId: string): Promise<void> {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${userId}))`;
+    await lockKey(tx, userId);
   }
 
   /**
