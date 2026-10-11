@@ -146,10 +146,22 @@ async function main() {
       const userId: string = user.id;
 
       // ---- wipe this user's financial data ------------------------------------------------------
+      // Only tables that really exist in this database: the schema can be ahead of the applied
+      // migrations (a missing table must not abort the whole wipe inside one transaction).
+      const existing = new Set<string>(
+        (await tx.$queryRaw`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((r: any) => String(r.table_name)),
+      );
+      const skipped: string[] = [];
       const models = Prisma.dmmf.datamodel.models
         .filter((m: any) => m.fields.some((f: any) => f.name === "userId" && f.kind === "scalar") && !KEEP.has(m.name))
+        .filter((m: any) => {
+          const ok = existing.has(m.dbName ?? m.name);
+          if (!ok) skipped.push(m.name);
+          return ok;
+        })
         .map((m: any) => m.name as string)
         .sort((a: string, b: string) => (a === "ReceivableRepayment" ? -1 : b === "ReceivableRepayment" ? 1 : 0));
+      if (skipped.length) console.warn(`Skipped wiping tables that do not exist in this database: ${skipped.join(", ")}`);
       for (const name of models) {
         const delegate = tx[lowerFirst(name)];
         if (delegate?.deleteMany) await delegate.deleteMany({ where: { userId } });
