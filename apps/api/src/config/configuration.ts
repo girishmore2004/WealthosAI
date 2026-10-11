@@ -25,6 +25,10 @@ interface ModelPricing {
 // — an unpriced model isn't billed as $0, TokenAccountingService.estimateCostUsd
 // returns null for it instead (see that class).
 const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
+  // Current Groq models. The two Llama models below were shut down on 16 Aug 2026 (HTTP 404
+  // model_not_found); they stay listed so old logs still price correctly.
+  "openai/gpt-oss-20b": { promptPer1M: 0.075, completionPer1M: 0.3 },
+  "openai/gpt-oss-120b": { promptPer1M: 0.15, completionPer1M: 0.6 },
   "llama-3.1-8b-instant": { promptPer1M: 0.05, completionPer1M: 0.08 },
   "llama-3.3-70b-versatile": { promptPer1M: 0.59, completionPer1M: 0.79 },
 };
@@ -84,8 +88,8 @@ export default () => ({
   ai: {
     groqApiKey: process.env.GROQ_API_KEY ?? "",
     groqApiBaseUrl: process.env.GROQ_API_BASE_URL ?? "https://api.groq.com/openai/v1",
-    smallModel: process.env.GROQ_SMALL_MODEL ?? "llama-3.1-8b-instant",
-    largeModel: process.env.GROQ_LARGE_MODEL ?? "llama-3.3-70b-versatile",
+    smallModel: process.env.GROQ_SMALL_MODEL ?? "openai/gpt-oss-20b",
+    largeModel: process.env.GROQ_LARGE_MODEL ?? "openai/gpt-oss-120b",
     // A distinct third model string, tried only after BOTH the small and large models
     // have failed for a given call — see model-router.service.ts's
     // RoutingDecision.chain and AiGatewayService's fallback loop. Point this at a
