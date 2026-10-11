@@ -67,7 +67,7 @@ describe("EmergencyFundService", () => {
         findFirst: jest.fn().mockResolvedValue(null),
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(0),
       $transaction: jest.fn(),
     };
     // Balance-dependent writes run in one transaction (with a per-user advisory lock);
