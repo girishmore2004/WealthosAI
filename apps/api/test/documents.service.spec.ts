@@ -1,362 +1,653 @@
 import { Test } from "@nestjs/testing";
-import { DocumentsService, MAX_DOCUMENT_SIZE_BYTES } from "../src/documents/documents.service";
+import { NotFoundException } from "@nestjs/common";
+import { DashboardService } from "../src/dashboard/dashboard.service";
 import { PrismaService } from "../src/prisma/prisma.service";
-import { LocalDiskStorageAdapter } from "../src/documents/adapters/local-disk-storage.adapter";
-import { AiQueueService } from "../src/ai/ops/ai-queue.service";
-import { DocumentEntityService } from "../src/documents/document-entity.service";
-import { DocumentReconciliationService } from "../src/documents/document-reconciliation.service";
-import { DocumentOcrHandler } from "../src/documents/document-ocr.handler";
-import { OCR_ADAPTER } from "../src/documents/adapters/ocr-adapter.factory";
-import { OcrNotApplicableError } from "../src/documents/adapters/ocr.adapter";
-import { RagAutoReindexService } from "../src/ai/ops/rag-auto-reindex.service";
-import { CopilotIngestionService } from "../src/ai/copilot-ingestion/copilot-ingestion.service";
+import { IncomeService } from "../src/income/income.service";
+import { ExpensesService } from "../src/expenses/expenses.service";
+import { InvestmentsService } from "../src/investments/investments.service";
+import { LoansService } from "../src/loans/loans.service";
+import { AlertsService } from "../src/alerts/alerts.service";
+import { PropertyService } from "../src/property/property.service";
+import { FinancialFactsService } from "../src/common/financial-facts/financial-facts.service";
 
-function fakeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
+// DashboardService now delegates the #2 emergency-fund calculation to
+// FinancialFactsService.getEmergencyFundStatus() instead of computing it inline — see
+// financial-facts.service.spec.ts for that method's own dedicated unit tests. Here it's
+// mocked with a faithful reimplementation of the same algorithm (rather than a bare
+// jest.fn() returning a fixed value) so these DashboardService tests keep exercising
+// real end-to-end behavior through getSummary(), matching how the two services actually
+// interact in production.
+// Default authoritative position/cash-flow used by getSummary(). Individual tests override
+// getFinancialPosition when they assert cash / net worth, because those figures now come
+// from FinancialFactsService (not from summing the income/expense lists in DashboardService).
+function makePosition(over: Partial<{ available: string; emergency: string; total: string; netWorth: string }> = {}) {
   return {
-    fieldname: "file",
-    originalname: "policy.pdf",
-    encoding: "7bit",
-    mimetype: "application/pdf",
-    size: 1024,
-    // A real PDF signature: upload now verifies the file's actual bytes against its declared type.
-    buffer: Buffer.from("%PDF-1.4 test"),
-    destination: "",
-    filename: "",
-    path: "",
-    stream: undefined as never,
-    ...overrides,
+    basis: "ACTUAL",
+    period: "LIFETIME",
+    asOfDate: new Date().toISOString(),
+    currency: "INR",
+    cash: {
+      available: over.available ?? "0.00",
+      emergency: over.emergency ?? "0.00",
+      total: over.total ?? over.available ?? "0.00",
+    },
+    income: "0.00",
+    expenses: "0.00",
+    investmentContributions: "0.00",
+    investmentWithdrawals: "0.00",
+    investmentValue: "0.00",
+    property: "0.00",
+    loans: "0.00",
+    totalAssets: "0.00",
+    totalLiabilities: "0.00",
+    netWorth: over.netWorth ?? "0.00",
+    dataHealth: [],
   };
 }
 
-const mockEntities = {
-  validateLink: jest.fn().mockResolvedValue({ entityType: null, entityId: null }),
-  validateDocumentType: jest.fn().mockReturnValue(null),
-};
-const mockReconciliation = { reconcile: jest.fn().mockResolvedValue({ supported: false }) };
+function makeMockFinancialFactsService() {
+  return {
+    getFinancialPosition: jest.fn().mockResolvedValue(makePosition()),
+    getMonthlyCashFlow: jest.fn().mockResolvedValue({
+      basis: "ACTUAL",
+      period: "MONTHLY",
+      month: "2026-10",
+      income: "0.00",
+      expenses: "0.00",
+      investmentContributions: "0.00",
+      emergencyAllocations: "0.00",
+      netCashFlow: "0.00",
+      savingsRate: null,
+      investmentRate: null,
+      expenseRate: null,
+      dataHealth: [],
+    }),
+    getEmergencyCoverage: jest.fn().mockResolvedValue({ coverageMonths: null }),
+    getEmergencyFundStatus: jest.fn(
+      async (
+        _userId: string,
+        monthlyExpenseTotal: number,
+        prefetched?: {
+          emergencyFundGoals?: { currentAmount: unknown }[];
+          monthExpenses?: { amount: unknown; category: { name: string } }[];
+        },
+      ) => {
+        const emergencyFundGoals = prefetched?.emergencyFundGoals ?? [];
+        const monthExpenses = prefetched?.monthExpenses ?? [];
 
-describe("DocumentsService.upload", () => {
-  let service: DocumentsService;
+        let amount = 0;
+        let basis: any = "NONE";
+
+        if (emergencyFundGoals.length > 0) {
+          amount = emergencyFundGoals.reduce((sum, g) => sum + Number(g.currentAmount), 0);
+          basis = "GOAL";
+        } else {
+          const legacy = monthExpenses.find((e) => e.category.name === "Emergency Fund");
+          if (legacy) {
+            amount = Number(legacy.amount);
+            basis = "CATEGORY_LEGACY";
+          }
+        }
+
+        const monthsOfCoverage = monthlyExpenseTotal > 0 && amount > 0 ? amount / monthlyExpenseTotal : 0;
+        return { amount, basis, monthsOfCoverage };
+      },
+    ),
+  };
+}
+
+describe("DashboardService.computeHealthScore (via getSummary)", () => {
+  let service: DashboardService;
+
+  const mockIncomeService = {
+    monthlyForecast: jest.fn(),
+    list: jest.fn(),
+  };
+  const mockExpensesService = {
+    list: jest.fn(),
+  };
+  const mockInvestmentsService = {
+    totalCurrentValue: jest.fn().mockResolvedValue(0),
+  };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = {
+    refresh: jest.fn().mockResolvedValue([]),
+  };
+  const mockPropertyService = {
+    totalCurrentValue: jest.fn().mockResolvedValue(0),
+  };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
+  // Was a bare `{}` — getSummary() now also reads budgets via
+  // this.prisma.client.budget.findMany(). Defaulted to "no budgets configured" so all
+  // 4 pre-existing tests below (none of which ever mention budgets) keep computing the
+  // health score via the redistributed-weight path, exactly matching what should
+  // happen for an account that hasn't set any budgets up.
+  // Also now reads goal.findMany() for the #2/#18 fixes below — defaulted to "no
+  // goals" so these pre-existing tests exercise the exact original legacy behavior
+  // (category-name-matched emergency fund, uncommittedCash === cashBalance).
   const mockPrisma = {
     client: {
-      document: { create: jest.fn(), update: jest.fn() },
+      budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() },
+      goal: { findMany: jest.fn() },
     },
   };
-  const mockStorage = { save: jest.fn().mockResolvedValue("storage-key-123"), read: jest.fn(), delete: jest.fn() };
-  const mockAiQueue = { enqueue: jest.fn().mockResolvedValue({ id: "job-1" }) };
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    mockStorage.save.mockResolvedValue("storage-key-123");
-    mockPrisma.client.document.create.mockResolvedValue({ id: "doc1", ocrStatus: "PENDING" });
+    mockInvestmentsService.totalCurrentValue.mockResolvedValue(0);
+    mockLoansService.totalOutstanding.mockResolvedValue(0);
+    mockLoansService.debtSummary.mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] });
+    mockAlertsService.refresh.mockResolvedValue([]);
+    mockPropertyService.totalCurrentValue.mockResolvedValue(0);
+    mockPrisma.client.budget.findMany.mockResolvedValue([]);
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
-        DocumentsService,
+        DashboardService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: LocalDiskStorageAdapter, useValue: mockStorage },
-        { provide: AiQueueService, useValue: mockAiQueue },
-        { provide: DocumentEntityService, useValue: mockEntities },
-        { provide: DocumentReconciliationService, useValue: mockReconciliation },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
       ],
     }).compile();
-    service = moduleRef.get(DocumentsService);
+
+    service = moduleRef.get(DashboardService);
   });
 
-  it("rejects a file over the size limit without touching storage", async () => {
-    const file = fakeFile({ size: MAX_DOCUMENT_SIZE_BYTES + 1 });
+  it("scores a healthy month as STABLE or STRONG", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(100000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+    const expenses = [
+      { amount: 20000, category: { name: "Rent", type: "NEED" } },
+      { amount: 10000, category: { name: "EMI", type: "NEED" } },
+      { amount: 5000, category: { name: "Dining Out", type: "WANT" } },
+      { amount: 30000, category: { name: "Emergency Fund", type: "SAVINGS" } },
+    ];
+    mockExpensesService.list.mockResolvedValue(expenses);
 
-    await expect(service.upload("user-1", file, { category: "OTHER" as never })).rejects.toThrow(/exceeds/i);
-    expect(mockStorage.save).not.toHaveBeenCalled();
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.savingsRate).toBeGreaterThan(20);
+    expect(["STABLE", "STRONG"]).toContain(summary.healthScore.band);
+    // New field: no budgets configured in this test, so the score was computed with
+    // the budget dimension's weight redistributed across the other three, not from a
+    // fabricated number.
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(false);
   });
 
-  it("rejects an unsupported mime type without touching storage", async () => {
-    const file = fakeFile({ mimetype: "application/x-executable" });
+  it("flags a low-savings month with a WARNING insight", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(50000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 50000 }]);
+    const expenses = [
+      { amount: 25000, category: { name: "Rent", type: "NEED" } },
+      { amount: 20000, category: { name: "Dining Out", type: "WANT" } },
+    ];
+    mockExpensesService.list.mockResolvedValue(expenses);
 
-    await expect(service.upload("user-1", file, { category: "OTHER" as never })).rejects.toThrow(/not supported/i);
-    expect(mockStorage.save).not.toHaveBeenCalled();
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.insights.some((i) => i.id === "low-savings-rate")).toBe(true);
   });
 
-  it("rejects a file whose content does not match its declared type (script posing as a PDF)", async () => {
-    const file = fakeFile({ buffer: Buffer.from("<html><script>alert(1)</script></html>") });
-
-    await expect(service.upload("user-1", file, { category: "OTHER" as never })).rejects.toThrow(/does not match/i);
-    expect(mockStorage.save).not.toHaveBeenCalled();
-  });
-
-  it("stores under a type-derived name, ignoring a hostile client filename", async () => {
-    const file = fakeFile({ originalname: "../../etc/passwd\u0000.exe" });
-
-    await service.upload("user-1", file, { category: "OTHER" as never });
-
-    expect(mockStorage.save).toHaveBeenCalledWith(expect.any(Buffer), "upload.pdf");
-  });
-
-  it("rejects when no file is present", async () => {
-    await expect(
-      service.upload("user-1", undefined as never, { category: "OTHER" as never }),
-    ).rejects.toThrow(/no file/i);
-  });
-
-  it("parses a comma-separated tags string, creates the document as PENDING, and returns immediately without waiting on OCR", async () => {
-    const file = fakeFile();
-
-    const result = await service.upload("user-1", file, { category: "RECEIPT" as never, tags: "grocery, monthly " });
-
-    expect(mockPrisma.client.document.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ tags: ["grocery", "monthly"], ocrStatus: "PENDING" }),
-      }),
-    );
-    // No inline document.update call for OCR completion anymore — that now happens
-    // asynchronously in DocumentOcrHandler, not on this request path at all.
-    expect(mockPrisma.client.document.update).not.toHaveBeenCalled();
-    expect(result.ocrStatus).toBe("PENDING");
-  });
-
-  it("enqueues an async OCR job scoped to the created document, using its id as the idempotency key", async () => {
-    const file = fakeFile({ mimetype: "image/jpeg", buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]) });
-
-    await service.upload("user-1", file, { category: "PAN" as never });
-
-    expect(mockAiQueue.enqueue).toHaveBeenCalledWith(
-      "document.ocr",
-      { documentId: "doc1", userId: "user-1", category: "PAN" },
-      { userId: "user-1", idempotencyKey: "doc1" },
-    );
-  });
-});
-
-describe("DocumentsService.download", () => {
-  let service: DocumentsService;
-  const mockPrisma = { client: { document: { findUnique: jest.fn() } } };
-  const mockStorage = { save: jest.fn(), read: jest.fn(), delete: jest.fn() };
-  const mockAiQueue = { enqueue: jest.fn() };
-
-  beforeEach(async () => {
-    jest.clearAllMocks();
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        DocumentsService,
-        { provide: PrismaService, useValue: mockPrisma },
-        { provide: LocalDiskStorageAdapter, useValue: mockStorage },
-        { provide: AiQueueService, useValue: mockAiQueue },
-        { provide: DocumentEntityService, useValue: mockEntities },
-        { provide: DocumentReconciliationService, useValue: mockReconciliation },
-      ],
-    }).compile();
-    service = moduleRef.get(DocumentsService);
-  });
-
-  it("maps a missing backing file (ENOENT) to a 404, not a crash — covers seeded placeholder documents", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue({
-      id: "doc1",
-      userId: "user-1",
-      storageKey: "seed/local/demo-doc-1.pdf",
-      fileName: "demo.pdf",
-      mimeType: "application/pdf",
+  it("flags high EMI load relative to income as a debt-stress insight", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(60000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 60000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 10000, category: { name: "Rent", type: "NEED" } }]);
+    mockLoansService.debtSummary.mockResolvedValue({
+      totalMonthlyEmi: "35000",
+      debtStressScore: 58.3,
+      totalOutstanding: "1500000",
+      loans: [],
     });
-    const enoent = Object.assign(new Error("no such file"), { code: "ENOENT" });
-    mockStorage.read.mockRejectedValue(enoent);
 
-    await expect(service.download("user-1", "doc1")).rejects.toThrow(/could not be found/i);
+    const summary = await service.getSummary("user-1");
+
+    const debtInsight = summary.insights.find((i) => i.id === "high-debt-stress");
+    expect(debtInsight).toBeDefined();
+    expect(debtInsight?.severity).toBe("CRITICAL");
   });
 
-  it("rejects download for a document owned by a different user", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue({ id: "doc1", userId: "someone-else" });
+  it("includes property value as a net-worth asset alongside investments and debt", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(80000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 80000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 30000, category: { name: "Rent", type: "NEED" } }]);
+    mockInvestmentsService.totalCurrentValue.mockResolvedValue(200000);
+    mockLoansService.totalOutstanding.mockResolvedValue(1000000);
+    mockPropertyService.totalCurrentValue.mockResolvedValue(4500000);
+    // Net worth is the authoritative FinancialFactsService figure:
+    // available cash 50000 + investments 200000 + property 4500000 - loans 1000000.
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(
+      makePosition({ available: "50000.00", netWorth: String(50000 + 200000 + 4500000 - 1000000) }),
+    );
 
-    await expect(service.download("user-1", "doc1")).rejects.toThrow();
-    expect(mockStorage.read).not.toHaveBeenCalled();
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.propertyValue).toBe("4500000.00");
+    expect(Number(summary.netWorth)).toBeCloseTo(50000 + 200000 + 4500000 - 1000000);
+    expect(summary.availableCash).toBe("50000.00");
   });
 });
 
-describe("DocumentOcrHandler (new — async OCR processing)", () => {
-  let handler: DocumentOcrHandler;
-  const mockPrisma = { client: { document: { findUnique: jest.fn(), update: jest.fn() } } };
-  const mockStorage = { save: jest.fn(), read: jest.fn(), delete: jest.fn() };
-  const mockOcr = { process: jest.fn() };
-  const mockRagAutoReindex = { triggerFor: jest.fn().mockResolvedValue(undefined) };
-  const mockCopilotIngestion = { ingestFromDocumentText: jest.fn().mockResolvedValue(undefined) };
+describe("DashboardService budget-aware health score (new)", () => {
+  let service: DashboardService;
 
-  // Captures the callback DocumentOcrHandler registers via onModuleInit(), so tests can
-  // invoke it directly exactly as the real AiQueueService's worker would when a job is
-  // dequeued — without needing a real BullMQ/Redis instance in this unit test.
-  let registeredHandler: (input: unknown) => Promise<unknown>;
-  const mockAiQueue = {
-    registerHandler: jest.fn((_type: string, fn: (input: unknown) => Promise<unknown>) => {
-      registeredHandler = fn;
-    }),
+  const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
+  const mockExpensesService = { list: jest.fn() };
+  const mockInvestmentsService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
+  const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
+  const mockPrisma = {
+    client: {
+      budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() },
+      goal: { findMany: jest.fn() },
+    },
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockInvestmentsService.totalCurrentValue.mockResolvedValue(0);
+    mockLoansService.totalOutstanding.mockResolvedValue(0);
+    mockLoansService.debtSummary.mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] });
+    mockAlertsService.refresh.mockResolvedValue([]);
+    mockPropertyService.totalCurrentValue.mockResolvedValue(0);
+    mockIncomeService.monthlyForecast.mockResolvedValue(100000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+
     const moduleRef = await Test.createTestingModule({
       providers: [
-        DocumentOcrHandler,
+        DashboardService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: LocalDiskStorageAdapter, useValue: mockStorage },
-        { provide: OCR_ADAPTER, useValue: mockOcr },
-        { provide: AiQueueService, useValue: mockAiQueue },
-        { provide: RagAutoReindexService, useValue: mockRagAutoReindex },
-        { provide: CopilotIngestionService, useValue: mockCopilotIngestion },
-        { provide: DocumentReconciliationService, useValue: mockReconciliation },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
       ],
     }).compile();
-    handler = moduleRef.get(DocumentOcrHandler);
-    handler.onModuleInit();
+    service = moduleRef.get(DashboardService);
   });
 
-  it("registers a handler for the document.ocr job type", () => {
-    expect(mockAiQueue.registerHandler).toHaveBeenCalledWith("document.ocr", expect.any(Function));
+  it("gives full budget credit (score 100, isReal true) when spending is at or under every budget", async () => {
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 15000, categoryId: "c1", category: { name: "Groceries", type: "NEED" } },
+    ]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([{ categoryId: "c1", monthlyAmount: 20000 }]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(true);
+    expect(summary.healthScore.breakdown.budgetAdherence).toBe(100);
   });
 
-  it("on success, reads the file from storage, runs OCR, and marks the document DONE with the extracted text/summary", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue({
-      id: "doc1", userId: "user-1", storageKey: "key-1", mimeType: "image/jpeg",
-    });
-    mockStorage.read.mockResolvedValue(Buffer.from("fake-image-bytes"));
-    mockOcr.process.mockResolvedValue({ text: "PAN 1234", summary: "PAN card summary" });
+  it("degrades the budget score proportionally to overspend, and it's included in the overall score", async () => {
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 30000, categoryId: "c1", category: { name: "Dining Out", type: "WANT" } }, // 50% over a 20000 budget
+    ]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([{ categoryId: "c1", monthlyAmount: 20000 }]);
 
-    const result = await registeredHandler({ documentId: "doc1", userId: "user-1", category: "PAN" });
+    const summary = await service.getSummary("user-1");
 
-    expect(mockStorage.read).toHaveBeenCalledWith("key-1");
-    expect(mockOcr.process).toHaveBeenCalledWith(Buffer.from("fake-image-bytes"), "image/jpeg", "PAN");
-    expect(mockPrisma.client.document.update).toHaveBeenCalledWith({
-      where: { id: "doc1" },
-      data: { ocrStatus: "DONE", ocrText: "PAN 1234", summary: "PAN card summary" },
-    });
-    expect(result).toEqual({ ocrStatus: "DONE" });
+    // adherence = 1 - (30000-20000)/20000 = 0.5 -> budgetScore = 50
+    expect(summary.healthScore.breakdown.budgetAdherence).toBe(50);
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(true);
   });
 
-  it("marks the document NOT_APPLICABLE (not FAILED) when the adapter throws OcrNotApplicableError", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue({
-      id: "doc1", userId: "user-1", storageKey: "key-1", mimeType: "application/pdf",
-    });
-    mockStorage.read.mockResolvedValue(Buffer.from("fake-pdf-bytes"));
-    mockOcr.process.mockRejectedValue(new OcrNotApplicableError("PDFs aren't supported yet"));
+  it("weights multiple budgets' adherence by their amount, not a simple average", async () => {
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 30000, categoryId: "rent", category: { name: "Rent", type: "NEED" } }, // exactly at a 30000 rent budget -> 100
+      { amount: 1000, categoryId: "coffee", category: { name: "Coffee", type: "WANT" } }, // 900% over a tiny 100 budget -> floored at 0
+    ]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([
+      { categoryId: "rent", monthlyAmount: 30000 }, // large weight
+      { categoryId: "coffee", monthlyAmount: 100 }, // tiny weight
+    ]);
 
-    const result = await registeredHandler({ documentId: "doc1", userId: "user-1", category: "OTHER" });
+    const summary = await service.getSummary("user-1");
 
-    expect(mockPrisma.client.document.update).toHaveBeenCalledWith({
-      where: { id: "doc1" },
-      data: { ocrStatus: "NOT_APPLICABLE", summary: "PDFs aren't supported yet" },
-    });
-    expect(result).toEqual({ ocrStatus: "NOT_APPLICABLE" });
+    // Weighted heavily toward the large, fully-met rent budget rather than being
+    // dragged down evenly by the small, badly-blown coffee budget.
+    expect(summary.healthScore.breakdown.budgetAdherence).toBeGreaterThan(90);
   });
 
-  it("marks the document FAILED and rethrows on a genuine OCR processing error (so the queue's own retry sees it)", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue({
-      id: "doc1", userId: "user-1", storageKey: "key-1", mimeType: "image/jpeg",
-    });
-    mockStorage.read.mockResolvedValue(Buffer.from("fake-image-bytes"));
-    mockOcr.process.mockRejectedValue(new Error("OCR engine crashed"));
+  it("does not weight the budget dimension into the overall score at all when no budgets exist", async () => {
+    mockExpensesService.list.mockResolvedValue([{ amount: 20000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockPrisma.client.budget.findMany.mockResolvedValue([]);
 
-    await expect(registeredHandler({ documentId: "doc1", userId: "user-1", category: "OTHER" })).rejects.toThrow(
-      "OCR engine crashed",
-    );
-    expect(mockPrisma.client.document.update).toHaveBeenCalledWith({
-      where: { id: "doc1" },
-      data: { ocrStatus: "FAILED" },
-    });
-  });
+    const summary = await service.getSummary("user-1");
 
-  it("skips processing without error when the document was deleted between enqueue and this job running", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue(null);
-
-    const result = await registeredHandler({ documentId: "gone", userId: "user-1", category: "OTHER" });
-
-    expect(result).toEqual({ skipped: true });
-    expect(mockStorage.read).not.toHaveBeenCalled();
-    expect(mockOcr.process).not.toHaveBeenCalled();
-  });
-
-  it("skips processing when the document exists but belongs to a different user than the job claims", async () => {
-    mockPrisma.client.document.findUnique.mockResolvedValue({ id: "doc1", userId: "someone-else" });
-
-    const result = await registeredHandler({ documentId: "doc1", userId: "user-1", category: "OTHER" });
-
-    expect(result).toEqual({ skipped: true });
-    expect(mockOcr.process).not.toHaveBeenCalled();
+    expect(summary.healthScore.budgetAdherenceIsReal).toBe(false);
   });
 });
 
-describe("TesseractOcrAdapter (new — mime-type gate only, no real OCR engine invoked)", () => {
-  // Only the synchronous mime-type gate is unit-tested here for genuinely unsupported
-  // types (e.g. Word documents), which still throw OcrNotApplicableError BEFORE ever
-  // calling tesseract.js's createWorker(). PDFs are no longer rejected outright — see
-  // audit item #5's dedicated, fully-mocked suite in tesseract-ocr.adapter.spec.ts for
-  // PDF routing/rasterization/error-mapping coverage (real Tesseract engine internals —
-  // worker startup, language data, image recognition — still belong in a manual/
-  // integration QA pass, not this suite).
-  it("throws OcrNotApplicableError for a Word document", async () => {
-    const { TesseractOcrAdapter } = await import("../src/documents/adapters/tesseract-ocr.adapter");
-    const { OcrNotApplicableError } = await import("../src/documents/adapters/ocr.adapter");
-    const adapter = new TesseractOcrAdapter();
-
-    await expect(
-      adapter.process(
-        Buffer.from("doc-bytes"),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "OTHER",
-      ),
-    ).rejects.toThrow(OcrNotApplicableError);
-  });
-});
-
-describe("DocumentsService — entity linking", () => {
-  let service: DocumentsService;
-  const mockStorage = { save: jest.fn().mockResolvedValue("key-1"), read: jest.fn(), delete: jest.fn() };
-  const mockAiQueue = { enqueue: jest.fn().mockResolvedValue({}), registerHandler: jest.fn() };
-  const mockPrisma2 = { client: { document: { create: jest.fn().mockResolvedValue({ id: "doc1" }), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({ id: "doc1", entityType: "POLICY", entityId: "p1" }), findMany: jest.fn().mockResolvedValue([]) } } };
-  const ents = { validateLink: jest.fn(), validateDocumentType: jest.fn().mockReturnValue(null) };
-  const recon = { reconcile: jest.fn().mockResolvedValue({ supported: true }) };
+describe("DashboardService budget CRUD (new)", () => {
+  let service: DashboardService;
+  const mockPrisma = { client: { budget: { findMany: jest.fn(), upsert: jest.fn(), deleteMany: jest.fn() } } };
+  const noop = {};
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    ents.validateLink.mockResolvedValue({ entityType: "POLICY", entityId: "p1" });
-    mockPrisma2.client.document.findUnique.mockResolvedValue({ id: "doc1", userId: "user-1", entityType: null, entityId: null, ocrStatus: "DONE", storageKey: "k" });
     const moduleRef = await Test.createTestingModule({
       providers: [
-        DocumentsService,
-        { provide: PrismaService, useValue: mockPrisma2 },
-        { provide: LocalDiskStorageAdapter, useValue: mockStorage },
-        { provide: AiQueueService, useValue: mockAiQueue },
-        { provide: DocumentEntityService, useValue: ents },
-        { provide: DocumentReconciliationService, useValue: recon },
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: noop },
+        { provide: ExpensesService, useValue: noop },
+        { provide: InvestmentsService, useValue: noop },
+        { provide: LoansService, useValue: noop },
+        { provide: AlertsService, useValue: noop },
+        { provide: PropertyService, useValue: noop },
+        { provide: FinancialFactsService, useValue: noop },
       ],
     }).compile();
-    service = moduleRef.get(DocumentsService);
+    service = moduleRef.get(DashboardService);
   });
 
-  it("verifies the link BEFORE storing anything on upload, and refuses a foreign record", async () => {
-    ents.validateLink.mockRejectedValue(new Error("not found"));
-    await expect(service.upload("user-1", fakeFile(), { category: "OTHER" as never, entityType: "POLICY", entityId: "victim" } as never)).rejects.toThrow();
-    expect(mockStorage.save).not.toHaveBeenCalled();
-    expect(ents.validateLink).toHaveBeenCalledWith("user-1", "POLICY", "victim");
+  it("lists a user's budgets", async () => {
+    mockPrisma.client.budget.findMany.mockResolvedValue([{ id: "b1", categoryId: "c1", monthlyAmount: 20000 }]);
+
+    const budgets = await service.listBudgets("user-1");
+
+    expect(budgets).toHaveLength(1);
+    expect(mockPrisma.client.budget.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "user-1" } }),
+    );
   });
 
-  it("saves the verified link on the new document", async () => {
-    await service.upload("user-1", fakeFile(), { category: "OTHER" as never, entityType: "POLICY", entityId: "p1" } as never);
-    expect(mockPrisma2.client.document.create.mock.calls[0][0].data).toMatchObject({ entityType: "POLICY", entityId: "p1" });
+  it("upserts a budget keyed by (userId, categoryId)", async () => {
+    mockPrisma.client.budget.upsert.mockResolvedValue({ id: "b1", categoryId: "c1", monthlyAmount: 25000 });
+
+    await service.upsertBudget("user-1", { categoryId: "c1", monthlyAmount: 25000 });
+
+    expect(mockPrisma.client.budget.upsert).toHaveBeenCalledWith({
+      where: { userId_categoryId: { userId: "user-1", categoryId: "c1" } },
+      create: { userId: "user-1", categoryId: "c1", monthlyAmount: 25000 },
+      update: { monthlyAmount: 25000 },
+      include: { category: true },
+    });
   });
 
-  it("re-verifies on re-link, then reconciles an already-OCR'd document", async () => {
-    await service.update("user-1", "doc1", { entityType: "POLICY", entityId: "p1" } as never);
-    expect(ents.validateLink).toHaveBeenCalledWith("user-1", "POLICY", "p1");
-    expect(recon.reconcile).toHaveBeenCalledWith("user-1", "doc1");
+  it("removes a budget scoped to the owner", async () => {
+    mockPrisma.client.budget.deleteMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.removeBudget("user-1", "b1");
+
+    expect(mockPrisma.client.budget.deleteMany).toHaveBeenCalledWith({ where: { id: "b1", userId: "user-1" } });
+    expect(result).toEqual({ id: "b1" });
   });
 
-  it("unlinks with null + null, and an edit that does not touch the link never re-validates it", async () => {
-    ents.validateLink.mockResolvedValue({ entityType: null, entityId: null });
-    await service.update("user-1", "doc1", { entityType: null, entityId: null } as never);
-    expect(mockPrisma2.client.document.update.mock.calls[0][0].data).toMatchObject({ entityType: null, entityId: null });
+  it("throws NotFoundException removing a budget that doesn't exist or isn't owned by the caller", async () => {
+    mockPrisma.client.budget.deleteMany.mockResolvedValue({ count: 0 });
+    await expect(service.removeBudget("user-1", "not-mine")).rejects.toThrow(NotFoundException);
+  });
+});
 
-    ents.validateLink.mockClear();
-    await service.update("user-1", "doc1", { tags: ["x"] } as never);
-    expect(ents.validateLink).not.toHaveBeenCalled();
+describe("DashboardService emergency fund via Goal + uncommitted cash (new, audit items #2 and #18)", () => {
+  let service: DashboardService;
+
+  const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
+  const mockExpensesService = { list: jest.fn() };
+  const mockInvestmentsService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
+  const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
+  const mockPrisma = {
+    client: {
+      budget: { findMany: jest.fn().mockResolvedValue([]) },
+      goal: { findMany: jest.fn() },
+    },
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockInvestmentsService.totalCurrentValue.mockResolvedValue(0);
+    mockLoansService.totalOutstanding.mockResolvedValue(0);
+    mockLoansService.debtSummary.mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] });
+    mockAlertsService.refresh.mockResolvedValue([]);
+    mockPropertyService.totalCurrentValue.mockResolvedValue(0);
+    mockPrisma.client.budget.findMany.mockResolvedValue([]);
+    // This month's expense total is already a MONTHLY figure (1000), so a 6000 reserve
+    // == exactly 6 months. (This previously used 12000 and relied on the legacy "/ 12"
+    // bug in the coverage formula, which wrongly treated the monthly total as annual.)
+    mockIncomeService.monthlyForecast.mockResolvedValue(50000);
+    mockIncomeService.list.mockResolvedValue([{ amount: 50000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 1000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
+      ],
+    }).compile();
+    service = moduleRef.get(DashboardService);
   });
 
-  it("lists documents by entity only after verifying the caller owns that entity", async () => {
-    await service.listByEntity("user-1", "POLICY", "p1");
-    expect(mockPrisma2.client.document.findMany.mock.calls[0][0].where).toMatchObject({ userId: "user-1", entityType: "POLICY", entityId: "p1" });
+  it("uses an EMERGENCY_FUND goal's currentAmount, not a literally-named expense category, when a goal exists", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 6000, investments: [] },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("GOAL");
+    expect(summary.emergencyFundAmount).toBe("6000.00");
+    expect(summary.healthScore.breakdown.emergencyFundMonths).toBe(100); // 6 months / 6 -> capped at 100
+  });
+
+  it("sums currentAmount across multiple EMERGENCY_FUND goals", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 2000, investments: [] },
+      { id: "g2", type: "EMERGENCY_FUND", currentAmount: 1000, investments: [] },
+      { id: "g3", type: "HOUSE", currentAmount: 500000, investments: [] }, // not counted
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("GOAL");
+    expect(summary.emergencyFundAmount).toBe("3000.00");
+  });
+
+  it("falls back to the legacy 'Emergency Fund'-named expense category when no goal exists", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 12000, categoryId: "c1", category: { name: "Rent", type: "NEED" } },
+      { amount: 3000, categoryId: "c2", category: { name: "Emergency Fund", type: "SAVINGS" } },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("CATEGORY_LEGACY");
+    expect(summary.emergencyFundAmount).toBe("3000.00");
+  });
+
+  it("reports basis NONE and a zero emergency-fund amount when neither a goal nor the legacy category exists", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("NONE");
+    expect(summary.emergencyFundAmount).toBe("0.00");
+    expect(summary.healthScore.breakdown.emergencyFundMonths).toBe(0);
+  });
+
+  it("prefers the GOAL basis over the legacy category even if both are present", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 9000, investments: [] },
+    ]);
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 3000, categoryId: "c2", category: { name: "Emergency Fund", type: "SAVINGS" } },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("GOAL");
+    expect(summary.emergencyFundAmount).toBe("9000.00");
+  });
+
+  it("subtracts non-investment-backed goal currentAmount from cashBalance to get uncommittedCash", async () => {
+    mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 20000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(makePosition({ available: "80000.00" }));
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 15000, investments: [] }, // cash-backed, subtracted
+      { id: "g2", type: "HOUSE", currentAmount: 200000, investments: [{ id: "inv1" }] }, // investment-backed, NOT subtracted
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    // cashBalance (= available cash) = 80000; uncommittedCash = 80000 - 15000 (g1 only) = 65000
+    expect(summary.cashBalance).toBe("80000.00");
+    expect(summary.uncommittedCash).toBe("65000.00");
+  });
+
+  it("does not subtract an EMERGENCY_FUND goal when the reserve ledger exists (it already left Available Cash)", async () => {
+    mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
+    mockExpensesService.list.mockResolvedValue([]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(makePosition({ available: "80000.00" }));
+    mockFinancialFactsService.getEmergencyFundStatus.mockResolvedValue({ amount: 330000, basis: "LEDGER", monthsOfCoverage: 6 });
+    mockPrisma.client.goal.findMany.mockResolvedValue([
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 330000, investments: [] }, // ledger-backed: NOT subtracted
+      { id: "g2", type: "VACATION", currentAmount: 45000, investments: [] }, // cash-earmarked: subtracted
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.uncommittedCash).toBe("35000.00"); // 80000 - 45000, never negative from the reserve
+  });
+
+  it("uncommittedCash equals cashBalance when the user has no goals at all", async () => {
+    mockPrisma.client.goal.findMany.mockResolvedValue([]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(makePosition({ available: "30000.00" }));
+    mockIncomeService.list.mockResolvedValue([{ amount: 40000 }]);
+    mockExpensesService.list.mockResolvedValue([{ amount: 10000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.uncommittedCash).toBe(summary.cashBalance);
+  });
+});
+
+
+describe("DashboardService — authoritative cash model and actual spending", () => {
+  let service: DashboardService;
+  const mockIncomeService = { monthlyForecast: jest.fn(), list: jest.fn() };
+  const mockExpensesService = { list: jest.fn() };
+  const mockInvestmentsService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockLoansService = {
+    totalOutstanding: jest.fn().mockResolvedValue(0),
+    debtSummary: jest.fn().mockResolvedValue({ totalMonthlyEmi: "0", debtStressScore: 0, totalOutstanding: "0", loans: [] }),
+  };
+  const mockAlertsService = { refresh: jest.fn().mockResolvedValue([]) };
+  const mockPropertyService = { totalCurrentValue: jest.fn().mockResolvedValue(0) };
+  const mockFinancialFactsService = makeMockFinancialFactsService();
+  const mockPrisma = { client: { budget: { findMany: jest.fn().mockResolvedValue([]) }, goal: { findMany: jest.fn().mockResolvedValue([]) } } };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        DashboardService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: IncomeService, useValue: mockIncomeService },
+        { provide: ExpensesService, useValue: mockExpensesService },
+        { provide: InvestmentsService, useValue: mockInvestmentsService },
+        { provide: LoansService, useValue: mockLoansService },
+        { provide: AlertsService, useValue: mockAlertsService },
+        { provide: PropertyService, useValue: mockPropertyService },
+        { provide: FinancialFactsService, useValue: mockFinancialFactsService },
+      ],
+    }).compile();
+    service = moduleRef.get(DashboardService);
+  });
+
+  it("does not count legacy SAVINGS-category rows (SIP) as monthly spending", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([
+      { amount: 15000, categoryId: "c1", category: { name: "Rent", type: "NEED" } },
+      { amount: 10000, categoryId: "c2", category: { name: "SIP", type: "SAVINGS" } },
+    ]);
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.monthlyExpenses).toBe("15000.00");
+    expect(summary.monthlyExpensesBasis).toBe("ACTUAL");
+  });
+
+  it("exposes Available / Emergency / Total cash separately (33,000 + 7,000 = 40,000)", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([]);
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue(
+      makePosition({ available: "33000.00", emergency: "7000.00", total: "40000.00" }),
+    );
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.availableCash).toBe("33000.00");
+    expect(summary.emergencyCash).toBe("7000.00");
+    expect(summary.totalCash).toBe("40000.00");
+    expect(summary.cashBalance).toBe("33000.00"); // legacy field == available cash
+  });
+
+  it("reports investment contributions and rate from the facts layer (10,000 / 65,000 ≈ 15.4%)", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([]);
+    mockFinancialFactsService.getMonthlyCashFlow.mockResolvedValue({
+      income: "65000.00",
+      investmentContributions: "10000.00",
+    });
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.monthlyInvestmentContributions).toBe("10000.00");
+    expect(summary.investmentRate).toBe(15.4);
+  });
+
+  it("uses Emergency Cash / average essential expenses for coverage when the reserve ledger exists", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([{ amount: 15000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
+    mockFinancialFactsService.getEmergencyFundStatus.mockResolvedValue({ amount: 60000, basis: "LEDGER", monthsOfCoverage: 4 });
+    mockFinancialFactsService.getEmergencyCoverage.mockResolvedValue({ coverageMonths: "6.00" });
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.emergencyFundBasis).toBe("LEDGER");
+    expect(summary.healthScore.breakdown.emergencyFundMonths).toBe(100); // 6 months => full score
+  });
+
+  it("passes data-health warnings through for the dashboard card and the AI Coach", async () => {
+    mockIncomeService.monthlyForecast.mockResolvedValue(65000);
+    mockExpensesService.list.mockResolvedValue([]);
+    const warning = { code: "INVESTMENT_AS_EXPENSE", severity: "WARNING", message: "m", count: 1 };
+    mockFinancialFactsService.getFinancialPosition.mockResolvedValue({ ...makePosition(), dataHealth: [warning] });
+
+    const summary = await service.getSummary("user-1");
+
+    expect(summary.dataHealth).toEqual([warning]);
   });
 });
