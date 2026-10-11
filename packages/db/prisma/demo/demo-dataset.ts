@@ -1173,8 +1173,21 @@ export function buildDemoDataset(asOf: Date): DemoDataset {
   // ---- goals -------------------------------------------------------------------------------
   const val = (k: string) => inv[k].value;
   const retirementValue = val("epf") + val("ppf") + val("nps") + val("idx");
+  // The reserve target is 6 x the average monthly NEED spending of the last 3 full months: the same
+  // definition the Emergency Fund page uses for coverage, so goal, target and coverage agree.
+  const needNames = new Set(CATEGORIES.filter((c) => c.type === "NEED").map((c) => c.name));
+  const needByMonth = new Map<string, number>();
+  for (const e of expenses) {
+    if (e.flowType !== "EXPENSE" || !needNames.has(e.categoryName)) continue;
+    const k = ym(e.spentAt.getUTCFullYear(), e.spentAt.getUTCMonth());
+    needByMonth.set(k, (needByMonth.get(k) ?? 0) + e.amount);
+  }
+  const lastFull = [1, 2, 3].map((n) => needByMonth.get(ym(...(((): [number, number] => { const i = monthIndex(asOfY, asOfM) - n; return [Math.floor(i / 12), i % 12]; })()))) ?? 0);
+  const avgNeed = lastFull.reduce((x, y) => x + y, 0) / 3;
+  const emergencyTarget = roundTo(Math.max(avgNeed * 6, emergencyBalance), 10_000);
+
   const goals: DemoGoal[] = [
-    { key: "emergency", type: "EMERGENCY_FUND", name: "Emergency fund (6 months)", targetAmount: roundTo(Math.max(emergencyBalance * 1.1, 400_000), 10_000), targetDate: at(asOfY + (asOfM > 6 ? 1 : 0), (asOfM + 5) % 12, 28), currentAmount: Math.round(emergencyBalance), monthlyContribution: 7_000, assumedAnnualReturnPercent: null },
+    { key: "emergency", type: "EMERGENCY_FUND", name: "Emergency fund (6 months of essentials)", targetAmount: emergencyTarget, targetDate: at(asOfY + (asOfM > 6 ? 1 : 0), (asOfM + 5) % 12, 28), currentAmount: Math.round(emergencyBalance), monthlyContribution: 7_000, assumedAnnualReturnPercent: null },
     { key: "retirement", type: "RETIREMENT", name: "Retirement corpus at 60", targetAmount: 50_000_000, targetDate: at(2053, 5, 14), currentAmount: Math.round(retirementValue), monthlyContribution: 3_000 + 10_000 + Math.round(salaryFor(asOfY, asOfM).employeePf * 2), assumedAnnualReturnPercent: 11 },
     { key: "education", type: "CHILD_EDUCATION", name: "Ira's higher education", targetAmount: 4_000_000, targetDate: at(2043, 5, 30), currentAmount: Math.round(val("flexi")), monthlyContribution: 10_000, assumedAnnualReturnPercent: 12 },
     { key: "vacation", type: "VACATION", name: "Family holiday abroad", targetAmount: 350_000, targetDate: at(2028, 0, 15), currentAmount: 45_000, monthlyContribution: 8_000, assumedAnnualReturnPercent: null },
