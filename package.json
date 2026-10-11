@@ -18,7 +18,8 @@
     "db:seed": "npm run seed --workspace=packages/db",
     "lint": "npm run lint --workspaces --if-present",
     "audit": "bash scripts/audit.sh",
-    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "db:seed:demo": "npm run seed:demo --workspace=packages/db --"
   },
   "devDependencies": {
     "prettier": "^3.3.3",
