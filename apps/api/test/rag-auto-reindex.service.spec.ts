@@ -32,14 +32,31 @@ describe("RagAutoReindexService (new, audit item #7)", () => {
     await expect(service.triggerFor("user-1")).resolves.toBeUndefined();
   });
 
-  it("uses the same idempotency-key format for two calls within the same hour, so a burst of writes collapses into one job", async () => {
+  it("collapses a burst of writes in the same hour into a single enqueue (in-process throttle)", async () => {
     mockQueue.enqueue.mockResolvedValue({ id: "job-1" });
 
     await service.triggerFor("user-1");
     await service.triggerFor("user-1");
 
-    const [firstCallKey] = mockQueue.enqueue.mock.calls[0][2] ? [mockQueue.enqueue.mock.calls[0][2].idempotencyKey] : [undefined];
-    const [secondCallKey] = mockQueue.enqueue.mock.calls[1][2] ? [mockQueue.enqueue.mock.calls[1][2].idempotencyKey] : [undefined];
-    expect(firstCallKey).toBe(secondCallKey);
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
+    expect(mockQueue.enqueue.mock.calls[0][2].idempotencyKey).toMatch(/^reindex:\d{4}-\d{2}-\d{2}T\d{2}$/);
+  });
+
+  it("still enqueues separately for a different user", async () => {
+    mockQueue.enqueue.mockResolvedValue({ id: "job-1" });
+
+    await service.triggerFor("user-1");
+    await service.triggerFor("user-2");
+
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not mark the hour as done when the enqueue fails, so the next write retries", async () => {
+    mockQueue.enqueue.mockRejectedValueOnce(new Error("db down")).mockResolvedValue({ id: "job-2" });
+
+    await service.triggerFor("user-1");
+    await service.triggerFor("user-1");
+
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(2);
   });
 });
