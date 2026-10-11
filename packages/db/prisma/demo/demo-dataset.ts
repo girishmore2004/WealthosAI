@@ -70,6 +70,10 @@ export interface DemoExpense {
   notes: string | null;
   isRecurring: boolean;
   flowType: "EXPENSE" | "OTHER_OUTFLOW";
+  /** Insurance premium paid for this policy (links the expense to it, as the Insurance page does). */
+  policyKey?: string | null;
+  /** Premium period, e.g. "2026" for a yearly policy. */
+  sourceReference?: string | null;
 }
 
 export type DemoInvestmentType = "MUTUAL_FUND" | "STOCK" | "EPF" | "PPF" | "NPS" | "FD" | "GOLD";
@@ -967,7 +971,7 @@ export function buildDemoDataset(asOf: Date): DemoDataset {
     // Insurance premiums, on each policy's renewal date.
     for (const p of POLICY_PLANS) {
       if (y >= p.startY && m0 === p.month0) {
-        addExpense({ categoryName: "Insurance", merchant: `${p.provider} - ${p.type.replace(/_/g, " ").toLowerCase()} premium`, amount: premiumFor(p, y), spentAt: at(y, m0, p.day), paymentMethod: "BANK_TRANSFER", notes: p.notes, isRecurring: true, flowType: "EXPENSE" });
+        addExpense({ categoryName: "Insurance", merchant: `${p.provider} - ${p.type.replace(/_/g, " ").toLowerCase()} premium`, amount: premiumFor(p, y), spentAt: at(y, m0, p.day), paymentMethod: "BANK_TRANSFER", notes: p.notes, isRecurring: true, flowType: "EXPENSE", policyKey: p.key, sourceReference: String(y) });
       }
     }
 
