@@ -13,6 +13,7 @@ import { DashboardService } from "../src/dashboard/dashboard.service";
 import { AlertsService } from "../src/alerts/alerts.service";
 import { RagAutoReindexService } from "../src/ai/ops/rag-auto-reindex.service";
 import { FinancialFactsService } from "../src/common/financial-facts/financial-facts.service";
+import { FinancialEngineService } from "../src/ai/financial-engine/financial-engine.service";
 
 describe("CoachService.ask", () => {
   let service: CoachService;
@@ -234,5 +235,64 @@ describe("CoachService.ask", () => {
 
       expect(result.answer).toMatch(/can't compute a savings rate/);
     });
+  });
+});
+
+describe("CoachService.ask — finance engine fallback for phrasings the keyword intents miss", () => {
+  const build = async (engine: { ask: jest.Mock }) => {
+    const create = jest.fn((args) => Promise.resolve({ id: "i1", ...args.data }));
+    const none = {} as never;
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        CoachService,
+        { provide: PrismaService, useValue: { client: { coachInteraction: { create } } } },
+        { provide: GoalsService, useValue: none },
+        { provide: TaxService, useValue: none },
+        { provide: RetirementService, useValue: none },
+        { provide: InsuranceService, useValue: none },
+        { provide: InvestmentsService, useValue: none },
+        { provide: ExpensesService, useValue: none },
+        { provide: LoansService, useValue: none },
+        { provide: IncomeService, useValue: none },
+        { provide: DashboardService, useValue: none },
+        { provide: AlertsService, useValue: none },
+        { provide: RagAutoReindexService, useValue: { triggerFor: jest.fn().mockResolvedValue(undefined) } },
+        { provide: FinancialFactsService, useValue: none },
+        { provide: FinancialEngineService, useValue: engine },
+      ],
+    }).compile();
+    return moduleRef.get(CoachService);
+  };
+
+  it("answers from the engine when no keyword intent matches", async () => {
+    const engine = { ask: jest.fn().mockResolvedValue({ handled: true, intent: "CASH_FLOW", answer: "Available cash is Rs 2,15,646.", tools: [{ tool: "getFinancialFacts" }] }) };
+    const service = await build(engine);
+    const result = await service.ask("u1", "how much cash do I have right now");
+    expect(result.answer).toContain("2,15,646");
+    expect(result.wasRefused).toBe(false);
+    expect(result.matchedIntent).toBe("ENGINE_CASH_FLOW");
+    expect(result.dataSources).toEqual(["getFinancialFacts"]);
+  });
+
+  it("refuses with an updated topic list when the engine hands the question off", async () => {
+    const engine = { ask: jest.fn().mockResolvedValue({ handled: false, intent: "GENERAL_FINANCIAL_EDUCATION", answer: null, tools: [] }) };
+    const service = await build(engine);
+    const result = await service.ask("u1", "tell me a joke");
+    expect(result.wasRefused).toBe(true);
+    expect(result.answer).toMatch(/what-if/i);
+  });
+
+  it("refuses instead of failing when the engine throws", async () => {
+    const engine = { ask: jest.fn().mockRejectedValue(new Error("boom")) };
+    const service = await build(engine);
+    const result = await service.ask("u1", "tell me a joke");
+    expect(result.wasRefused).toBe(true);
+  });
+
+  it("keyword intents still win and never call the engine", async () => {
+    const engine = { ask: jest.fn() };
+    const service = await build(engine);
+    await service.ask("u1", "what are my goals").catch(() => undefined);
+    expect(engine.ask).not.toHaveBeenCalled();
   });
 });
