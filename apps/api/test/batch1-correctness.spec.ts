@@ -59,7 +59,7 @@ describe("EmergencyFundService.remove — the reserve can never go negative", ()
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
         create: jest.fn(),
       },
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(0),
       $transaction: jest.fn(),
     };
     db.$transaction.mockImplementation(async (fn: (tx: typeof db) => Promise<unknown>) => fn(db));
@@ -90,8 +90,8 @@ describe("EmergencyFundService.remove — the reserve can never go negative", ()
   it("takes the per-user advisory lock before reading the balance", async () => {
     const { db, svc } = build([{ type: "ALLOCATE", _sum: { amount: 100 } }], { id: "a3", type: "ALLOCATE", amount: 50 });
     await svc.remove("u1", "a3");
-    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(db.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(db.emergencyFundEntry.groupBy.mock.invocationCallOrder[0]);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(db.emergencyFundEntry.groupBy.mock.invocationCallOrder[0]);
   });
 
   it("a foreign/missing entry is a 404", async () => {
