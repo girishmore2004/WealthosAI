@@ -205,6 +205,29 @@ async function main() {
         })),
       );
 
+      // ---- insurance policies (before expenses, so premium expenses can point at them) --------------
+      const policyId = new Map<string, string>();
+      await createChunked(
+        tx.insurancePolicy,
+        dataset.policies.map((p) => {
+          const id = randomUUID();
+          policyId.set(p.key, id);
+          return {
+            id,
+            userId,
+            type: p.type,
+            provider: p.provider,
+            policyNumber: p.policyNumber,
+            premiumAmount: p.premiumAmount,
+            premiumFrequency: p.premiumFrequency,
+            coverageAmount: p.coverageAmount,
+            renewalDate: p.renewalDate,
+            nomineeName: p.nomineeName,
+            nomineeDependentId: p.nomineeDependentName ? dependentId.get(p.nomineeDependentName) ?? null : null,
+            notes: p.notes,
+          };
+        }),
+      );
       // ---- expenses ---------------------------------------------------------------------------------
       await createChunked(
         tx.expense,
@@ -218,6 +241,9 @@ async function main() {
           notes: e.notes,
           isRecurring: e.isRecurring,
           flowType: e.flowType,
+          ...(e.policyKey
+            ? { sourceType: "INSURANCE_PREMIUM", sourceId: policyId.get(e.policyKey) ?? null, sourceReference: e.sourceReference ?? null }
+            : {}),
         })),
       );
 
@@ -284,28 +310,6 @@ async function main() {
           const id = randomUUID();
           loanId.set(l.key, id);
           return { id, userId, type: l.type, lender: l.lender, principal: l.principal, outstandingPrincipal: l.outstandingPrincipal, interestRateAnnual: l.interestRateAnnual, tenureMonths: l.tenureMonths, emiAmount: l.emiAmount, startDate: l.startDate, notes: l.notes };
-        }),
-      );
-      const policyId = new Map<string, string>();
-      await createChunked(
-        tx.insurancePolicy,
-        dataset.policies.map((p) => {
-          const id = randomUUID();
-          policyId.set(p.key, id);
-          return {
-            id,
-            userId,
-            type: p.type,
-            provider: p.provider,
-            policyNumber: p.policyNumber,
-            premiumAmount: p.premiumAmount,
-            premiumFrequency: p.premiumFrequency,
-            coverageAmount: p.coverageAmount,
-            renewalDate: p.renewalDate,
-            nomineeName: p.nomineeName,
-            nomineeDependentId: p.nomineeDependentName ? dependentId.get(p.nomineeDependentName) ?? null : null,
-            notes: p.notes,
-          };
         }),
       );
       await createChunked(
