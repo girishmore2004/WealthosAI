@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { GoalsService } from "../goals/goals.service";
 import { TaxService } from "../tax/tax.service";
@@ -16,6 +16,7 @@ import { CoachInteractionDTO } from "@wealthos/types";
 import { formatINR } from "../common/utils/currency.util";
 import { RagAutoReindexService } from "../ai/ops/rag-auto-reindex.service";
 import { FinancialFactsService } from "../common/financial-facts/financial-facts.service";
+import { FinancialEngineService } from "../ai/financial-engine/financial-engine.service";
 import { formatRatioAsPercent, toDecimal } from "../common/financial-facts/financial-formulas";
 
 interface GroundedAnswer {
@@ -31,6 +32,8 @@ interface GroundedAnswer {
 // service. Unmatched questions are refused rather than guessed at.
 @Injectable()
 export class CoachService {
+  private readonly logger = new Logger(CoachService.name);
+
   constructor(
     private prisma: PrismaService,
     private goalsService: GoalsService,
@@ -45,26 +48,45 @@ export class CoachService {
     private alertsService: AlertsService,
     private ragAutoReindex: RagAutoReindexService,
     private financialFacts: FinancialFactsService,
+    // Optional so the coach still works (keyword intents only) where the engine isn't wired in.
+    @Optional() private engine?: FinancialEngineService,
   ) {}
 
   async ask(userId: string, question: string): Promise<CoachInteractionDTO> {
     const intent = matchIntent(question);
 
-    const grounded: GroundedAnswer = intent
-      ? await this.dispatch(userId, intent.id)
-      : {
-          answer: `I can only answer from the data already in your account. I can help with: ${COACH_INTENTS.map((i) => i.topicLabel).join(", ")}. Try rephrasing your question around one of those.`,
+    let engineIntent: string | null = null;
+    let grounded: GroundedAnswer;
+    if (intent) {
+      grounded = await this.dispatch(userId, intent.id);
+    } else {
+      // No keyword intent matched. Before refusing, let the finance engine try: it understands many
+      // more phrasings (cash, income, emergency fund, receivables, "what if" scenarios, projections)
+      // and answers only from the same authoritative numbers, so nothing is guessed.
+      const fromEngine = await this.tryEngine(userId, question);
+      if (fromEngine) {
+        grounded = fromEngine.grounded;
+        engineIntent = fromEngine.intent;
+      } else {
+        grounded = {
+          answer:
+            "I could not match that to something I can answer from your data. I can help with: " +
+            COACH_INTENTS.map((i) => i.topicLabel).join(", ") +
+            ", cash flow, income, emergency fund, money you lent, and what-if questions such as " +
+            '"What if I increase my SIP by 5000?". Try asking about one of those.',
           dataSources: [],
         };
+      }
+    }
 
     const interaction = await this.prisma.client.coachInteraction.create({
       data: {
         userId,
         question,
-        matchedIntent: intent?.id ?? null,
+        matchedIntent: intent?.id ?? engineIntent,
         answer: grounded.answer,
         dataSources: grounded.dataSources,
-        wasRefused: intent === null || grounded.insufficientData === true,
+        wasRefused: (intent === null && engineIntent === null) || grounded.insufficientData === true,
       },
     });
 
@@ -77,6 +99,21 @@ export class CoachService {
     await this.ragAutoReindex.triggerFor(userId);
 
     return { ...interaction, createdAt: this.toIsoString(interaction.createdAt) };
+  }
+
+  private async tryEngine(userId: string, question: string): Promise<{ grounded: GroundedAnswer; intent: string } | null> {
+    if (!this.engine) return null;
+    try {
+      const res = await this.engine.ask(userId, question);
+      if (!res.handled || !res.answer) return null;
+      return {
+        intent: `ENGINE_${res.intent}`,
+        grounded: { answer: res.answer, dataSources: res.tools.map((t) => t.tool) },
+      };
+    } catch (err) {
+      this.logger.warn(`Finance engine fallback failed: ${(err as Error).name}`);
+      return null;
+    }
   }
 
   async history(userId: string, take = 20): Promise<CoachInteractionDTO[]> {
