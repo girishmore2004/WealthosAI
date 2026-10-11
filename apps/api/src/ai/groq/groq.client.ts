@@ -82,6 +82,9 @@ export class GroqClient {
             temperature: params.temperature,
             max_tokens: params.maxTokens,
             ...(params.jsonMode ? { response_format: { type: "json_object" } } : {}),
+            // gpt-oss models "think" before answering and the thinking counts towards max_tokens.
+            // Low effort keeps replies fast and leaves room for the JSON answer.
+            ...(params.model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
           }),
           signal: controller.signal,
         });
