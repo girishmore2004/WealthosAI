@@ -72,7 +72,7 @@ function makeDb() {
         return [...out.entries()].map(([receivableId, amount]) => ({ receivableId, _sum: { amount } }));
       }),
     },
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
   db.$transaction.mockImplementation(async (fn: (tx: any) => Promise<unknown>) => fn(db));
@@ -142,9 +142,9 @@ describe("ReceivablesService", () => {
   it("takes the per-receivable advisory lock inside the transaction before reading the balance", async () => {
     const { svc, db } = build();
     const r = await give(svc);
-    db.$queryRaw.mockClear();
+    db.$executeRaw.mockClear();
     await svc.recordRepayment("u1", r.id, { amount: 100, returnedAt: iso(-5) } as never);
-    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it("another user's receivable is a 404 for every operation", async () => {
