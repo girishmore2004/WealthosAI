@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
-import { ScenarioPromptParserService } from "./parsing/scenario-prompt-parser.service";
+import { ParsedScenarioPrompt, ScenarioPromptParserService } from "./parsing/scenario-prompt-parser.service";
 import { ScenarioExpanderService, ScenarioVariant } from "./expansion/scenario-expander.service";
 import { SensitivityAnalysisService, SensitivityDimension } from "./sensitivity/sensitivity-analysis.service";
 import { ScenarioRankingService, RankedVariant } from "./ranking/scenario-ranking.service";
@@ -11,6 +11,47 @@ import { BUILD_MC_PREVIEW_ITERATIONS } from "./scenario-studio.constants";
 import { SimulateScenarioStudioDto } from "./dto/simulate-scenario-studio.dto";
 import { OptimizeScenarioStudioDto } from "./dto/optimize-scenario-studio.dto";
 import { MonteCarloResultDTO, OptimizedScenarioDTO, ScenarioType } from "@wealthos/types";
+
+const SCENARIO_LABELS: Record<ScenarioType, string> = {
+  SALARY_HIKE: "a salary increase",
+  SALARY_DROP: "a salary drop",
+  SIP_INCREASE: "a SIP increase",
+  SIP_DECREASE: "a SIP decrease",
+  HOUSE_PURCHASE: "a house purchase",
+  LOAN_PREPAYMENT: "a loan prepayment",
+  RETIREMENT_AGE_SHIFT: "a retirement age change",
+  EMERGENCY_EXPENSE: "an emergency expense",
+  GOAL_DELAY: "a goal delay",
+  NEW_LOAN: "a new loan",
+};
+
+const SUPPORTED_SCENARIOS_TEXT =
+  "salary increase or drop, SIP increase or decrease, house purchase, loan prepayment, retirement age change, emergency expense, goal delay, or a new loan";
+
+/** The controlled clarification shown when a prompt did not resolve to exactly one runnable
+ * scenario. It never names a guessed scenario: an ambiguous prompt lists what it matched and
+ * asks the user to pick one; an unsupported or unavailable one says which, and how to proceed. */
+function unresolvedExplanation(parsed: ParsedScenarioPrompt): string {
+  if (parsed.reason === "ambiguous") {
+    const matched = (parsed.candidates ?? []).map((t) => SCENARIO_LABELS[t]);
+    const matchedText = matched.length > 0 ? ` (${matched.join(", ")})` : "";
+    return (
+      `Your prompt could describe more than one scenario${matchedText}, so I haven't guessed. ` +
+      "Please ask about one scenario at a time, with a specific number — for example " +
+      '"what if I increase my SIP by ₹5,000/month".'
+    );
+  }
+  if (parsed.reason === "unavailable") {
+    return (
+      "I couldn't interpret this prompt right now because the AI service is temporarily unavailable. " +
+      "Please try again in a moment, or rephrase it as one specific scenario with a number."
+    );
+  }
+  return (
+    `I couldn't match this to one of the supported scenario types (${SUPPORTED_SCENARIOS_TEXT}). ` +
+    'Try rephrasing with a specific number, e.g. "what if I increase my SIP by ₹5,000/month".'
+  );
+}
 
 export interface ScenarioStudioResult {
   prompt: string;
@@ -69,8 +110,7 @@ export class ScenarioStudioService {
         variants: [],
         sensitivity: [],
         ranked: [],
-        explanation:
-          "I couldn't match this to one of the supported scenario types (salary change, SIP change, house purchase, loan prepayment, retirement age shift, emergency expense, or goal delay). Try rephrasing with a specific number, e.g. \"what if I increase my SIP by ₹5,000/month\".",
+        explanation: unresolvedExplanation(parsed),
         explanationConfidence: 1,
         verificationPassed: true,
         monteCarloSummary: null,
