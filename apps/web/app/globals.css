@@ -2,10 +2,92 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------------------------------------------
+   Theme tokens. Values are "R G B" channel triplets so Tailwind can apply opacity modifiers.
+   Light = "Executive Analytics", Dark = "Premium Midnight". The theme is chosen by the
+   data-theme attribute on <html> (set before first paint by the script in app/layout.tsx).
+   Text-bearing semantic colours (gain / loss / warn) use slightly deeper shades in the light
+   theme so they stay readable on white; chart-specific shades live in the *-chart variables.
+   ------------------------------------------------------------------------------------------ */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --paper: 245 247 251; /* #F5F7FB */
+  --surface: 255 255 255; /* #FFFFFF */
+  --surface-muted: 248 250 252; /* #F8FAFC */
+  --sidebar: 255 255 255;
+  --line: 226 232 240; /* #E2E8F0 */
+
+  --ink: 23 32 51; /* #172033 */
+  --ink-soft: 71 85 105; /* #475569 */
+  --ink-faint: 100 116 139; /* #64748B */
+
+  --accent: 37 99 235; /* #2563EB */
+  --accent-400: 96 165 250;
+  --accent-600: 29 78 216;
+  --accent-tint: 234 241 255;
+  --accent-2: 99 102 241; /* #6366F1 */
+  --on-accent: 255 255 255;
+
+  --gain: 4 120 87; /* text-safe shade of #059669 */
+  --loss: 225 29 72; /* #E11D48 */
+  --warn: 180 83 9; /* text-safe shade of #D97706 */
+
+  --gain-chart: 5 150 105; /* #059669 */
+  --loss-chart: 225 29 72;
+  --warn-chart: 217 119 6; /* #D97706 */
+  --series-muted: 148 163 184;
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-card-hover: 0 8px 24px -12px rgba(15, 23, 42, 0.18);
+  --shadow-popover: 0 12px 32px -8px rgba(15, 23, 42, 0.22);
+
+  --sidebar-w: 16rem;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper: 8 11 20; /* #080B14 */
+  --surface: 17 24 39; /* #111827 */
+  --surface-muted: 22 31 48; /* #161F30 */
+  --sidebar: 11 16 32; /* #0B1020 */
+  --line: 37 48 71; /* #253047 */
+
+  --ink: 241 245 249; /* #F1F5F9 */
+  --ink-soft: 203 213 225; /* #CBD5E1 */
+  --ink-faint: 148 163 184; /* #94A3B8 */
+
+  --accent: 56 189 248; /* #38BDF8 */
+  --accent-400: 56 189 248;
+  --accent-600: 125 211 252;
+  --accent-tint: 15 42 64;
+  --accent-2: 129 140 248; /* #818CF8 */
+  --on-accent: 6 18 31;
+
+  --gain: 52 211 153; /* #34D399 */
+  --loss: 251 113 133; /* #FB7185 */
+  --warn: 251 191 36; /* #FBBF24 */
+
+  --gain-chart: 52 211 153;
+  --loss-chart: 251 113 133;
+  --warn-chart: 251 191 36;
+  --series-muted: 100 116 139;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-card-hover: 0 10px 28px -14px rgba(0, 0, 0, 0.7);
+  --shadow-popover: 0 16px 40px -10px rgba(0, 0, 0, 0.7);
+}
+
+:root[data-sidebar="collapsed"] {
+  --sidebar-w: 4.5rem;
+}
+
 html,
 body {
-  background-color: #f7f5ef;
-  color: #151e2e;
+  background-color: rgb(var(--paper));
+  color: rgb(var(--ink));
 }
 
 @layer base {
@@ -14,35 +96,52 @@ body {
   h3 {
     letter-spacing: -0.01em;
   }
+
+  /* Native form controls and scrollbars follow the active theme. */
+  input,
+  select,
+  textarea {
+    color-scheme: inherit;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--ink-faint));
+    opacity: 0.8;
+  }
+  option {
+    background-color: rgb(var(--surface));
+    color: rgb(var(--ink));
+  }
 }
 
 @layer utilities {
-  /* Signature element: every rupee amount in the product renders in tabular mono,
-     right-aligned, like a printed bank ledger line — never proportional sans digits. */
+  /* Every rupee amount in the product renders in tabular mono, right-aligned,
+     like a printed ledger line — never proportional sans digits. */
   .money {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
   }
 
   .ledger-rule {
-    border-bottom: 1px solid #e9e5d8;
+    border-bottom: 1px solid rgb(var(--line));
   }
 
   /* Shared surface for every panel: dashboard cards, money-module cards, AI panels. */
   .panel {
-    border-radius: 0.625rem;
-    border: 1px solid #e9e5d8;
-    background-color: #ffffff;
-    box-shadow: 0 1px 2px rgba(21, 30, 46, 0.04);
+    border-radius: 0.75rem;
+    border: 1px solid rgb(var(--line));
+    background-color: rgb(var(--surface));
+    box-shadow: var(--shadow-card);
   }
 
   .panel-hover {
-    transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
+    transition: box-shadow 200ms ease, border-color 200ms ease, transform 200ms ease;
   }
   .panel-hover:hover {
-    box-shadow: 0 8px 24px -12px rgba(21, 30, 46, 0.16);
-    border-color: #ddd6c2;
+    box-shadow: var(--shadow-card-hover);
+    border-color: rgb(var(--ink-faint) / 0.5);
   }
 
   /* KPI / stat presentation, used across dashboard + money modules. */
@@ -50,7 +149,8 @@ body {
     font-size: 0.6875rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #8a93a6;
+    color: rgb(var(--ink-faint));
+    font-weight: 500;
   }
 
   .stat-value {
@@ -62,9 +162,9 @@ body {
 
   /* Chart / visualization frame, so every chart sits inside identical padding + header rhythm. */
   .chart-frame {
-    border-radius: 0.625rem;
-    border: 1px solid #e9e5d8;
-    background: linear-gradient(180deg, #ffffff 0%, #fdfcf8 100%);
+    border-radius: 0.75rem;
+    border: 1px solid rgb(var(--line));
+    background-color: rgb(var(--surface));
     padding: 1.25rem;
   }
 
@@ -79,22 +179,25 @@ body {
     font-size: 0.6875rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #8a93a6;
+    color: rgb(var(--ink-faint));
     font-weight: 500;
     padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid #e9e5d8;
+    border-bottom: 1px solid rgb(var(--line));
   }
   .data-table tbody td {
     padding: 0.65rem 0.75rem;
-    border-bottom: 1px solid #f0ede2;
-    color: #151e2e;
+    border-bottom: 1px solid rgb(var(--line) / 0.6);
+    color: rgb(var(--ink));
     vertical-align: middle;
   }
   .data-table tbody tr:last-child td {
     border-bottom: none;
   }
+  .data-table tbody tr {
+    transition: background-color 150ms ease;
+  }
   .data-table tbody tr:hover {
-    background-color: #fbf9f3;
+    background-color: rgb(var(--surface-muted));
   }
 
   /* Severity badge system used by insights, alerts, ML panels, scenario results. */
@@ -110,32 +213,58 @@ body {
     white-space: nowrap;
   }
   .badge-info {
-    background-color: #eef1f6;
-    color: #4b5568;
+    background-color: rgb(var(--ink-faint) / 0.14);
+    color: rgb(var(--ink-soft));
   }
   .badge-warning {
-    background-color: #fdf4e4;
-    color: #b8721c;
+    background-color: rgb(var(--warn) / 0.15);
+    color: rgb(var(--warn));
   }
   .badge-critical {
-    background-color: #fbeae4;
-    color: #b3462c;
+    background-color: rgb(var(--loss) / 0.14);
+    color: rgb(var(--loss));
   }
   .badge-success {
-    background-color: #e7f3ed;
-    color: #2f7d5d;
+    background-color: rgb(var(--gain) / 0.14);
+    color: rgb(var(--gain));
+  }
+
+  /* Sidebar navigation items. */
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    color: rgb(var(--ink-soft));
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .nav-item:hover {
+    background-color: rgb(var(--surface-muted));
+    color: rgb(var(--ink));
+  }
+  .nav-item[aria-current="page"] {
+    background-color: rgb(var(--accent-tint));
+    color: rgb(var(--accent-600));
+    font-weight: 500;
   }
 }
 
 :focus-visible {
-  outline: 2px solid #d98f2b;
+  outline: 2px solid rgb(var(--accent));
   outline-offset: 2px;
   border-radius: 2px;
 }
 
 ::selection {
-  background-color: #fdf4e4;
-  color: #151e2e;
+  background-color: rgb(var(--accent) / 0.25);
+  color: rgb(var(--ink));
+}
+
+/* Smooth the theme switch without animating every property on every element. */
+body {
+  transition: background-color 200ms ease, color 200ms ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
