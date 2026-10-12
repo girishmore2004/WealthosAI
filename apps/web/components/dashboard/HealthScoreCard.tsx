@@ -1,10 +1,11 @@
 import type { FinancialHealthScoreDTO } from "@wealthos/types";
+import { CHART } from "@/lib/chart-theme";
 
 const BAND_COPY: Record<FinancialHealthScoreDTO["band"], { label: string; color: string; ring: string }> = {
-  AT_RISK: { label: "At risk", color: "text-loss", ring: "#B3462C" },
-  NEEDS_ATTENTION: { label: "Needs attention", color: "text-marigold-600", ring: "#D98F2B" },
-  STABLE: { label: "Stable", color: "text-ink", ring: "#151E2E" },
-  STRONG: { label: "Strong", color: "text-gain", ring: "#2F7D5D" },
+  AT_RISK: { label: "At risk", color: "text-loss", ring: CHART.loss },
+  NEEDS_ATTENTION: { label: "Needs attention", color: "text-warn", ring: CHART.warn },
+  STABLE: { label: "Stable", color: "text-ink", ring: CHART.primary },
+  STRONG: { label: "Strong", color: "text-gain", ring: CHART.gain },
 };
 
 export function HealthScoreCard({ score }: { score: FinancialHealthScoreDTO }) {
@@ -17,7 +18,7 @@ export function HealthScoreCard({ score }: { score: FinancialHealthScoreDTO }) {
       <p className="stat-label mb-3">Today&apos;s financial health</p>
       <div className="flex items-center gap-5">
         <svg width="96" height="96" viewBox="0 0 96 96" className="shrink-0">
-          <circle cx="48" cy="48" r="42" fill="none" stroke="#E9E5D8" strokeWidth="8" />
+          <circle cx="48" cy="48" r="42" fill="none" stroke={CHART.grid} strokeWidth="8" />
           <circle
             cx="48"
             cy="48"
@@ -31,7 +32,7 @@ export function HealthScoreCard({ score }: { score: FinancialHealthScoreDTO }) {
             transform="rotate(-90 48 48)"
             style={{ transition: "stroke-dashoffset 400ms ease" }}
           />
-          <text x="48" y="53" textAnchor="middle" className="money" fontSize="22" fill="#151E2E">
+          <text x="48" y="53" textAnchor="middle" className="money" fontSize="22" fill={CHART.ink}>
             {score.score}
           </text>
         </svg>
