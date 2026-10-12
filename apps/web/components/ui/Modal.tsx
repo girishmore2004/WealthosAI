@@ -67,13 +67,13 @@ export function Modal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-      <div className="absolute inset-0 bg-ink/40" aria-hidden="true" onClick={onClose} data-testid="modal-backdrop" />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-[1px]" aria-hidden="true" onClick={onClose} data-testid="modal-backdrop" />
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`relative max-h-[92vh] w-full overflow-y-auto rounded-t-lg bg-surface p-5 shadow-popover sm:rounded-lg sm:p-6 ${size === "lg" ? "sm:max-w-3xl" : "sm:max-w-lg"}`}
+        className={`relative max-h-[92vh] w-full overflow-y-auto rounded-t-lg border border-line bg-surface p-5 shadow-popover sm:rounded-lg sm:p-6 ${size === "lg" ? "sm:max-w-3xl" : "sm:max-w-lg"}`}
       >
         <div className="mb-4 flex items-start justify-between gap-3">
           <h2 id={titleId} className="font-display text-xl text-ink">
