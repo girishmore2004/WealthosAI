@@ -5,7 +5,7 @@ import { GroqClient } from "../groq/groq.client";
 import { ModelRouterService } from "./model-router.service";
 import { ModelRoutingStatsService } from "./model-routing-stats.service";
 import { TokenAccountingService } from "./token-accounting.service";
-import { GroundingService } from "./grounding.service";
+import { GroundingService, collectGroundableText } from "./grounding.service";
 import { SchemaValidatorService } from "./schema-validator.service";
 import { TokenBudgetService } from "./token-budget.service";
 import { RedactionService } from "./redaction.service";
@@ -26,6 +26,8 @@ import {
 
 const MAX_CONTEXT_TOKENS = 6000;
 const MAX_OUTPUT_TOKENS = 2048; // headroom: gpt-oss reasoning tokens count towards the limit
+const DEFAULT_CORRECTIVE_RETRIES = 2;
+const MAX_CORRECTIVE_RETRIES = 2;
 
 // The AI Gateway. This is the ONE place in the codebase that talks to a model —
 // every other AI feature (Coach, RAG, Scenario Studio, Copilot Ingestion, etc.) calls
@@ -149,6 +151,24 @@ export class AiGatewayService {
     return this.runStructured("ranking", rankingEnvelope, input, options);
   }
 
+  /** The text the grounding check scores for a structured result: the caller's own
+   * selector when given, otherwise the user-facing projection of the result (string
+   * values and non-structural numbers — never object keys, booleans, or citation/index
+   * bookkeeping). Scoring the raw JSON made `"citedIndices":[0,1,2]` look like an
+   * invented figure. */
+  private groundingTextFor(options: AiCallOptions, result: unknown): string {
+    if (options.groundingText) {
+      try {
+        return options.groundingText(result) ?? "";
+      } catch (err) {
+        this.logger.warn(
+          `groundingText selector failed for feature "${options.feature}" — falling back to the default projection: ${(err as Error).message}`,
+        );
+      }
+    }
+    return collectGroundableText(result);
+  }
+
   private defaultCacheable(taskType: AiTaskType): boolean {
     return taskType === "classification" || taskType === "extraction" || taskType === "ranking";
   }
@@ -237,7 +257,7 @@ export class AiGatewayService {
         let groundingScore: number | null = null;
         let hallucinationRisk: "unmeasured" | "low" | "medium" | "high" = "unmeasured";
         if (options.groundingContext) {
-          const scored = this.grounding.score(JSON.stringify(cached.result), options.groundingContext);
+          const scored = this.grounding.score(this.groundingTextFor(options, cached.result), options.groundingContext);
           groundingScore = scored.score;
           hallucinationRisk = scored.risk;
         }
@@ -306,7 +326,14 @@ export class AiGatewayService {
 
     let lastIssues: string[] = [];
     let retries = 0;
-    const maxAttempts = 1 + 2; // one initial attempt + up to 2 corrective retries (schema OR grounding), independent of GroqClient's own transport-level retries
+    // One initial attempt + up to `maxCorrectiveRetries` corrective retries (schema OR grounding),
+    // independent of GroqClient's own transport-level retries. Defaults to 2 (unchanged); a caller
+    // with a safe local fallback may lower it, never raise it above the shared cap.
+    const correctiveRetries = Math.min(
+      MAX_CORRECTIVE_RETRIES,
+      Math.max(0, Math.floor(options.maxCorrectiveRetries ?? DEFAULT_CORRECTIVE_RETRIES)),
+    );
+    const maxAttempts = 1 + correctiveRetries;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const messages =
@@ -407,7 +434,7 @@ export class AiGatewayService {
       let hallucinationRisk: "unmeasured" | "low" | "medium" | "high" = "unmeasured";
       let unmatchedNumbers: string[] = [];
       if (options.groundingContext) {
-        const scored = this.grounding.score(JSON.stringify(attemptResult.data.result), options.groundingContext);
+        const scored = this.grounding.score(this.groundingTextFor(options, attemptResult.data.result), options.groundingContext);
         groundingScore = scored.score;
         hallucinationRisk = scored.risk;
         unmatchedNumbers = scored.unmatchedNumbers;
