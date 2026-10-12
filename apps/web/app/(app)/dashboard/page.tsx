@@ -61,6 +61,8 @@ import { MlInsightsPanel } from "@/components/dashboard/MlInsightsPanel";
 import { DataHealthCard } from "@/components/dashboard/DataHealthCard";
 import { MoneyOverview } from "@/components/dashboard/MoneyOverview";
 import { QuickAddMenu } from "@/components/dashboard/QuickAddMenu";
+import { KpiCard } from "@/components/ui/KpiCard";
+import { formatINR, formatPercent } from "@/lib/format";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummaryDTO | null>(null);
@@ -108,6 +110,15 @@ export default function DashboardPage() {
         </div>
         <QuickAddMenu />
       </div>
+      {/* Headline figures — every value below is read straight from the dashboard summary. */}
+      <section aria-label="Key figures" className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+        <KpiCard accent label="Net worth" value={formatINR(summary.netWorth)} className="col-span-2 lg:col-span-1" />
+        <KpiCard label="Investments" value={formatINR(summary.investmentsValue)} />
+        <KpiCard label="Total debt" value={formatINR(summary.totalDebt)} />
+        <KpiCard label="Income this month" value={formatINR(summary.monthlyIncome)} />
+        <KpiCard label="Spent this month" value={formatINR(summary.monthlyExpenses)} />
+        <KpiCard label="Savings rate" value={formatPercent(summary.savingsRate)} tone={summary.savingsRate < 0 ? "loss" : "gain"} />
+      </section>
       <div className="grid gap-6 lg:grid-cols-2">
         <HealthScoreCard score={summary.healthScore} />
         <NetWorthCard summary={summary} />
