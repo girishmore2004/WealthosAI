@@ -98,7 +98,7 @@ import { formatINR } from "@/lib/format";
 
 const CONFIDENCE_STYLES: Record<DetectedSubscriptionDTO["confidence"], string> = {
   HIGH: "bg-gain/10 text-gain",
-  MEDIUM: "bg-marigold-500/10 text-marigold-600",
+  MEDIUM: "bg-warn/10 text-warn",
   LOW: "bg-ink-faint/10 text-ink-faint",
 };
 
