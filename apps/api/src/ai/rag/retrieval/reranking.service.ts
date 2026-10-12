@@ -3,6 +3,7 @@ import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { AiUnavailableException } from "../../exceptions/ai.exceptions";
 import { ScoredChunk } from "./hybrid-retrieval.service";
 import { MAX_RERANK_INPUT_ITEMS, TOP_K_RERANKED } from "../rag.constants";
+import { normalizeRationale } from "../../gateway/ai-gateway.types";
 
 export interface RerankedChunk extends ScoredChunk {
   rerankPosition: number;
@@ -89,7 +90,10 @@ export class RerankingService {
         .slice(0, rerankLimit)
         .map((candidateIndex, position) => ({ ...rerankInput[candidateIndex], rerankPosition: position }));
 
-      return { chunks, rationale: result.data.rationale, confidence: result.confidence };
+      // The gateway's ranking envelope already normalises the rationale to <= 500 characters;
+      // normalising again here is a cheap guard so this contract holds for any caller or
+      // test double. It touches only the explanatory text — never scores, indices or order.
+      return { chunks, rationale: normalizeRationale(result.data.rationale), confidence: result.confidence };
     } catch (err) {
       // Reranking is an enhancement over hybrid retrieval's own ordering, not a hard
       // dependency — fall back to the combined-score order already computed rather
