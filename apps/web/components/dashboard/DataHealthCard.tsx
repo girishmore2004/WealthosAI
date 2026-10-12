@@ -50,7 +50,7 @@ export function DataHealthCard() {
       {report.issues.length > 0 && (
         <ul className="mt-4 space-y-2">
           {report.issues.map((issue) => (
-            <li key={issue.code} className="rounded-md border-l-2 border-marigold-500 bg-surface-muted/60 py-2 pl-3 pr-3">
+            <li key={issue.code} className="rounded-md border-l-2 border-warn bg-surface-muted py-2 pl-3 pr-3">
               <p className="text-xs text-ink-soft">{issue.message}</p>
             </li>
           ))}
