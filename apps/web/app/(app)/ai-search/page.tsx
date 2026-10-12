@@ -406,7 +406,7 @@ export default function AiSearchPage() {
 }
 
 function ConfidenceBadge({ label, value }: { label: string; value: number }) {
-  const tier = value >= 0.7 ? "text-gain" : value >= 0.4 ? "text-marigold-600" : "text-loss";
+  const tier = value >= 0.7 ? "text-gain" : value >= 0.4 ? "text-warn" : "text-loss";
   return (
     <span>
       {label}: <span className={`font-mono ${tier}`}>{Math.round(value * 100)}%</span>
