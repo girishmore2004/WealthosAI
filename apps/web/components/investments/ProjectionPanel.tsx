@@ -8,6 +8,7 @@ import { BasisTag } from "@/components/ui/BasisTag";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { formatINR } from "@/lib/format";
+import { CHART, axisTick, legendStyle, tooltipStyle } from "@/lib/chart-theme";
 
 const RATE_CHIPS = [8, 10, 12, 15];
 const FREQUENCIES = [
@@ -18,7 +19,7 @@ const FREQUENCIES = [
   { value: "YEARLY", label: "Yearly" },
 ] as const;
 
-const axis = { fontSize: 11, fill: "#8A93A6" };
+const axis = axisTick;
 const compact = (v: number) => (Math.abs(v) >= 100000 ? `${(v / 100000).toFixed(v >= 1000000 ? 0 : 1)}L` : Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : String(v));
 const selectClass = "w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink focus:border-marigold-500 focus:ring-1 focus:ring-marigold-500/30";
 
@@ -263,13 +264,13 @@ export function ProjectionPanel({ onChange }: { onChange?: (rate: number, projec
           <div style={{ width: "100%", height: 240 }} role="img" aria-label="Projected growth over the years">
             <ResponsiveContainer>
               <LineChart data={chart} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-                <CartesianGrid vertical={false} stroke="#E9E5D8" />
+                <CartesianGrid vertical={false} stroke={CHART.grid} />
                 <XAxis dataKey="year" tick={axis} axisLine={false} tickLine={false} tickFormatter={(y: number) => `${y}y`} />
                 <YAxis tick={axis} axisLine={false} tickLine={false} width={48} tickFormatter={compact} />
-                <Tooltip formatter={(v: number, n: string) => [formatINR(v), n === "principal" ? "Without growth" : "Projected value"]} labelFormatter={(y: number) => `After ${y} years`} contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: "#E9E5D8" }} />
-                <Legend formatter={(v) => (v === "principal" ? "Without growth" : "Projected value")} wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="principal" stroke="#B9B29A" strokeWidth={2} dot={false} strokeDasharray="4 3" />
-                <Line type="monotone" dataKey="projected" stroke="#D98F2B" strokeWidth={2} dot={false} />
+                <Tooltip formatter={(v: number, n: string) => [formatINR(v), n === "principal" ? "Without growth" : "Projected value"]} labelFormatter={(y: number) => `After ${y} years`} contentStyle={tooltipStyle} />
+                <Legend formatter={(v) => (v === "principal" ? "Without growth" : "Projected value")} wrapperStyle={legendStyle} />
+                <Line type="monotone" dataKey="principal" stroke={CHART.muted} strokeWidth={2} dot={false} strokeDasharray="4 3" />
+                <Line type="monotone" dataKey="projected" stroke={CHART.primary} strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
