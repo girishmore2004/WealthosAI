@@ -55,12 +55,12 @@ export function QuickAddMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center gap-1.5 rounded-md bg-marigold-500 px-3.5 py-2 text-sm font-medium text-white shadow-card hover:bg-marigold-600"
+        className="inline-flex items-center gap-1.5 rounded-md bg-marigold-500 px-3.5 py-2 text-sm font-medium text-onaccent shadow-card transition-colors hover:bg-marigold-600"
       >
         <span aria-hidden="true">+</span> Add
       </button>
       {open && (
-        <div role="menu" aria-label="Quick add" className="absolute right-0 z-20 mt-2 w-60 overflow-hidden rounded-md border border-line bg-surface shadow-card">
+        <div role="menu" aria-label="Quick add" className="absolute right-0 z-20 mt-2 w-60 overflow-hidden rounded-lg border border-line bg-surface shadow-popover">
           <button
             type="button"
             role="menuitem"
