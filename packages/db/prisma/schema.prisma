@@ -1568,6 +1568,7 @@ model IngestionBatch {
   sourceDocumentId        String?
 
   @@index([userId, createdAt])
+  @@index([userId, sourceDocumentId])
 }
 
 model IngestionReviewItem {
