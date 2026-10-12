@@ -57,7 +57,7 @@ function describeZodType(schema: z.ZodTypeAny, depth = 0): string {
     return `one of ${JSON.stringify(schema.options)}`;
   }
   if (schema instanceof z.ZodString) {
-    return "string" + (schema.description ? ` (${schema.description})` : "");
+    return describeString(schema, schema.description);
   }
   if (schema instanceof z.ZodNumber) {
     return "number" + (schema.description ? ` (${schema.description})` : "");
@@ -65,8 +65,34 @@ function describeZodType(schema: z.ZodTypeAny, depth = 0): string {
   if (schema instanceof z.ZodBoolean) {
     return "boolean";
   }
-  if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable) {
+  if (schema instanceof z.ZodNullable) {
+    return `${describeZodType(schema.unwrap(), depth)} | null`;
+  }
+  if (schema instanceof z.ZodOptional) {
     return `${describeZodType(schema.unwrap(), depth)} | null (optional)`;
   }
+  if (schema instanceof z.ZodEffects) {
+    // preprocess/transform/refine wrappers: describe the inner shape the model must
+    // produce, keeping a description set on the wrapper itself.
+    const inner = schema.innerType() as z.ZodTypeAny;
+    if (inner instanceof z.ZodString) {
+      return describeString(inner, schema.description ?? inner.description);
+    }
+    return describeZodType(inner, depth);
+  }
+  if (schema instanceof z.ZodRecord) {
+    return `object mapping string keys to ${describeZodType(schema.valueSchema, depth)}`;
+  }
+  if (schema instanceof z.ZodUnion) {
+    const options = schema.options as z.ZodTypeAny[];
+    return options.map((option) => describeZodType(option, depth)).join(" | ");
+  }
   return "any";
+}
+
+function describeString(schema: z.ZodString, description: string | undefined): string {
+  const parts: string[] = [];
+  if (description) parts.push(description);
+  if (schema.maxLength !== null) parts.push(`at most ${schema.maxLength} characters`);
+  return "string" + (parts.length > 0 ? ` (${parts.join("; ")})` : "");
 }
