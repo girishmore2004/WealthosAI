@@ -71,7 +71,7 @@ export class AnswerSynthesisService {
     }
 
     const sourceList = chunks
-      .map((c, i) => `[${i}] (${c.sourceType}, ${formatDate(c.sourceCreatedAt)}) ${c.text}`)
+      .map((c, i) => `[${i}] (${c.sourceType}${sourceTitle(c)}, ${formatDate(c.sourceCreatedAt)}) ${c.text}`)
       .join("\n\n");
 
     const input = `Question: ${query}\n\nNumbered sources (answer ONLY using these, cite which you used):\n\n${sourceList}`;
@@ -182,6 +182,13 @@ function buildGroundingContext(chunks: RerankedChunk[]): string {
     parts.push(chunk.parentText || chunk.text);
   }
   return parts.join("\n\n");
+}
+
+/** " — Title" for the source header when the chunk carries a display title (document name, policy name,
+ * report month), so the model can attribute each figure to the right record. */
+function sourceTitle(chunk: RerankedChunk): string {
+  const title = chunk.metadata?.title;
+  return typeof title === "string" && title.trim() ? ` — ${title.trim().slice(0, 80)}` : "";
 }
 
 function formatDate(date: Date): string {
