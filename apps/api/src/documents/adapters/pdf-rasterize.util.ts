@@ -49,6 +49,39 @@ export const MAX_PDF_PAGES_TO_RASTERIZE = 20;
 // for scanned financial documents, not a value with a precise derivation.
 const RENDER_SCALE = 2.0;
 
+// ROOT CAUSE of the production error "Image or Canvas expected" (every PDF OCR job failed all 3
+// attempts): pdfjs-dist creates its own intermediate canvases (image masks, patterns, soft masks)
+// through its default NodeCanvasFactory, which does `require("canvas")` itself. When the app's
+// `canvas` and the copy pdfjs resolves are different installs/versions (npm hoisting on Render),
+// the page canvas created HERE is an instance of one module and the intermediate canvases pdfjs
+// draws onto it are instances of the other, and node-canvas's drawImage() rejects a foreign object
+// with "Image or Canvas expected". Giving pdfjs OUR canvas factory makes every canvas in the
+// render come from the same `canvas` module.
+class AppCanvasFactory {
+  create(width: number, height: number) {
+    if (width <= 0 || height <= 0) throw new Error("Invalid canvas size");
+    const canvas = createCanvas(width, height);
+    return { canvas, context: canvas.getContext("2d") };
+  }
+  reset(target: { canvas: { width: number; height: number } | null }, width: number, height: number) {
+    if (!target.canvas) throw new Error("Canvas is not specified");
+    if (width <= 0 || height <= 0) throw new Error("Invalid canvas size");
+    target.canvas.width = width;
+    target.canvas.height = height;
+  }
+  destroy(target: { canvas: { width: number; height: number } | null; context: unknown }) {
+    if (!target.canvas) return;
+    target.canvas.width = 0;
+    target.canvas.height = 0;
+    target.canvas = null;
+    target.context = null;
+  }
+}
+
+// A page whose embedded text layer has fewer characters than this is treated as a scan (or an image-
+// only page) and sent to OCR instead.
+export const MIN_TEXT_CHARS_FOR_DIGITAL_PAGE = 40;
+
 export class PdfPasswordProtectedError extends Error {
   constructor() {
     super("This PDF is password-protected and cannot be processed without the password.");
@@ -70,6 +103,9 @@ export interface RasterizedPage {
 
 export interface RasterizeResult {
   pages: RasterizedPage[];
+  /** Pages that could not be rendered (e.g. a canvas/image error on one page) — the rest are still
+   * returned so one bad page never throws away a whole statement. */
+  failedPages?: Array<{ pageNumber: number; error: string }>;
   totalPages: number; // the PDF's real page count, even if capped below MAX_PDF_PAGES_TO_RASTERIZE
   truncated: boolean; // true when totalPages > pages.length (the cap was hit)
 }
@@ -90,20 +126,112 @@ function standardFontDataUrl(): string {
 // buffer, ready to hand to TesseractOcrAdapter's existing image-OCR path one page at a
 // time. This is the ENTIRE new capability this file adds — everything downstream
 // (actual text recognition) reuses the existing, unmodified Tesseract pipeline.
-export async function rasterizePdfToImages(pdfBuffer: Buffer): Promise<RasterizeResult> {
-  let pdfDocument;
+export async function rasterizePdfToImages(pdfBuffer: Buffer, onlyPages?: number[]): Promise<RasterizeResult> {
+  const pdfDocument = await openPdf(pdfBuffer);
+  try {
+    const totalPages = pdfDocument.numPages;
+    const wanted = (onlyPages && onlyPages.length > 0 ? onlyPages : Array.from({ length: totalPages }, (_, i) => i + 1))
+      .filter((n) => n >= 1 && n <= totalPages)
+      .slice(0, MAX_PDF_PAGES_TO_RASTERIZE);
+    const pages: RasterizedPage[] = [];
+    const failedPages: Array<{ pageNumber: number; error: string }> = [];
+    let firstError: unknown = null;
+
+    for (const pageNumber of wanted) {
+      try {
+        const page = await pdfDocument.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: RENDER_SCALE });
+        const canvas = createCanvas(viewport.width, viewport.height);
+        const context = canvas.getContext("2d");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdfjs-dist's
+        // CanvasRenderingContext2D type expects the DOM lib's type, which the `canvas`
+        // package's context is structurally compatible with but not nominally typed as.
+        await page.render({ canvasContext: context as any, viewport }).promise;
+        pages.push({ pageNumber, pngBuffer: canvas.toBuffer("image/png") });
+      } catch (err) {
+        firstError = firstError ?? err;
+        failedPages.push({ pageNumber, error: (err as Error).message });
+      }
+    }
+
+    // Nothing rendered at all: surface the real error (so the job is retried / marked FAILED with a
+    // cause) instead of pretending the document was empty. Some pages rendering is a partial success.
+    if (pages.length === 0 && failedPages.length > 0) throw firstError;
+
+    return {
+      pages,
+      totalPages,
+      truncated: totalPages > wanted.length && !onlyPages,
+      ...(failedPages.length > 0 ? { failedPages } : {}),
+    };
+  } finally {
+    await pdfDocument.destroy();
+  }
+}
+
+export interface PdfTextPage {
+  pageNumber: number;
+  text: string;
+}
+
+// Reads the embedded text layer of every page (up to MAX_PDF_PAGES_TO_RASTERIZE). Digital PDFs (bank
+// e-statements, insurance schedules, salary slips) carry real text, which is exact and instant — far
+// more accurate than rasterising and OCR-ing it, and it needs no canvas at all. Rows are rebuilt from
+// text items by their vertical position, so a statement table keeps one transaction per line.
+export async function extractPdfTextPages(pdfBuffer: Buffer): Promise<{ pages: PdfTextPage[]; totalPages: number }> {
+  const pdfDocument = await openPdf(pdfBuffer);
+  try {
+    const totalPages = pdfDocument.numPages;
+    const pages: PdfTextPage[] = [];
+    for (let pageNumber = 1; pageNumber <= Math.min(totalPages, MAX_PDF_PAGES_TO_RASTERIZE); pageNumber++) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const content = await page.getTextContent();
+      pages.push({ pageNumber, text: textItemsToLines(content.items as PdfTextItem[]) });
+    }
+    return { pages, totalPages };
+  } finally {
+    await pdfDocument.destroy();
+  }
+}
+
+interface PdfTextItem {
+  str?: string;
+  transform?: number[];
+  hasEOL?: boolean;
+}
+
+/** Groups text items into lines by their y coordinate (items on the same baseline, within a small
+ * tolerance, form one row) and orders each row left to right. Exported for tests. */
+export function textItemsToLines(items: PdfTextItem[]): string {
+  const rows: Array<{ y: number; parts: Array<{ x: number; str: string }> }> = [];
+  for (const item of items) {
+    const str = item.str ?? "";
+    if (!str.trim()) continue;
+    const x = item.transform?.[4] ?? 0;
+    const y = item.transform?.[5] ?? 0;
+    const row = rows.find((r) => Math.abs(r.y - y) <= 2.5);
+    if (row) row.parts.push({ x, str });
+    else rows.push({ y, parts: [{ x, str }] });
+  }
+  return rows
+    .sort((a, b) => b.y - a.y)
+    .map((r) => r.parts.sort((a, b) => a.x - b.x).map((p) => p.str.trim()).join(" ").replace(/\s{2,}/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function openPdf(pdfBuffer: Buffer) {
   try {
     const loadingTask = pdfjsLib.getDocument({
       data: new Uint8Array(pdfBuffer),
       standardFontDataUrl: standardFontDataUrl(),
-      // No explicit worker configuration needed — pdfjs-dist auto-detects it's
-      // running in Node (no Web Worker global available) and falls back to
-      // synchronous, same-thread ("fake worker") processing automatically. This
-      // already runs off the request path inside DocumentOcrHandler/AiQueueService's
-      // own job processing, matching how TesseractOcrAdapter's worker-per-call is
-      // deliberately simple for the same reason (see that file's own doc comment).
-    });
-    pdfDocument = await loadingTask.promise;
+      // Our own canvas factory — see AppCanvasFactory for why this fixes "Image or Canvas expected".
+      canvasFactory: new AppCanvasFactory(),
+      // No explicit worker configuration needed — pdfjs-dist auto-detects it's running in Node and
+      // falls back to synchronous, same-thread ("fake worker") processing automatically.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    return await loadingTask.promise;
   } catch (err) {
     const name = (err as { name?: string }).name;
     if (name === "PasswordException") {
@@ -114,26 +242,4 @@ export async function rasterizePdfToImages(pdfBuffer: Buffer): Promise<Rasterize
     }
     throw err; // genuinely unexpected — let it surface as a real processing failure
   }
-
-  const totalPages = pdfDocument.numPages;
-  const pagesToRender = Math.min(totalPages, MAX_PDF_PAGES_TO_RASTERIZE);
-  const pages: RasterizedPage[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pagesToRender; pageNumber++) {
-    const page = await pdfDocument.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: RENDER_SCALE });
-    const canvas = createCanvas(viewport.width, viewport.height);
-    const context = canvas.getContext("2d");
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdfjs-dist's
-    // CanvasRenderingContext2D type expects the DOM lib's type, which the `canvas`
-    // package's context is structurally compatible with but not nominally typed as.
-    await page.render({ canvasContext: context as any, viewport }).promise;
-
-    pages.push({ pageNumber, pngBuffer: canvas.toBuffer("image/png") });
-  }
-
-  await pdfDocument.destroy();
-
-  return { pages, totalPages, truncated: totalPages > pagesToRender };
 }
