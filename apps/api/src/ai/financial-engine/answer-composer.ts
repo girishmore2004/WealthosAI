@@ -1,5 +1,6 @@
 import { formatINR } from "../../common/utils/currency.util";
 import { Prisma } from "@wealthos/db";
+import { monthLabel } from "./financial-intents";
 import { RoutedIntent, ToolResult, ToolWarning } from "./financial-types";
 
 // Deterministic answer composer. It only renders values that already exist in tool facts —
@@ -47,6 +48,19 @@ function missingNote(tools: ToolResult[]): string {
 }
 
 export function composeAnswer(routed: RoutedIntent, tools: ToolResult[]): string {
+  const text = composeBase(routed, tools);
+  if (!routed.month) return text;
+  // The branches above are written for the current month. For a named past month, say which month the
+  // figures are for. Name only, no year digits, so the numeric verifier sees no extra figure.
+  const label = monthLabel(routed.month);
+  return text
+    .replace(/\bThis month\b/g, `In ${label}`)
+    .replace(/\bin this month\b/g, `in ${label}`)
+    .replace(/\bthis month's\b/g, `${label}'s`)
+    .replace(/\bthis month\b/g, `in ${label}`);
+}
+
+function composeBase(routed: RoutedIntent, tools: ToolResult[]): string {
   const cf = tool(tools, "getCashFlow");
   const pos = tool(tools, "getNetWorth") ?? tool(tools, "getFinancialFacts");
 
