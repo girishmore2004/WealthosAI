@@ -6,10 +6,11 @@ import type { CategoryBreakdownDTO } from "@wealthos/types";
 import { api, ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
 import { formatINR } from "@/lib/format";
+import { CHART, CHART_PALETTE, tooltipStyle } from "@/lib/chart-theme";
 
-// Cycles through the theme's marigold shades so the bars stay on-palette without
+// Cycles through the theme-aware chart palette so the bars stay on-palette in both themes without
 // hardcoding one color per category (categories are user-defined, so the count varies).
-const BAR_COLORS = ["#B8721C", "#D98F2B", "#E3A94A", "#4B5568", "#8A93A6"];
+const BAR_COLORS = CHART_PALETTE;
 
 export function ExpenseBreakdownChart({ month, refreshKey }: { month?: string; refreshKey?: number }) {
   const [data, setData] = useState<CategoryBreakdownDTO[] | null>(null);
@@ -62,13 +63,13 @@ export function ExpenseBreakdownChart({ month, refreshKey }: { month?: string; r
               type="category"
               dataKey="name"
               width={120}
-              tick={{ fontSize: 12, fill: "#4B5568" }}
+              tick={{ fontSize: 12, fill: CHART.axisStrong }}
               axisLine={false}
               tickLine={false}
             />
             <Tooltip
               formatter={(value: number) => formatINR(value)}
-              contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: "#E9E5D8", boxShadow: "0 8px 24px -12px rgba(21,30,46,0.2)" }}
+              contentStyle={tooltipStyle}
             />
             <Bar dataKey="total" radius={[0, 4, 4, 0]}>
               {chartData.map((_, i) => (
