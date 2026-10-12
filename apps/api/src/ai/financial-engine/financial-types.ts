@@ -90,6 +90,9 @@ export interface RoutedIntent {
   // "MONTH" (default) or "YEAR" for FINANCIAL_CALCULATION questions that said "this year".
   span?: "MONTH" | "YEAR";
   projection?: ProjectionParams;
+  // "YYYY-MM" of a COMPLETED past month the question named ("in September", "last month"). Only set for
+  // cash-flow style questions; absent means the current month.
+  month?: string;
 }
 
 // Where a question is sent when the deterministic engine deliberately does not answer it.
