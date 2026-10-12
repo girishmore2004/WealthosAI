@@ -13,7 +13,7 @@ export function Button({ variant = "primary", size = "md", className = "", ...pr
 
   const styles =
     variant === "primary"
-      ? "bg-marigold-500 text-white shadow-card hover:bg-marigold-600 hover:shadow-card-hover"
+      ? "bg-marigold-500 text-onaccent shadow-card hover:bg-marigold-600 hover:shadow-card-hover"
       : variant === "secondary"
         ? "border border-line bg-surface text-ink hover:border-ink-faint hover:bg-surface-muted"
         : "text-ink-soft hover:bg-surface-muted hover:text-ink";
