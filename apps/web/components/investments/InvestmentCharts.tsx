@@ -4,9 +4,10 @@ import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContai
 import type { InvestmentAnalyticsDTO, InvestmentDTO } from "@wealthos/types";
 import { formatINR, formatPercent } from "@/lib/format";
 import { formatMonth } from "@/lib/dates";
+import { CHART, axisTick, legendStyle, tooltipStyle } from "@/lib/chart-theme";
 
-const axis = { fontSize: 11, fill: "#8A93A6" };
-const tip = { fontSize: 12, borderRadius: 8, borderColor: "#E9E5D8" };
+const axis = axisTick;
+const tip = tooltipStyle;
 const compact = (v: number) => (Math.abs(v) >= 100000 ? `${Math.round(v / 100000)}L` : Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : String(v));
 const label = (s: string) => s.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 
@@ -25,13 +26,13 @@ export function InvestedVsCurrentChart({ items }: { items: InvestmentDTO[] }) {
   return (
     <Frame ariaLabel="Invested versus current value by holding">
       <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-        <CartesianGrid vertical={false} stroke="#E9E5D8" />
+        <CartesianGrid vertical={false} stroke={CHART.grid} />
         <XAxis dataKey="name" tick={axis} axisLine={false} tickLine={false} interval={0} />
         <YAxis tick={axis} axisLine={false} tickLine={false} width={44} tickFormatter={compact} />
         <Tooltip formatter={(v: number, n: string) => [formatINR(v), n === "invested" ? "Invested" : "Current value"]} contentStyle={tip} />
-        <Legend formatter={(v) => (v === "invested" ? "Invested" : "Current value")} wrapperStyle={{ fontSize: 12 }} />
-        <Bar dataKey="invested" fill="#B9B29A" radius={[3, 3, 0, 0]} />
-        <Bar dataKey="current" fill="#2F7D5D" radius={[3, 3, 0, 0]} />
+        <Legend formatter={(v) => (v === "invested" ? "Invested" : "Current value")} wrapperStyle={legendStyle} />
+        <Bar dataKey="invested" fill={CHART.muted} radius={[3, 3, 0, 0]} />
+        <Bar dataKey="current" fill={CHART.gain} radius={[3, 3, 0, 0]} />
       </BarChart>
     </Frame>
   );
@@ -46,14 +47,14 @@ export function ContributionTrendChart({ analytics }: { analytics: InvestmentAna
   return (
     <Frame ariaLabel="Monthly contributions">
       <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-        <CartesianGrid vertical={false} stroke="#E9E5D8" />
+        <CartesianGrid vertical={false} stroke={CHART.grid} />
         <XAxis dataKey="month" tick={axis} axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tick={axis} axisLine={false} tickLine={false} width={44} tickFormatter={compact} />
         <Tooltip formatter={(v: number, n: string) => [formatINR(v), n === "contributions" ? "You added" : n === "employer" ? "Employer added" : "Taken out"]} contentStyle={tip} />
-        <Legend formatter={(v) => (v === "contributions" ? "You added" : v === "employer" ? "Employer added" : "Taken out")} wrapperStyle={{ fontSize: 12 }} />
-        <Bar dataKey="contributions" stackId="in" fill="#2F7D5D" />
-        <Bar dataKey="employer" stackId="in" fill="#8CC5A2" />
-        <Bar dataKey="withdrawals" fill="#D98F2B" radius={[3, 3, 0, 0]} />
+        <Legend formatter={(v) => (v === "contributions" ? "You added" : v === "employer" ? "Employer added" : "Taken out")} wrapperStyle={legendStyle} />
+        <Bar dataKey="contributions" stackId="in" fill={CHART.gain} />
+        <Bar dataKey="employer" stackId="in" fill={CHART.secondary} />
+        <Bar dataKey="withdrawals" fill={CHART.warn} radius={[3, 3, 0, 0]} />
       </BarChart>
     </Frame>
   );
@@ -68,11 +69,11 @@ export function ValueTrendChart({ analytics }: { analytics: InvestmentAnalyticsD
   return (
     <Frame ariaLabel="Portfolio value over time">
       <LineChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-        <CartesianGrid vertical={false} stroke="#E9E5D8" />
+        <CartesianGrid vertical={false} stroke={CHART.grid} />
         <XAxis dataKey="month" tick={axis} axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tick={axis} axisLine={false} tickLine={false} width={44} tickFormatter={compact} domain={["auto", "auto"]} />
         <Tooltip formatter={(v: number) => [formatINR(v), "Recorded value"]} contentStyle={tip} />
-        <Line type="monotone" dataKey="value" stroke="#2F7D5D" strokeWidth={2} dot={{ r: 2 }} connectNulls />
+        <Line type="monotone" dataKey="value" stroke={CHART.gain} strokeWidth={2} dot={{ r: 2 }} connectNulls />
       </LineChart>
     </Frame>
   );
@@ -87,11 +88,11 @@ export function GainTrendChart({ analytics }: { analytics: InvestmentAnalyticsDT
   return (
     <Frame ariaLabel="Gain or loss over time">
       <LineChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-        <CartesianGrid vertical={false} stroke="#E9E5D8" />
+        <CartesianGrid vertical={false} stroke={CHART.grid} />
         <XAxis dataKey="month" tick={axis} axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tick={axis} axisLine={false} tickLine={false} width={44} tickFormatter={compact} />
         <Tooltip formatter={(v: number) => [`${v < 0 ? "−" : "+"}${formatINR(Math.abs(v))}`, v < 0 ? "Loss" : "Gain"]} contentStyle={tip} />
-        <Line type="monotone" dataKey="gain" stroke="#D98F2B" strokeWidth={2} dot={{ r: 2 }} connectNulls />
+        <Line type="monotone" dataKey="gain" stroke={CHART.primary} strokeWidth={2} dot={{ r: 2 }} connectNulls />
       </LineChart>
     </Frame>
   );
