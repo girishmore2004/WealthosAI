@@ -892,7 +892,7 @@ export default function BusinessPage() {
                                 ? "bg-loss/10 text-loss"
                                 : o.status === "CANCELLED"
                                   ? "bg-ink-faint/10 text-ink-faint"
-                                  : "bg-marigold-500/10 text-marigold-600"
+                                  : "bg-warn/10 text-warn"
                           }`}
                         >
                           {label(o.status)}
