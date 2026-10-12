@@ -1,3 +1,4 @@
+```typescript
 import { Test } from "@nestjs/testing";
 import { CopilotIngestionService } from "../src/ai/copilot-ingestion/copilot-ingestion.service";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -20,8 +21,20 @@ import { SuggestionScoringService } from "../src/ai/copilot-ingestion/scoring/su
 describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", () => {
   let service: CopilotIngestionService;
 
-  const mockPrisma = { client: { ingestionBatch: { create: jest.fn() } } };
-  const mockExpenses = { listCategories: jest.fn(), list: jest.fn(), detectSubscriptions: jest.fn() };
+  const mockPrisma = {
+    client: {
+      ingestionBatch: {
+        create: jest.fn(),
+        findFirst: jest.fn(),
+      },
+    },
+  };
+
+  const mockExpenses = {
+    listCategories: jest.fn(),
+    list: jest.fn(),
+    detectSubscriptions: jest.fn(),
+  };
   const mockFeatures = { transactionPoints: jest.fn() };
   const mockUnderstanding = { parseLeftoverLines: jest.fn() };
   const mockOcrAdapter = { process: jest.fn() };
@@ -29,13 +42,19 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
 
   beforeEach(async () => {
     jest.clearAllMocks();
+
     mockExpenses.listCategories.mockResolvedValue([]);
     mockExpenses.list.mockResolvedValue([]);
     mockExpenses.detectSubscriptions.mockResolvedValue([]);
     mockFeatures.transactionPoints.mockResolvedValue([]);
     mockUnderstanding.parseLeftoverLines.mockResolvedValue([]);
     mockOcrQuality.estimate.mockReturnValue({ extractionConfidence: 0.8 });
-    mockPrisma.client.ingestionBatch.create.mockResolvedValue({ id: "batch-1", items: [] });
+
+    mockPrisma.client.ingestionBatch.findFirst.mockResolvedValue(null);
+    mockPrisma.client.ingestionBatch.create.mockResolvedValue({
+      id: "batch-1",
+      items: [],
+    });
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -46,6 +65,7 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
         { provide: StatementUnderstandingService, useValue: mockUnderstanding },
         { provide: StatementOcrAdapter, useValue: mockOcrAdapter },
         { provide: OcrQualityEstimationService, useValue: mockOcrQuality },
+
         // Never invoked in these tests (zero parseable lines means the per-line
         // item-building pipeline never runs) — trivial stubs are sufficient.
         { provide: CategorySuggestionService, useValue: {} },
@@ -56,6 +76,7 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
         { provide: SuggestionScoringService, useValue: {} },
       ],
     }).compile();
+
     service = moduleRef.get(CopilotIngestionService);
   });
 
@@ -81,37 +102,81 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
   });
 
   it("does NOT re-run OCR — this method starts from already-extracted text", async () => {
-    await service.ingestFromDocumentText("user-1", "label", "some text", 0.9, "BANK_TRANSFER", "doc-1");
+    await service.ingestFromDocumentText(
+      "user-1",
+      "label",
+      "some text",
+      0.9,
+      "BANK_TRANSFER",
+      "doc-1",
+    );
 
     expect(mockOcrAdapter.process).not.toHaveBeenCalled();
   });
 
   it("passes the given engineConfidence through to OcrQualityEstimationService", async () => {
-    await service.ingestFromDocumentText("user-1", "label", "some text", 0.73, "BANK_TRANSFER", "doc-1");
+    await service.ingestFromDocumentText(
+      "user-1",
+      "label",
+      "some text",
+      0.73,
+      "BANK_TRANSFER",
+      "doc-1",
+    );
 
-    expect(mockOcrQuality.estimate).toHaveBeenCalledWith(expect.objectContaining({ engineConfidence: 0.73 }));
+    expect(mockOcrQuality.estimate).toHaveBeenCalledWith(
+      expect.objectContaining({ engineConfidence: 0.73 }),
+    );
   });
 
   it("defaults engineConfidence to a neutral 0.5 when undefined (e.g. from MockOcrAdapter)", async () => {
-    await service.ingestFromDocumentText("user-1", "label", "some text", undefined, "BANK_TRANSFER", "doc-1");
+    await service.ingestFromDocumentText(
+      "user-1",
+      "label",
+      "some text",
+      undefined,
+      "BANK_TRANSFER",
+      "doc-1",
+    );
 
-    expect(mockOcrQuality.estimate).toHaveBeenCalledWith(expect.objectContaining({ engineConfidence: 0.5 }));
+    expect(mockOcrQuality.estimate).toHaveBeenCalledWith(
+      expect.objectContaining({ engineConfidence: 0.5 }),
+    );
   });
 
   it("uses the estimated extractionConfidence as the batch's ocrExtractionConfidence", async () => {
     mockOcrQuality.estimate.mockReturnValue({ extractionConfidence: 0.42 });
 
-    await service.ingestFromDocumentText("user-1", "label", "some text", 0.9, "BANK_TRANSFER", "doc-1");
+    await service.ingestFromDocumentText(
+      "user-1",
+      "label",
+      "some text",
+      0.9,
+      "BANK_TRANSFER",
+      "doc-1",
+    );
 
     expect(mockPrisma.client.ingestionBatch.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ ocrExtractionConfidence: 0.42 }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          ocrExtractionConfidence: 0.42,
+        }),
+      }),
     );
   });
 
   it("still produces a normal staged batch — never auto-creates an Expense directly", async () => {
-    const result = await service.ingestFromDocumentText("user-1", "label", "some text", 0.9, "BANK_TRANSFER", "doc-1");
+    const result = await service.ingestFromDocumentText(
+      "user-1",
+      "label",
+      "some text",
+      0.9,
+      "BANK_TRANSFER",
+      "doc-1",
+    );
 
     expect(result).toEqual({ id: "batch-1", items: [] });
+
     // ingestFromDocumentText itself never calls expenses.create — only approval,
     // via the existing, separate IngestionReviewService, ever does that.
   });
@@ -119,8 +184,21 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
 
 describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId stays null for plain text imports)", () => {
   let service: CopilotIngestionService;
-  const mockPrisma = { client: { ingestionBatch: { create: jest.fn() } } };
-  const mockExpenses = { listCategories: jest.fn(), list: jest.fn(), detectSubscriptions: jest.fn() };
+
+  const mockPrisma = {
+    client: {
+      ingestionBatch: {
+        create: jest.fn(),
+        findFirst: jest.fn(),
+      },
+    },
+  };
+
+  const mockExpenses = {
+    listCategories: jest.fn(),
+    list: jest.fn(),
+    detectSubscriptions: jest.fn(),
+  };
   const mockFeatures = { transactionPoints: jest.fn() };
   const mockUnderstanding = { parseLeftoverLines: jest.fn() };
   const mockOcrAdapter = { process: jest.fn() };
@@ -128,12 +206,18 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
 
   beforeEach(async () => {
     jest.clearAllMocks();
+
     mockExpenses.listCategories.mockResolvedValue([]);
     mockExpenses.list.mockResolvedValue([]);
     mockExpenses.detectSubscriptions.mockResolvedValue([]);
     mockFeatures.transactionPoints.mockResolvedValue([]);
     mockUnderstanding.parseLeftoverLines.mockResolvedValue([]);
-    mockPrisma.client.ingestionBatch.create.mockResolvedValue({ id: "batch-1", items: [] });
+
+    mockPrisma.client.ingestionBatch.findFirst.mockResolvedValue(null);
+    mockPrisma.client.ingestionBatch.create.mockResolvedValue({
+      id: "batch-1",
+      items: [],
+    });
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -152,6 +236,7 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
         { provide: SuggestionScoringService, useValue: {} },
       ],
     }).compile();
+
     service = moduleRef.get(CopilotIngestionService);
   });
 
@@ -159,7 +244,13 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
     await service.ingest("user-1", "Pasted statement", "some text", "UPI");
 
     expect(mockPrisma.client.ingestionBatch.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ ingestionSource: "TEXT", sourceDocumentId: null }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          ingestionSource: "TEXT",
+          sourceDocumentId: null,
+        }),
+      }),
     );
   });
 });
+```
