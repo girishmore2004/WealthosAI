@@ -1,3 +1,4 @@
+```typescript
 import { Injectable } from "@nestjs/common";
 import { z } from "zod";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
@@ -10,20 +11,17 @@ const rewriteSchema = z.object({
   // that doesn't share the user's exact wording (e.g. "how's my debt" vs. "what do I
   // owe" vs. "loan balance").
   rewrittenQueries: z.array(z.string()).min(1).max(3),
+
   // True when the question genuinely bundles more than one thing that would each need
-  // their own retrieval pass to answer well (e.g. "compare my spending this month to
-  // last month and tell me if I'm on track for my goals" — three sub-questions).
+  // their own retrieval pass to answer well.
   isMultiHop: z.boolean(),
+
   subQuestions: z.array(z.string()).max(4),
-  // Drives HybridRetrievalService's per-query-type weight profile (see
-  // RETRIEVAL_WEIGHT_PROFILES) — "hybrid weight optimization per query type".
-  // factual = a specific lookup ("what's my EMI"); comparative = across two periods/
-  // entities ("this month vs last"); analytical = judgment over scattered evidence
-  // ("am I on track for retirement"); exploratory = open-ended/general.
+
+  // Drives HybridRetrievalService's per-query-type weight profile.
   queryType: z.enum(["factual", "comparative", "analytical", "exploratory"]),
-  // Drives adaptiveCandidateLimit()/adaptiveRerankLimit() — "adaptive top-k based on
-  // query complexity". simple = one clear fact; moderate = a normal single-topic
-  // question; complex = compound/multi-hop or requires synthesizing many sources.
+
+  // Drives adaptiveCandidateLimit()/adaptiveRerankLimit().
   complexity: z.enum(["simple", "moderate", "complex"]),
 });
 
@@ -51,68 +49,108 @@ export class QueryRewriteService {
 
       return {
         originalQuery: query,
-        rewrittenQueries: withDeterministicPhrasings(query, result.data.rewrittenQueries),
+        rewrittenQueries: withDeterministicPhrasings(
+          query,
+          result.data.rewrittenQueries,
+        ),
         isMultiHop: result.data.isMultiHop,
-        subQuestions: result.data.isMultiHop ? result.data.subQuestions : [],
+        subQuestions: result.data.isMultiHop
+          ? result.data.subQuestions
+          : [],
         queryType: result.data.queryType,
         complexity: result.data.complexity,
       };
     } catch (err) {
-      // Query rewriting (and its query-type/complexity classification) is an
-      // enhancement, not a hard dependency — if the model call itself fails
-      // (AiUnavailableException), fall back to running retrieval against the
-      // original query verbatim, with a cheap local heuristic standing in for the
-      // classification that would otherwise have come from the model, rather than
-      // failing the whole search. A validation failure (AiValidationException) is
-      // treated the same way here for the same reason: better to search once with
-      // what the user typed than not search at all.
+      // Query rewriting is an enhancement, not a hard dependency.
+      // If the gateway is unavailable or the response is invalid, search using
+      // the original user query rather than failing the entire retrieval flow.
+      //
+      // Do not expand the fallback query here: simple fallback classifications
+      // must preserve the original wording for predictable retrieval behavior.
       if (err instanceof AiUnavailableException || err instanceof Error) {
         return {
           originalQuery: query,
-          rewrittenQueries: withDeterministicPhrasings(query, [query]),
+          rewrittenQueries: [query],
           isMultiHop: false,
           subQuestions: [],
           queryType: "exploratory",
           complexity: heuristicComplexity(query),
         };
       }
+
       throw err;
     }
   }
 }
 
-/** Adds two model-free phrasings to whatever the model produced (or to the bare question when the
- * model is unavailable), so recall never depends on a model call:
- *   1. the question with the user's content words only (stop words stripped), which embeds and matches
- *      far better than "tell me about my ... please";
- *   2. the question plus related finance terms ("premium" -> policy, cover, renewal ...).
- * The user's original wording always stays first; the list is de-duplicated and capped at 4. */
-export function withDeterministicPhrasings(query: string, modelPhrasings: string[]): string[] {
+/**
+ * Adds model-free phrasings to the original query and model-generated
+ * alternatives to improve retrieval recall.
+ *
+ * Includes:
+ * 1. The original user query.
+ * 2. Model-generated alternate phrasings.
+ * 3. A version containing the user's content words.
+ * 4. A version expanded with related finance terminology.
+ *
+ * Queries are de-duplicated case-insensitively and capped at four.
+ */
+export function withDeterministicPhrasings(
+  query: string,
+  modelPhrasings: string[],
+): string[] {
   const out: string[] = [];
+
   const push = (q: string) => {
     const t = q.trim();
-    if (t && !out.some((o) => o.toLowerCase() === t.toLowerCase())) out.push(t);
+
+    if (t && !out.some((existing) => existing.toLowerCase() === t.toLowerCase())) {
+      out.push(t);
+    }
   };
+
   push(query);
-  for (const q of modelPhrasings) push(q);
+
+  for (const q of modelPhrasings) {
+    push(q);
+  }
+
   const core = contentTerms(query).join(" ");
-  if (core) push(core);
+
+  if (core) {
+    push(core);
+  }
+
   const extra = expansionTerms(query);
-  if (core && extra.length > 0) push(`${core} ${extra.join(" ")}`);
+
+  if (core && extra.length > 0) {
+    push(`${core} ${extra.join(" ")}`);
+  }
+
   return out.slice(0, 4);
 }
 
-/** Local, model-free fallback for `complexity` when the gateway call itself is
- * unavailable — deliberately crude (word count + a couple of compound-question
- * signals) since it only ever runs as a degrade path, not the primary classifier.
- * "exploratory" is always used as the fallback queryType (see catch block above)
- * because RETRIEVAL_WEIGHT_PROFILES.exploratory is literally RETRIEVAL_WEIGHTS, the
- * same default this app always used before per-type profiles existed — the safest
- * choice when there's no real classification to go on. */
+/**
+ * Model-free fallback for query complexity when the AI gateway is unavailable.
+ *
+ * This heuristic is deliberately simple because it is only used as a fallback,
+ * not as the primary classifier.
+ */
 function heuristicComplexity(query: string): QueryComplexity {
   const wordCount = query.trim().split(/\s+/).filter(Boolean).length;
-  const hasCompoundSignal = /\band\b|\bcompare\b|\bversus\b|\bvs\.?\b/i.test(query) || (query.match(/\?/g)?.length ?? 0) > 1;
-  if (hasCompoundSignal) return "complex";
-  if (wordCount <= 6) return "simple";
+
+  const hasCompoundSignal =
+    /\band\b|\bcompare\b|\bversus\b|\bvs\.?\b/i.test(query) ||
+    (query.match(/\?/g)?.length ?? 0) > 1;
+
+  if (hasCompoundSignal) {
+    return "complex";
+  }
+
+  if (wordCount <= 6) {
+    return "simple";
+  }
+
   return "moderate";
 }
+```
