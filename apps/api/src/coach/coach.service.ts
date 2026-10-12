@@ -351,14 +351,24 @@ export class CoachService {
     };
   }
 
+  // Current-month only. categoryBreakdown(userId) with NO month argument sums every expense
+  // ever recorded (7 years of history in the demo data), which previously made the Coach
+  // present lifetime totals as "this month". The month bound matches the dashboard.
   private async answerSpending(userId: string): Promise<GroundedAnswer> {
-    const breakdown = await this.expensesService.categoryBreakdown(userId);
+    const now = new Date();
+    const month = now.toISOString().slice(0, 7);
+    const breakdown = await this.expensesService.categoryBreakdown(userId, month);
     if (breakdown.length === 0) {
       return { answer: "No expenses logged this month yet.", dataSources: ["expenses"] };
     }
+    const total = breakdown.reduce((sum, c) => sum + c.total, 0);
+    const daysElapsed = Math.max(1, now.getUTCDate());
+    const perDay = Math.round(total / daysElapsed);
     const top3 = breakdown.slice(0, 3);
     return {
-      answer: `This month's top spending categories: ${top3.map((c) => `${c.name} (${formatINR(c.total)})`).join(", ")}.`,
+      answer:
+        `This month (${month}) you have spent ${formatINR(total)} so far, about ${formatINR(perDay)} per day over ${daysElapsed} day${daysElapsed === 1 ? "" : "s"}. ` +
+        `Top categories: ${top3.map((c) => `${c.name} (${formatINR(c.total)})`).join(", ")}.`,
       dataSources: ["expenses"],
     };
   }
