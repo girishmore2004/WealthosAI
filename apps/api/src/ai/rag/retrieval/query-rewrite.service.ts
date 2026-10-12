@@ -1,4 +1,3 @@
-```typescript
 import { Injectable } from "@nestjs/common";
 import { z } from "zod";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
@@ -61,12 +60,9 @@ export class QueryRewriteService {
         complexity: result.data.complexity,
       };
     } catch (err) {
-      // Query rewriting is an enhancement, not a hard dependency.
-      // If the gateway is unavailable or the response is invalid, search using
-      // the original user query rather than failing the entire retrieval flow.
-      //
-      // Do not expand the fallback query here: simple fallback classifications
-      // must preserve the original wording for predictable retrieval behavior.
+      // Query rewriting and classification are enhancements, not hard dependencies.
+      // If the model call or validation fails, retrieve using the original query
+      // instead of failing the entire search.
       if (err instanceof AiUnavailableException || err instanceof Error) {
         return {
           originalQuery: query,
@@ -84,16 +80,12 @@ export class QueryRewriteService {
 }
 
 /**
- * Adds model-free phrasings to the original query and model-generated
- * alternatives to improve retrieval recall.
+ * Adds deterministic phrasings to the model-generated queries:
+ * 1. The original query is always first.
+ * 2. Model-generated alternatives are added without duplicates.
+ * 3. Content words and related finance terms improve retrieval recall.
  *
- * Includes:
- * 1. The original user query.
- * 2. Model-generated alternate phrasings.
- * 3. A version containing the user's content words.
- * 4. A version expanded with related finance terminology.
- *
- * Queries are de-duplicated case-insensitively and capped at four.
+ * The resulting list is deduplicated and capped at four queries.
  */
 export function withDeterministicPhrasings(
   query: string,
@@ -102,17 +94,20 @@ export function withDeterministicPhrasings(
   const out: string[] = [];
 
   const push = (q: string) => {
-    const t = q.trim();
+    const trimmed = q.trim();
 
-    if (t && !out.some((existing) => existing.toLowerCase() === t.toLowerCase())) {
-      out.push(t);
+    if (
+      trimmed &&
+      !out.some((existing) => existing.toLowerCase() === trimmed.toLowerCase())
+    ) {
+      out.push(trimmed);
     }
   };
 
   push(query);
 
-  for (const q of modelPhrasings) {
-    push(q);
+  for (const phrasing of modelPhrasings) {
+    push(phrasing);
   }
 
   const core = contentTerms(query).join(" ");
@@ -131,10 +126,11 @@ export function withDeterministicPhrasings(
 }
 
 /**
- * Model-free fallback for query complexity when the AI gateway is unavailable.
+ * Local fallback for complexity classification when the AI gateway is unavailable.
  *
- * This heuristic is deliberately simple because it is only used as a fallback,
- * not as the primary classifier.
+ * This intentionally uses simple heuristics because it only runs as a fallback.
+ * The default query type remains "exploratory", which uses the default retrieval
+ * weight profile when the model cannot classify the query.
  */
 function heuristicComplexity(query: string): QueryComplexity {
   const wordCount = query.trim().split(/\s+/).filter(Boolean).length;
@@ -153,4 +149,3 @@ function heuristicComplexity(query: string): QueryComplexity {
 
   return "moderate";
 }
-```
