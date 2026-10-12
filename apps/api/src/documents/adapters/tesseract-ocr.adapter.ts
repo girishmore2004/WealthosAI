@@ -2,7 +2,14 @@ import { Injectable, Logger } from "@nestjs/common";
 import { createWorker } from "tesseract.js";
 import { OcrAdapter, OcrNotApplicableError, OcrResult } from "./ocr.adapter";
 import { CATEGORY_SUMMARIES } from "./category-summaries";
-import { PdfCorruptError, PdfPasswordProtectedError, rasterizePdfToImages } from "./pdf-rasterize.util";
+import {
+  MIN_TEXT_CHARS_FOR_DIGITAL_PAGE,
+  PdfCorruptError,
+  PdfPasswordProtectedError,
+  PdfTextPage,
+  extractPdfTextPages,
+  rasterizePdfToImages,
+} from "./pdf-rasterize.util";
 
 // Tesseract.js is a pure-JS/WASM port of the Tesseract OCR engine — free, open-source,
 // runs entirely in-process (no external API, no network call, no per-request cost),
@@ -50,63 +57,103 @@ export class TesseractOcrAdapter implements OcrAdapter {
   // already accepts for the single-image case, just amortized across a handful of
   // pages instead of one call.
   private async processPdf(pdfBuffer: Buffer, category: string): Promise<OcrResult> {
-    let rasterized;
+    // STEP 1 — embedded text layer. Digital PDFs (e-statements, policy schedules, salary slips) carry
+    // exact text; reading it is instant, free and far more accurate than OCR, and it needs no canvas.
+    let digital: { pages: PdfTextPage[]; totalPages: number } | null = null;
     try {
-      rasterized = await rasterizePdfToImages(pdfBuffer);
+      digital = await extractPdfTextPages(pdfBuffer);
     } catch (err) {
       if (err instanceof PdfPasswordProtectedError) {
-        // A password-protected PDF isn't something OCR can work around — closer in
-        // spirit to "not applicable" (we categorically cannot process this without
-        // information we don't have) than a transient FAILED worth retrying as-is.
+        // Not something OCR can work around — "not applicable", not a retryable failure.
         throw new OcrNotApplicableError(err.message);
       }
-      if (err instanceof PdfCorruptError) {
-        // A genuinely corrupt/invalid file IS a real processing failure — propagate
-        // as-is so DocumentOcrHandler marks it FAILED, not NOT_APPLICABLE, since a
-        // correctly-formed re-upload of the same document could succeed (unlike the
-        // password case above, which no re-upload alone fixes).
-        throw err;
-      }
-      throw err; // genuinely unexpected — surface it rather than silently reclassifying
+      // Anything else (corrupt file, unexpected pdfjs error) is not decided here: the rasterize step
+      // below re-opens the file and reports the authoritative error type.
+      this.logger.warn(`PDF text-layer extraction failed, falling back to OCR: ${(err as Error).message}`);
     }
 
-    if (rasterized.pages.length === 0) {
+    const digitalByPage = new Map<number, string>();
+    for (const p of digital?.pages ?? []) {
+      if (p.text.trim().length >= MIN_TEXT_CHARS_FOR_DIGITAL_PAGE) digitalByPage.set(p.pageNumber, p.text.trim());
+    }
+    const totalPages = digital?.totalPages ?? 0;
+    const pageCount = digital?.pages.length ?? 0;
+    const scannedPageNumbers = digital ? digital.pages.map((p) => p.pageNumber).filter((n) => !digitalByPage.has(n)) : [];
+
+    // STEP 2 — OCR only the pages that have no usable text layer (all pages when the text layer could not
+    // be read at all).
+    let ocrPages: Array<{ pageNumber: number; text: string; confidence: number }> = [];
+    let ocrTruncated = false;
+    let ocrTotalPages = totalPages;
+    let ocrFailureNote = "";
+    if (!digital || scannedPageNumbers.length > 0) {
+      let rasterized;
+      try {
+        rasterized = digital ? await rasterizePdfToImages(pdfBuffer, scannedPageNumbers) : await rasterizePdfToImages(pdfBuffer);
+      } catch (err) {
+        if (err instanceof PdfPasswordProtectedError) throw new OcrNotApplicableError(err.message);
+        if (err instanceof PdfCorruptError) throw err; // a re-upload of a valid copy could succeed
+        if (digitalByPage.size === 0) throw err; // nothing usable at all: a real failure worth retrying
+        // Some pages already have exact text: keep them and say honestly that the rest could not be read.
+        this.logger.warn(`PDF page rasterization failed; keeping digital text only: ${(err as Error).message}`);
+        ocrFailureNote = ` ${scannedPageNumbers.length} scanned page(s) could not be OCR'd.`;
+        rasterized = null;
+      }
+
+      if (rasterized) {
+        if (rasterized.pages.length === 0 && digitalByPage.size === 0) {
+          throw new OcrNotApplicableError("This PDF has no pages to extract text from.");
+        }
+        ocrTotalPages = rasterized.totalPages;
+        ocrTruncated = rasterized.truncated;
+        if (rasterized.failedPages?.length) {
+          ocrFailureNote = ` Page(s) ${rasterized.failedPages.map((f) => f.pageNumber).join(", ")} could not be OCR'd.`;
+        }
+        if (rasterized.pages.length > 0) {
+          const worker = await createWorker("eng");
+          try {
+            for (const page of rasterized.pages) {
+              const {
+                data: { text, confidence },
+              } = await worker.recognize(page.pngBuffer);
+              ocrPages.push({ pageNumber: page.pageNumber, text: text.trim(), confidence: Math.max(0, Math.min(1, confidence / 100)) });
+            }
+          } finally {
+            await worker.terminate();
+          }
+        }
+      }
+    }
+
+    // STEP 3 — merge in page order. Digital pages count as near-certain (0.99), OCR pages carry
+    // Tesseract's own confidence; the document-level confidence is the mean over pages with text.
+    const merged = new Map<number, { text: string; confidence: number; source: "text" | "ocr" }>();
+    for (const [pageNumber, text] of digitalByPage) merged.set(pageNumber, { text, confidence: 0.99, source: "text" });
+    for (const p of ocrPages) merged.set(p.pageNumber, { text: p.text, confidence: p.confidence, source: "ocr" });
+    const ordered = [...merged.entries()].sort((a, b) => a[0] - b[0]);
+    if (ordered.length === 0) {
       throw new OcrNotApplicableError("This PDF has no pages to extract text from.");
     }
 
-    const worker = await createWorker("eng");
-    try {
-      const pageTexts: string[] = [];
-      const pageConfidences: number[] = [];
-      for (const page of rasterized.pages) {
-        const {
-          data: { text, confidence },
-        } = await worker.recognize(page.pngBuffer);
-        pageTexts.push(text.trim());
-        pageConfidences.push(Math.max(0, Math.min(1, confidence / 100)));
-      }
-      // Simple mean across pages — a multi-page PDF has one overall extraction
-      // quality signal on IngestionBatch (via the Document-Ingestion bridge), not a
-      // per-page one, so an unweighted average is the natural rollup.
-      const engineConfidence = pageConfidences.reduce((sum, c) => sum + c, 0) / pageConfidences.length;
+    const engineConfidence = ordered.reduce((sum, [, v]) => sum + v.confidence, 0) / ordered.length;
+    const combinedText = ordered
+      .map(([n, v]) => `--- Page ${n} ---\n${v.text || "(no text detected on this page)"}`)
+      .join("\n\n");
 
-      const combinedText = pageTexts
-        .map((text, i) => `--- Page ${rasterized.pages[i].pageNumber} ---\n${text || "(no text detected on this page)"}`)
-        .join("\n\n");
-
-      const categoryLabel = CATEGORY_SUMMARIES[category] ?? CATEGORY_SUMMARIES.OTHER;
-      const flatText = pageTexts.filter(Boolean).join(" ");
-      const truncationNote = rasterized.truncated
-        ? ` (showing the first ${rasterized.pages.length} of ${rasterized.totalPages} pages)`
+    const categoryLabel = CATEGORY_SUMMARIES[category] ?? CATEGORY_SUMMARIES.OTHER;
+    const flatText = ordered.map(([, v]) => v.text).filter(Boolean).join(" ");
+    const shownPages = ordered.length;
+    const knownTotal = Math.max(totalPages, ocrTotalPages, pageCount);
+    const truncationNote =
+      ocrTruncated || knownTotal > shownPages
+        ? ` (showing the first ${shownPages} of ${knownTotal} pages)`
         : "";
-      const summary = flatText
-        ? `${categoryLabel} Extracted text from ${rasterized.pages.length}-page PDF${truncationNote}: ${flatText.slice(0, MAX_SUMMARY_TEXT_CHARS)}${flatText.length > MAX_SUMMARY_TEXT_CHARS ? "…" : ""}`
-        : `${categoryLabel} (No text could be confidently extracted from this ${rasterized.pages.length}-page PDF.)`;
+    const digitalNote = digitalByPage.size > 0 ? ` ${digitalByPage.size} page(s) were read directly from the PDF text.` : "";
+    const summary = flatText
+      ? `${categoryLabel} Extracted text from ${shownPages}-page PDF${truncationNote}:${digitalNote}${ocrFailureNote} ${flatText.slice(0, MAX_SUMMARY_TEXT_CHARS)}${flatText.length > MAX_SUMMARY_TEXT_CHARS ? "…" : ""}`
+      : `${categoryLabel} (No text could be confidently extracted from this ${shownPages}-page PDF.)`;
 
-      return { text: combinedText, summary, engineConfidence };
-    } finally {
-      await worker.terminate();
-    }
+    return { text: combinedText, summary, engineConfidence };
   }
 
   // The original, unmodified single-image recognition path — image uploads (JPEG/PNG/
