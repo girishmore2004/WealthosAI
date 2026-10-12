@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/Badge";
 
 const SEVERITY_STYLES: Record<InsightDTO["severity"], string> = {
   INFO: "border-line",
-  WARNING: "border-marigold-500",
+  WARNING: "border-warn",
   CRITICAL: "border-loss",
 };
 
@@ -21,7 +21,7 @@ export function InsightList({ insights }: { insights: InsightDTO[] }) {
         {insights.map((insight) => (
           <li
             key={insight.id}
-            className={`rounded-md border-l-2 bg-surface-muted/60 py-2.5 pl-3 pr-3 ${SEVERITY_STYLES[insight.severity]}`}
+            className={`rounded-md border-l-2 bg-surface-muted py-2.5 pl-3 pr-3 ${SEVERITY_STYLES[insight.severity]}`}
           >
             <div className="flex items-start justify-between gap-2">
               <p className="text-sm font-medium text-ink">{insight.title}</p>
