@@ -1,33 +1,46 @@
 import type { Config } from "tailwindcss";
 
+// Every colour is a CSS variable holding an "R G B" channel triplet (defined per theme in
+// app/globals.css), so Tailwind opacity modifiers such as `bg-loss/5` or `ring-marigold-500/30`
+// keep working and both themes share one set of class names.
+const token = (name: string) => `rgb(var(--${name}) / <alpha-value>)`;
+
 const config: Config = {
   content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        // Ledger-inspired token system: warm paper surface, deep ink navy for structure,
-        // marigold as the single accent (used sparingly for actions + positive milestones).
-        paper: "#F7F5EF",
-        surface: "#FFFFFF",
-        "surface-muted": "#FBF9F3",
+        // Semantic names kept from the original token system so no component needs to change:
+        // paper = page background, surface = cards, ink = text, line = borders,
+        // marigold = the primary accent (links, active states, primary actions).
+        paper: token("paper"),
+        surface: token("surface"),
+        "surface-muted": token("surface-muted"),
+        sidebar: token("sidebar"),
         ink: {
-          DEFAULT: "#151E2E",
-          soft: "#4B5568",
-          faint: "#8A93A6",
+          DEFAULT: token("ink"),
+          soft: token("ink-soft"),
+          faint: token("ink-faint"),
         },
         marigold: {
-          50: "#FDF4E4",
-          400: "#E3A94A",
-          500: "#D98F2B",
-          600: "#B8721C",
+          50: token("accent-tint"),
+          400: token("accent-400"),
+          500: token("accent"),
+          600: token("accent-600"),
         },
-        gain: "#2F7D5D",
-        loss: "#B3462C",
-        line: "#E9E5D8",
+        accent2: token("accent-2"),
+        onaccent: token("on-accent"),
+        gain: token("gain"),
+        loss: token("loss"),
+        warn: token("warn"),
+        line: token("line"),
+        // Fixed dark band used by the marketing "AI" section in both themes.
+        night: "#0B1020",
+        "night-fg": "#F1F5F9",
       },
       fontFamily: {
-        // Display/body pairing: a grounded slab-ish serif for headings (ledger-book feel),
-        // a clean grotesque for body copy, and tabular mono reserved for money amounts.
+        // Display/body pairing: a grounded serif for headings, a clean grotesque for body copy,
+        // and tabular mono reserved for money amounts.
         display: ["Georgia", "Iowan Old Style", "serif"],
         sans: ["-apple-system", "Segoe UI", "Helvetica Neue", "system-ui", "sans-serif"],
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
@@ -39,13 +52,16 @@ const config: Config = {
         lg: "0.875rem",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(21, 30, 46, 0.04)",
-        "card-hover": "0 8px 24px -12px rgba(21, 30, 46, 0.16)",
-        popover: "0 12px 32px -8px rgba(21, 30, 46, 0.22)",
+        card: "var(--shadow-card)",
+        "card-hover": "var(--shadow-card-hover)",
+        popover: "var(--shadow-popover)",
       },
       spacing: {
         4.5: "1.125rem",
         18: "4.5rem",
+      },
+      transitionDuration: {
+        DEFAULT: "150ms",
       },
     },
   },
