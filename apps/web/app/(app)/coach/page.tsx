@@ -502,7 +502,7 @@ function DeterministicCoach() {
           <p className="text-sm text-ink-faint">No questions asked yet — try one of the suggestions above.</p>
         )}
         {history.map((h) => (
-          <Card key={h.id} hover className={h.wasRefused ? "border-marigold-400" : undefined}>
+          <Card key={h.id} hover className={h.wasRefused ? "border-warn/60" : undefined}>
             <p className="text-sm font-medium text-ink">{h.question}</p>
             <p className="mt-2 text-sm text-ink-soft">{h.answer}</p>
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -657,7 +657,7 @@ function AdvancedCoach() {
           <p className="text-sm text-ink-faint">No questions in this category yet.</p>
         )}
         {filtered.map((h) => (
-          <Card key={h.id} hover className={!h.verificationPassed ? "border-marigold-400" : undefined}>
+          <Card key={h.id} hover className={!h.verificationPassed ? "border-warn/60" : undefined}>
             <div className="flex items-start justify-between gap-3">
               <p className="text-sm font-medium text-ink">{h.question}</p>
               <span className="badge badge-info shrink-0">
@@ -724,7 +724,7 @@ function AdvancedCoach() {
 }
 
 function ConfidenceBadge({ value }: { value: number }) {
-  const tier = value >= 0.7 ? "text-gain" : value >= 0.4 ? "text-marigold-600" : "text-loss";
+  const tier = value >= 0.7 ? "text-gain" : value >= 0.4 ? "text-warn" : "text-loss";
   return (
     <span>
       Confidence: <span className={`font-mono ${tier}`}>{Math.round(value * 100)}%</span>
