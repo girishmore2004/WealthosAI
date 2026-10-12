@@ -12,6 +12,11 @@ import { MAX_RELATED_SOURCE_EXPANSIONS, SOURCE_PRIORITY } from "../rag.constants
 import { FinancialFactsService } from "../../../common/financial-facts/financial-facts.service";
 import { DataHealthService } from "../../../financial-core/data-health/data-health.service";
 import { buildFinancialFactSources } from "./financial-fact-sources";
+import { MonthActivity, buildActivityFactSources } from "./activity-fact-sources";
+import { currentMonthString, monthRange, monthsBefore } from "../../../common/utils/financial-period.util";
+
+// How many months of spending / income detail are indexed (the current month plus the previous ones).
+const ACTIVITY_MONTHS = 6;
 
 interface SourceDocument {
   sourceType: AiSourceType;
@@ -104,9 +109,14 @@ export class RagIndexingService implements OnModuleInit {
     const sources = await this.gatherSources(userId);
     const relatedMap = computeRelatedSourceIds(sources);
 
+    // The ACTIVE embedding space: the neural model normally, or the hashed lexical fallback when the
+    // model cannot be loaded on this host. Vectors are stamped with it, so a switch between the two
+    // (model becomes available / unavailable) triggers one full re-embed instead of mixing spaces.
+    const modelVersion = typeof this.embedding.resolveModelVersion === "function" ? await this.embedding.resolveModelVersion() : EMBEDDING_MODEL_VERSION;
+
     const [existingStates, staleVersionCount] = await Promise.all([
       this.prisma.client.aiSourceIndexState.findMany({ where: { userId } }),
-      this.prisma.client.aiEmbeddingChunk.count({ where: { userId, NOT: { embeddingModelVersion: EMBEDDING_MODEL_VERSION } } }),
+      this.prisma.client.aiEmbeddingChunk.count({ where: { userId, NOT: { embeddingModelVersion: modelVersion } } }),
     ]);
     const embeddingModelMigration = staleVersionCount > 0;
 
@@ -131,7 +141,12 @@ export class RagIndexingService implements OnModuleInit {
       const chunks = this.chunker.chunk(source.text);
       if (chunks.length === 0) continue;
 
-      const embeddings = await this.embedding.embedBatch(chunks.map((c) => c.text));
+      // Embed with the version each vector was really produced under (an inference error mid-batch can
+      // drop to the fallback), so stored vectors are never mislabelled.
+      const embedded =
+        typeof this.embedding.embedBatchWithVersion === "function"
+          ? await this.embedding.embedBatchWithVersion(chunks.map((c) => c.text))
+          : (await this.embedding.embedBatch(chunks.map((c) => c.text))).map((vector) => ({ vector, version: modelVersion }));
       const relatedSourceIds = relatedMap.get(sourceKey(source)) ?? [];
 
       chunks.forEach((chunk, i) => {
@@ -143,11 +158,11 @@ export class RagIndexingService implements OnModuleInit {
           text: chunk.text,
           parentText: chunk.parentText,
           metadata: source.metadata,
-          embedding: embeddings[i],
+          embedding: embedded[i].vector,
           tokenCount: Math.ceil(chunk.text.length / 4),
           sourcePriority: SOURCE_PRIORITY[source.sourceType],
           sourceCreatedAt: source.sourceCreatedAt,
-          embeddingModelVersion: EMBEDDING_MODEL_VERSION,
+          embeddingModelVersion: embedded[i].version,
           relatedSourceIds,
         });
       });
@@ -319,7 +334,7 @@ export class RagIndexingService implements OnModuleInit {
       totals.set(row.investmentId, t);
     }
 
-    return buildFinancialFactSources(
+    const baseFacts = buildFinancialFactSources(
       {
         position,
         cashFlow,
@@ -339,6 +354,84 @@ export class RagIndexingService implements OnModuleInit {
       },
       new Date(),
     );
+
+    // Aggregate answers (spending by category per month, income sources, trend, insurance / loan /
+    // investment overviews, goals). Best-effort: a failure here keeps the base facts above.
+    let activityFacts: ReturnType<typeof buildActivityFactSources> = [];
+    try {
+      activityFacts = buildActivityFactSources(await this.loadActivityInput(userId, policies, loans, investments), new Date());
+    } catch (err) {
+      this.logger.warn(`Skipping activity fact indexing for ${userId}: ${(err as Error).name}`);
+    }
+    return [...baseFacts, ...activityFacts];
+  }
+
+  private async loadActivityInput(
+    userId: string,
+    policies: Array<{ provider: string; type: string; premiumAmount: { toString(): string }; premiumFrequency: string; coverageAmount: { toString(): string }; renewalDate: Date }>,
+    loans: Array<{ lender: string; type: string; outstandingPrincipal: { toString(): string }; emiAmount: { toString(): string }; interestRateAnnual: { toString(): string }; tenureMonths: number; startDate: Date }>,
+    investments: Array<{ name: string; type: string; currentValue: { toString(): string }; valuations: Array<{ value: { toString(): string } }> }>,
+  ) {
+    const db = this.prisma.client;
+    const now = new Date();
+    const current = currentMonthString(now);
+    const monthKeys = Array.from({ length: ACTIVITY_MONTHS }, (_, i) => monthsBefore(current, i)); // newest first
+    const windowStart = monthRange(monthKeys[monthKeys.length - 1]).start;
+    const windowEnd = monthRange(current).end;
+
+    const [cashFlows, expenseRows, incomeRows, goals] = await Promise.all([
+      Promise.all(monthKeys.map((m) => this.facts.getMonthlyCashFlow(userId, m))),
+      db.expense.findMany({
+        where: { userId, flowType: "EXPENSE", spentAt: { gte: windowStart, lt: windowEnd } },
+        select: { amount: true, spentAt: true, merchant: true, category: { select: { name: true, type: true } } },
+        take: 5000,
+      }),
+      db.income.findMany({
+        where: { userId, receivedAt: { gte: windowStart, lt: windowEnd } },
+        select: { amount: true, receivedAt: true, source: true, label: true },
+        take: 2000,
+      }),
+      db.goal.findMany({ where: { userId }, take: 100 }),
+    ]);
+
+    const months: MonthActivity[] = monthKeys.map((month, i) => {
+      const { start, end } = monthRange(month);
+      const inProgress = month === current;
+      const daysInMonth = Math.round((end.getTime() - start.getTime()) / 86_400_000);
+      const cf = cashFlows[i];
+      return {
+        month,
+        inProgress,
+        daysCounted: inProgress ? Math.max(1, now.getUTCDate()) : daysInMonth,
+        income: cf.income,
+        expenses: cf.expenses,
+        investmentContributions: cf.investmentContributions,
+        savingsRate: cf.savingsRate,
+        expenseRows: expenseRows
+          .filter((r) => r.spentAt >= start && r.spentAt < end)
+          .map((r) => ({ category: r.category.name, categoryType: r.category.type, merchant: r.merchant, amount: r.amount.toString() })),
+        incomeRows: incomeRows
+          .filter((r) => r.receivedAt >= start && r.receivedAt < end)
+          .map((r) => ({ source: r.source, label: r.label, amount: r.amount.toString() })),
+      };
+    });
+
+    return {
+      months,
+      policies: policies.map((p) => ({
+        provider: p.provider, type: p.type, premiumAmount: p.premiumAmount.toString(), premiumFrequency: p.premiumFrequency,
+        coverageAmount: p.coverageAmount.toString(), renewalDate: p.renewalDate,
+      })),
+      loans: loans.map((l) => ({
+        lender: l.lender, type: l.type, outstandingPrincipal: l.outstandingPrincipal.toString(), emiAmount: l.emiAmount.toString(),
+        interestRateAnnual: l.interestRateAnnual.toString(), tenureMonths: l.tenureMonths, startDate: l.startDate,
+      })),
+      investments: investments.map((i) => ({ name: i.name, type: i.type, currentValue: (i.valuations[0]?.value ?? i.currentValue).toString() })),
+      goals: goals.map((g) => ({
+        name: g.name, type: g.type, targetAmount: g.targetAmount.toString(), currentAmount: g.currentAmount.toString(),
+        targetDate: g.targetDate, monthlyContribution: g.monthlyContribution.toString(),
+      })),
+    };
   }
 
   private async safeDashboardSummary(userId: string) {
