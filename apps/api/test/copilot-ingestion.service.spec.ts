@@ -1,4 +1,3 @@
-```typescript
 import { Test } from "@nestjs/testing";
 import { CopilotIngestionService } from "../src/ai/copilot-ingestion/copilot-ingestion.service";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -17,8 +16,9 @@ import { SuggestionScoringService } from "../src/ai/copilot-ingestion/scoring/su
 // Text with zero parseable statement lines throughout these tests — so the per-line
 // detection/suggestion pipeline (already covered by copilot-ingestion-detection.spec.ts
 // / copilot-ingestion-learning.spec.ts) never needs to run, keeping this test suite
-// focused on the new bridge method's own logic.
-describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", () => {
+// focused on the bridge method's own logic.
+
+describe("CopilotIngestionService.ingestFromDocumentText (audit item #6)", () => {
   let service: CopilotIngestionService;
 
   const mockPrisma = {
@@ -35,10 +35,22 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
     list: jest.fn(),
     detectSubscriptions: jest.fn(),
   };
-  const mockFeatures = { transactionPoints: jest.fn() };
-  const mockUnderstanding = { parseLeftoverLines: jest.fn() };
-  const mockOcrAdapter = { process: jest.fn() };
-  const mockOcrQuality = { estimate: jest.fn() };
+
+  const mockFeatures = {
+    transactionPoints: jest.fn(),
+  };
+
+  const mockUnderstanding = {
+    parseLeftoverLines: jest.fn(),
+  };
+
+  const mockOcrAdapter = {
+    process: jest.fn(),
+  };
+
+  const mockOcrQuality = {
+    estimate: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -46,11 +58,17 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
     mockExpenses.listCategories.mockResolvedValue([]);
     mockExpenses.list.mockResolvedValue([]);
     mockExpenses.detectSubscriptions.mockResolvedValue([]);
+
     mockFeatures.transactionPoints.mockResolvedValue([]);
     mockUnderstanding.parseLeftoverLines.mockResolvedValue([]);
-    mockOcrQuality.estimate.mockReturnValue({ extractionConfidence: 0.8 });
 
+    mockOcrQuality.estimate.mockReturnValue({
+      extractionConfidence: 0.8,
+    });
+
+    // ingestFromDocumentText checks for an existing batch.
     mockPrisma.client.ingestionBatch.findFirst.mockResolvedValue(null);
+
     mockPrisma.client.ingestionBatch.create.mockResolvedValue({
       id: "batch-1",
       items: [],
@@ -59,21 +77,56 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
     const moduleRef = await Test.createTestingModule({
       providers: [
         CopilotIngestionService,
-        { provide: PrismaService, useValue: mockPrisma },
-        { provide: ExpensesService, useValue: mockExpenses },
-        { provide: FeatureExtractionService, useValue: mockFeatures },
-        { provide: StatementUnderstandingService, useValue: mockUnderstanding },
-        { provide: StatementOcrAdapter, useValue: mockOcrAdapter },
-        { provide: OcrQualityEstimationService, useValue: mockOcrQuality },
+        {
+          provide: PrismaService,
+          useValue: mockPrisma,
+        },
+        {
+          provide: ExpensesService,
+          useValue: mockExpenses,
+        },
+        {
+          provide: FeatureExtractionService,
+          useValue: mockFeatures,
+        },
+        {
+          provide: StatementUnderstandingService,
+          useValue: mockUnderstanding,
+        },
+        {
+          provide: StatementOcrAdapter,
+          useValue: mockOcrAdapter,
+        },
+        {
+          provide: OcrQualityEstimationService,
+          useValue: mockOcrQuality,
+        },
 
-        // Never invoked in these tests (zero parseable lines means the per-line
-        // item-building pipeline never runs) — trivial stubs are sufficient.
-        { provide: CategorySuggestionService, useValue: {} },
-        { provide: DuplicateDetectionService, useValue: {} },
-        { provide: RecurringDetectionService, useValue: {} },
-        { provide: AnomalyFlaggingService, useValue: {} },
-        { provide: ReconciliationService, useValue: {} },
-        { provide: SuggestionScoringService, useValue: {} },
+        // These providers are not invoked by the zero-parseable-lines test cases.
+        {
+          provide: CategorySuggestionService,
+          useValue: {},
+        },
+        {
+          provide: DuplicateDetectionService,
+          useValue: {},
+        },
+        {
+          provide: RecurringDetectionService,
+          useValue: {},
+        },
+        {
+          provide: AnomalyFlaggingService,
+          useValue: {},
+        },
+        {
+          provide: ReconciliationService,
+          useValue: {},
+        },
+        {
+          provide: SuggestionScoringService,
+          useValue: {},
+        },
       ],
     }).compile();
 
@@ -125,7 +178,9 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
     );
 
     expect(mockOcrQuality.estimate).toHaveBeenCalledWith(
-      expect.objectContaining({ engineConfidence: 0.73 }),
+      expect.objectContaining({
+        engineConfidence: 0.73,
+      }),
     );
   });
 
@@ -140,12 +195,16 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
     );
 
     expect(mockOcrQuality.estimate).toHaveBeenCalledWith(
-      expect.objectContaining({ engineConfidence: 0.5 }),
+      expect.objectContaining({
+        engineConfidence: 0.5,
+      }),
     );
   });
 
   it("uses the estimated extractionConfidence as the batch's ocrExtractionConfidence", async () => {
-    mockOcrQuality.estimate.mockReturnValue({ extractionConfidence: 0.42 });
+    mockOcrQuality.estimate.mockReturnValue({
+      extractionConfidence: 0.42,
+    });
 
     await service.ingestFromDocumentText(
       "user-1",
@@ -175,10 +234,13 @@ describe("CopilotIngestionService.ingestFromDocumentText (new, audit item #6)", 
       "doc-1",
     );
 
-    expect(result).toEqual({ id: "batch-1", items: [] });
+    expect(result).toEqual({
+      id: "batch-1",
+      items: [],
+    });
 
-    // ingestFromDocumentText itself never calls expenses.create — only approval,
-    // via the existing, separate IngestionReviewService, ever does that.
+    // ingestFromDocumentText itself never calls expenses.create.
+    // Expense creation remains part of the separate review/approval flow.
   });
 });
 
@@ -199,10 +261,22 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
     list: jest.fn(),
     detectSubscriptions: jest.fn(),
   };
-  const mockFeatures = { transactionPoints: jest.fn() };
-  const mockUnderstanding = { parseLeftoverLines: jest.fn() };
-  const mockOcrAdapter = { process: jest.fn() };
-  const mockOcrQuality = { estimate: jest.fn() };
+
+  const mockFeatures = {
+    transactionPoints: jest.fn(),
+  };
+
+  const mockUnderstanding = {
+    parseLeftoverLines: jest.fn(),
+  };
+
+  const mockOcrAdapter = {
+    process: jest.fn(),
+  };
+
+  const mockOcrQuality = {
+    estimate: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -210,10 +284,13 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
     mockExpenses.listCategories.mockResolvedValue([]);
     mockExpenses.list.mockResolvedValue([]);
     mockExpenses.detectSubscriptions.mockResolvedValue([]);
+
     mockFeatures.transactionPoints.mockResolvedValue([]);
     mockUnderstanding.parseLeftoverLines.mockResolvedValue([]);
 
+    // Keep the Prisma mock consistent with the service's batch lookup.
     mockPrisma.client.ingestionBatch.findFirst.mockResolvedValue(null);
+
     mockPrisma.client.ingestionBatch.create.mockResolvedValue({
       id: "batch-1",
       items: [],
@@ -222,18 +299,54 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
     const moduleRef = await Test.createTestingModule({
       providers: [
         CopilotIngestionService,
-        { provide: PrismaService, useValue: mockPrisma },
-        { provide: ExpensesService, useValue: mockExpenses },
-        { provide: FeatureExtractionService, useValue: mockFeatures },
-        { provide: StatementUnderstandingService, useValue: mockUnderstanding },
-        { provide: StatementOcrAdapter, useValue: mockOcrAdapter },
-        { provide: OcrQualityEstimationService, useValue: mockOcrQuality },
-        { provide: CategorySuggestionService, useValue: {} },
-        { provide: DuplicateDetectionService, useValue: {} },
-        { provide: RecurringDetectionService, useValue: {} },
-        { provide: AnomalyFlaggingService, useValue: {} },
-        { provide: ReconciliationService, useValue: {} },
-        { provide: SuggestionScoringService, useValue: {} },
+        {
+          provide: PrismaService,
+          useValue: mockPrisma,
+        },
+        {
+          provide: ExpensesService,
+          useValue: mockExpenses,
+        },
+        {
+          provide: FeatureExtractionService,
+          useValue: mockFeatures,
+        },
+        {
+          provide: StatementUnderstandingService,
+          useValue: mockUnderstanding,
+        },
+        {
+          provide: StatementOcrAdapter,
+          useValue: mockOcrAdapter,
+        },
+        {
+          provide: OcrQualityEstimationService,
+          useValue: mockOcrQuality,
+        },
+        {
+          provide: CategorySuggestionService,
+          useValue: {},
+        },
+        {
+          provide: DuplicateDetectionService,
+          useValue: {},
+        },
+        {
+          provide: RecurringDetectionService,
+          useValue: {},
+        },
+        {
+          provide: AnomalyFlaggingService,
+          useValue: {},
+        },
+        {
+          provide: ReconciliationService,
+          useValue: {},
+        },
+        {
+          provide: SuggestionScoringService,
+          useValue: {},
+        },
       ],
     }).compile();
 
@@ -241,7 +354,12 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
   });
 
   it("a plain pasted-text import still gets ingestionSource TEXT and sourceDocumentId null", async () => {
-    await service.ingest("user-1", "Pasted statement", "some text", "UPI");
+    await service.ingest(
+      "user-1",
+      "Pasted statement",
+      "some text",
+      "UPI",
+    );
 
     expect(mockPrisma.client.ingestionBatch.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -253,4 +371,3 @@ describe("CopilotIngestionService.ingest (regression guard — sourceDocumentId 
     );
   });
 });
-```
