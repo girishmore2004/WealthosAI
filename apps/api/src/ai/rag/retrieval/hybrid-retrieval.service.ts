@@ -1,9 +1,11 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { AiSourceType } from "@wealthos/db";
 import { EmbeddingService, cosineSimilarity } from "../embedding/embedding.service";
-import { KeywordScorerService, tokenize } from "./keyword-scorer.service";
+import { KeywordMatch, KeywordScorerService, tokenize } from "./keyword-scorer.service";
 import {
+  LEXICAL_EVIDENCE_MIN_COVERAGE,
+  MAX_CHUNKS_PER_SOURCE,
   MAX_SOURCE_PRIORITY,
   MIN_EVIDENCE_SIMILARITY,
   MAX_RELATED_SOURCE_EXPANSIONS,
@@ -60,6 +62,10 @@ export interface ScoredChunk {
    * itself a score; consumed by expandWithRelationships() to decide what to pull in
    * around a seed. */
   relatedSourceIds: string[];
+  /** Fraction (0-1) of the question's own content words found in this chunk (after stemming). The
+   * lexical "is this really about the question" signal; counts as evidence when the semantic score is
+   * low or unavailable (hashed fallback / stale vectors). Optional: absent on hand-built chunks. */
+  lexicalCoverage?: number;
   /** How this chunk entered the candidate pool — a direct hybrid-search match
    * ("seed"), or Layer 3 relationship traversal off a seed ("sibling"/
    * "related_source"). Surfaced (not just used internally) so the reranker's rationale
@@ -92,6 +98,8 @@ export interface ScoredChunk {
 //      highest on semantic/keyword terms still has a path into the candidate pool.
 @Injectable()
 export class HybridRetrievalService {
+  private readonly logger = new Logger(HybridRetrievalService.name);
+
   constructor(
     private prisma: PrismaService,
     private embedding: EmbeddingService,
@@ -106,7 +114,6 @@ export class HybridRetrievalService {
   ): Promise<ScoredChunk[]> {
     const queryType: QueryType = queryContext.queryType ?? "exploratory";
     const complexity: QueryComplexity = queryContext.complexity ?? "moderate";
-    const weights = RETRIEVAL_WEIGHT_PROFILES[queryType];
     const candidateLimit = adaptiveCandidateLimit(complexity);
 
     const rawCandidates = await this.prisma.client.aiEmbeddingChunk.findMany({
@@ -122,27 +129,61 @@ export class HybridRetrievalService {
     const filtered = rawCandidates.filter((c) => passesMetadataFilters(c.sourceType, c.metadata as Record<string, unknown>, filters));
     if (filtered.length === 0) return [];
 
-    const queryEmbedding = await this.embedding.embed(query);
-    const keywordScoresRaw = this.keywordScorer.score(
-      query,
-      filtered.map((c) => c.text),
-    );
-    const keywordScores = normalize(keywordScoresRaw);
+    // The query vector. If the embedding backend is unusable the search still works: it falls back to
+    // lexical-only ranking (BM25 + recency + priority) instead of failing the whole request.
+    let queryEmbedding: number[] | null = null;
+    let queryVersion: number | undefined;
+    try {
+      if (typeof this.embedding.embedWithVersion === "function") {
+        const result = await this.embedding.embedWithVersion(query);
+        queryEmbedding = result.vector;
+        queryVersion = result.version;
+      } else {
+        queryEmbedding = await this.embedding.embed(query);
+      }
+    } catch (err) {
+      this.logger.warn(`Query embedding unavailable, ranking lexically only: ${(err as Error).message}`);
+    }
+
+    const baseWeights = RETRIEVAL_WEIGHT_PROFILES[queryType];
+    const weights = queryEmbedding
+      ? baseWeights
+      : { ...baseWeights, semantic: 0, keyword: baseWeights.keyword + baseWeights.semantic };
+    // Only vectors from the same embedding space as the query are comparable. A chunk stored under a
+    // different version (mid-migration, or fallback vs neural) gets no semantic credit rather than a
+    // meaningless cosine value; it can still win on keywords.
+    const semanticOf = (chunk: { embedding: number[]; embeddingModelVersion?: number }): number => {
+      if (!queryEmbedding) return 0;
+      if (queryVersion !== undefined && chunk.embeddingModelVersion !== undefined && chunk.embeddingModelVersion !== queryVersion) return 0;
+      return cosineSimilarity(queryEmbedding, chunk.embedding);
+    };
+
+    // A chunk's title (document file name, policy name, report month) is searchable text too.
+    const searchable = filtered.map((c) => {
+      const title = (c.metadata as Record<string, unknown> | null)?.title;
+      return typeof title === "string" && title && !c.text.startsWith(title) ? `${title}\n${c.text}` : c.text;
+    });
+    const matches: KeywordMatch[] =
+      typeof this.keywordScorer.match === "function"
+        ? this.keywordScorer.match(query, searchable)
+        : this.keywordScorer.score(query, searchable).map((score) => ({ score, coverage: 0 }));
+    const keywordScores = normalize(matches.map((m) => m.score));
     const now = Date.now();
     const decayRate = Math.LN2 / (RECENCY_HALF_LIFE_DAYS * 24 * 60 * 60 * 1000);
 
-    const seeds: ScoredChunk[] = filtered.map((chunk, i) =>
-      this.scoreChunk(chunk, cosineSimilarity(queryEmbedding, chunk.embedding), keywordScores[i], weights, now, decayRate, "seed"),
-    );
+    const seeds: ScoredChunk[] = filtered.map((chunk, i) => ({
+      ...this.scoreChunk(chunk, semanticOf(chunk), keywordScores[i], weights, now, decayRate, "seed"),
+      lexicalCoverage: matches[i].coverage,
+    }));
     seeds.sort((a, b) => b.combinedScore - a.combinedScore);
 
     const seedSlice = seeds.slice(0, candidateLimit);
-    const expansions = await this.expandWithRelationships(userId, seedSlice, queryEmbedding, weights, now, decayRate);
+    const expansions = await this.expandWithRelationships(userId, seedSlice, semanticOf, weights, now, decayRate);
 
     const pool = dedupeById([...seedSlice, ...expansions]);
     const deduped = suppressNearDuplicates(pool, NEAR_DUPLICATE_JACCARD_THRESHOLD);
 
-    return deduped.sort((a, b) => b.combinedScore - a.combinedScore).slice(0, candidateLimit);
+    return capPerSource(deduped.sort((a, b) => b.combinedScore - a.combinedScore), MAX_CHUNKS_PER_SOURCE).slice(0, candidateLimit);
   }
 
   /** Whether any candidate is actually similar enough to the query to count as real
@@ -161,9 +202,15 @@ export class HybridRetrievalService {
    * plain scored chunks not produced through the seed/expansion pipeline) are treated
    * like seeds and do count. */
   hasEvidence(scoredChunks: ScoredChunk[]): boolean {
-    return scoredChunks.some(
-      (c) => (c.expansionReason === undefined || c.expansionReason === "seed") && c.semanticScore >= MIN_EVIDENCE_SIMILARITY,
-    );
+    return scoredChunks.some((c) => {
+      const isSeed = c.expansionReason === undefined || c.expansionReason === "seed";
+      if (!isSeed) return false;
+      if (c.semanticScore >= MIN_EVIDENCE_SIMILARITY) return true;
+      // Lexical evidence: most of the user's own content words literally appear in the chunk. This keeps
+      // a precise question ("what is my EMI") answerable when the semantic score is modest or when the
+      // hashed fallback (which has lower absolute similarities) is in use.
+      return (c.lexicalCoverage ?? 0) >= LEXICAL_EVIDENCE_MIN_COVERAGE && c.keywordScore > 0;
+    });
   }
 
   private scoreChunk(
@@ -238,7 +285,7 @@ export class HybridRetrievalService {
   private async expandWithRelationships(
     userId: string,
     seeds: ScoredChunk[],
-    queryEmbedding: number[],
+    semanticOf: (chunk: { embedding: number[]; embeddingModelVersion?: number }) => number,
     weights: (typeof RETRIEVAL_WEIGHT_PROFILES)[QueryType],
     now: number,
     decayRate: number,
@@ -282,7 +329,7 @@ export class HybridRetrievalService {
           addedIds.add(row.id);
           siblingBudget--;
           expansions.push(
-            this.scoreChunk(row, cosineSimilarity(queryEmbedding, row.embedding), 0, weights, now, decayRate, "sibling"),
+            this.scoreChunk(row, semanticOf(row), 0, weights, now, decayRate, "sibling"),
           );
         }
       }
@@ -297,7 +344,7 @@ export class HybridRetrievalService {
             addedIds.add(row.id);
             relatedBudget--;
             expansions.push(
-              this.scoreChunk(row, cosineSimilarity(queryEmbedding, row.embedding), 0, weights, now, decayRate, "related_source"),
+              this.scoreChunk(row, semanticOf(row), 0, weights, now, decayRate, "related_source"),
             );
           }
         }
@@ -323,6 +370,18 @@ function passesMetadataFilters(sourceType: AiSourceType, metadata: Record<string
     if (tags.length > 0 && !filters.tags.some((t) => tags.includes(t))) return false;
   }
   return true;
+}
+
+/** Keeps at most `max` chunks per source (best-scored first, input order preserved): one long document
+ * or report must not crowd every other source out of the candidate pool and the answer context. */
+function capPerSource<T extends { sourceType: string; sourceId: string }>(chunks: T[], max: number): T[] {
+  const counts = new Map<string, number>();
+  return chunks.filter((c) => {
+    const key = `${c.sourceType}:${c.sourceId}`;
+    const n = (counts.get(key) ?? 0) + 1;
+    counts.set(key, n);
+    return n <= max;
+  });
 }
 
 function normalize(values: number[]): number[] {
