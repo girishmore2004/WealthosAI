@@ -25,6 +25,42 @@ const STOPWORDS = new Set([
   "confidence",
 ]);
 
+// A number token: optional leading minus (only when not glued to a preceding digit or dot,
+// so "2026-09-12" and "5-10 years" are not read as negative numbers), then either a
+// correctly grouped thousands/lakh figure (1,234 / 12,34,567 / 1,234,567) or a plain run
+// of digits, an optional decimal part and an optional percent sign.
+const NUMBER_PATTERN = /(?<![\d.])-?(?:\d{1,3}(?:,\d{2,3})+(?!\d)|\d+)(?:\.\d+)?%?/g;
+// "[0]", "[12]", "[1, 3]" — source/citation markers, never a financial figure.
+const CITATION_MARKER_PATTERN = /\[\s*\d{1,3}(?:\s*[,;]\s*\d{1,3})*\s*\]/g;
+// A standalone list number at the start of a line: "1. ", "2) ", "- 3. ", "* 4) ".
+// Requires whitespace after the punctuation so "12.5% return" and "2.5 lakh" are untouched.
+const LIST_MARKER_PATTERN = /^[ \t]*(?:[-*\u2022][ \t]+)?\d{1,3}[.)][ \t]+(?=\S)/gm;
+// Object keys whose numeric values are structural positions/identifiers/self-reported
+// scores rather than financial claims (e.g. `citedIndices`, `orderedIndices`, `confidence`).
+const STRUCTURAL_NUMERIC_KEY = /(?:^|[a-z])(?:Index|Indices|Indexes|Idx|Rank|Position)$|^confidence$/;
+
+/** Projects a structured AI result down to the text a *user would read* — string values,
+ * plus numeric values that are not structural (indices, ranks, confidence). Object keys,
+ * booleans and array-index bookkeeping are never included. This is the input boundary the
+ * grounding check must score: scoring `JSON.stringify(result)` made serialized structure
+ * (`"citedIndices":[0,1,2]`) look like figures the model had invented. */
+export function collectGroundableText(value: unknown, key?: string): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") {
+    return key !== undefined && STRUCTURAL_NUMERIC_KEY.test(key) ? "" : String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => collectGroundableText(item, key)).filter(Boolean).join("\n");
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => collectGroundableText(v, k))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
 // A reusable, gateway-level grounding/hallucination check available to EVERY AI
 // feature via AiCallOptions.groundingContext (see ai-gateway.types.ts) — not a
 // replacement for ai/coach/verification/numeric-consistency.verifier.ts, which Agentic
@@ -38,12 +74,24 @@ const STOPWORDS = new Set([
 // rules) for consistency of behavior across the codebase, not copy-pasted from it.
 @Injectable()
 export class GroundingService {
+  /** Extracts the material numeric claims in `text` — amounts, percentages, dates' numeric
+   * parts, counts — after removing the *unambiguous structural markers* that are not
+   * financial content at all:
+   *   - a standalone list number at the very start of a line ("1. ", "2) ", "- 3. ")
+   *   - bracketed citation/source markers ("[0]", "[2]", "[1, 3]")
+   * Everything else is still checked. Thousands separators are only recognised in valid
+   * groupings (1,234 / 12,34,567 / 1,234,567), so a bare comma-separated list such as
+   * "0,1,2" is read as three separate small numbers rather than one invented figure
+   * (the original false positive: serialized `citedIndices: [0,1,2]` was read as 12). */
   private extractNumbers(text: string): ExtractedNumber[] {
-    const matches = text.match(/₹?\s?-?\d[\d,]*(\.\d+)?%?/g) ?? [];
+    const withoutStructure = text
+      .replace(CITATION_MARKER_PATTERN, " ")
+      .replace(LIST_MARKER_PATTERN, "");
+    const matches = withoutStructure.match(NUMBER_PATTERN) ?? [];
     return matches
       .map((raw) => {
         const isPercent = raw.trim().endsWith("%");
-        const cleaned = raw.replace(/[₹,%\s]/g, "");
+        const cleaned = raw.replace(/[,%\s]/g, "");
         const value = parseFloat(cleaned);
         return Number.isNaN(value) ? null : { raw: raw.trim(), value, isPercent };
       })
