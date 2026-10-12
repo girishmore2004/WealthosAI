@@ -107,11 +107,11 @@ export class FinancialEngineService {
         core =
           routed.span === "YEAR" && (routed.metric === "SPENT" || routed.metric === "INVESTED")
             ? [await t.getYearToDate(userId)]
-            : [await t.getCashFlow(userId)];
+            : [await (routed.month ? t.getCashFlow(userId, routed.month) : t.getCashFlow(userId))];
         break;
       case "EXPENSE_ANALYSIS":
       case "INCOME_ANALYSIS":
-        core = [await t.getCashFlow(userId)];
+        core = [await (routed.month ? t.getCashFlow(userId, routed.month) : t.getCashFlow(userId))];
         break;
       case "RECEIVABLES":
         core = [await t.getReceivablesSummary(userId)];
