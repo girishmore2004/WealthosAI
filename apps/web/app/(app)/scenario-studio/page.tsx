@@ -309,7 +309,7 @@ export default function ScenarioStudioPage() {
                     <p className="text-[11px] text-ink-faint">net worth change, 5 years</p>
                     <p className="mt-2 text-[11px] text-ink-soft">{JSON.stringify(variant.params)}</p>
                     {!r.feasible && (
-                      <p className="mt-2 rounded-md bg-marigold-50 px-2 py-1.5 text-[11px] text-marigold-600">{r.feasibilityNote}</p>
+                      <p className="mt-2 rounded-md bg-warn/10 px-2 py-1.5 text-[11px] text-warn">{r.feasibilityNote}</p>
                     )}
                     {r.goalImpacts.map((g) => (
                       <p key={g.goalId} className="mt-1 text-[11px] text-ink-faint">{g.note}</p>
