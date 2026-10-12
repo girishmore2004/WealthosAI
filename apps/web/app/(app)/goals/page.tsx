@@ -255,7 +255,7 @@ const STATUS_TOOLTIP =
 
 const PROGRESS_BAR: Record<GoalDTO["probabilityOfSuccess"], string> = {
   ON_TRACK: "bg-gain",
-  AT_RISK: "bg-marigold-500",
+  AT_RISK: "bg-warn",
   OFF_TRACK: "bg-loss",
 };
 
