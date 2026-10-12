@@ -5,9 +5,9 @@ export type FactBasis = "ACTUAL" | "FORECAST" | "PROJECTED" | "TARGET" | "ESTIMA
 
 const STYLE: Record<FactBasis, string> = {
   ACTUAL: "border-line text-ink-faint",
-  FORECAST: "border-marigold-400/60 bg-marigold-50 text-marigold-600",
-  PROJECTED: "border-marigold-400/60 bg-marigold-50 text-marigold-600",
-  ESTIMATED: "border-marigold-400/60 bg-marigold-50 text-marigold-600",
+  FORECAST: "border-warn/40 bg-warn/10 text-warn",
+  PROJECTED: "border-warn/40 bg-warn/10 text-warn",
+  ESTIMATED: "border-warn/40 bg-warn/10 text-warn",
   TARGET: "border-ink-faint/50 bg-surface-muted text-ink-soft",
 };
 
