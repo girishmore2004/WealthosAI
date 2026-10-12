@@ -10,7 +10,7 @@ export function ClosingCta() {
         </p>
         <Link
           href="/login"
-          className="mt-6 inline-block rounded-sm bg-marigold-500 px-6 py-3 text-sm font-medium text-white shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98]"
+          className="mt-6 inline-block rounded-sm bg-marigold-500 px-6 py-3 text-sm font-medium text-onaccent shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98]"
         >
           Get started — it&apos;s free
         </Link>
