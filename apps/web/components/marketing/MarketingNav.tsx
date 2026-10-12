@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 
 export function MarketingNav() {
   return (
@@ -14,12 +15,13 @@ export function MarketingNav() {
           <a href="#security" className="hover:text-ink">Security</a>
         </nav>
         <div className="flex items-center gap-3">
+          <ThemeToggle />
           <Link href="/login" className="hidden text-sm font-medium text-ink-soft hover:text-ink sm:block">
             Log in
           </Link>
           <Link
             href="/login"
-            className="rounded-sm bg-marigold-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98]"
+            className="rounded-sm bg-marigold-500 px-4 py-2 text-sm font-medium text-onaccent shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98]"
           >
             Get started
           </Link>
