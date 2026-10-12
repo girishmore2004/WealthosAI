@@ -8,6 +8,7 @@ import { useFinancialVersion } from "@/lib/financial-events";
 import { formatDay, formatMonth } from "@/lib/dates";
 import { formatINR, formatPercent } from "@/lib/format";
 import { BasisTag } from "@/components/ui/BasisTag";
+import { CHART, axisTick, legendStyle, tooltipStyle } from "@/lib/chart-theme";
 
 const monthInput = (d: Date = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
@@ -145,11 +146,11 @@ export function MonthlyDetailReport() {
               <div className="h-56" role="img" aria-label="Bar chart of daily spending">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={r.dailySpending.map((d) => ({ label: d.date.slice(8), total: Number(d.total) }))}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} width={56} />
-                    <Tooltip formatter={(v: number) => formatINR(v)} />
-                    <Bar dataKey="total" name="Spent" fill="#C77D1E" radius={[3, 3, 0, 0]} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART.grid} />
+                    <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} />
+                    <YAxis tick={axisTick} width={56} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={tooltipStyle} cursor={{ fill: CHART.grid, opacity: 0.4 }} />
+                    <Bar dataKey="total" name="Spent" fill={CHART.primary} radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -219,14 +220,14 @@ export function YearByMonthReport() {
             <div className="h-64" role="img" aria-label="Chart of income, expenses and investments for each month">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chart}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} width={60} />
-                  <Tooltip formatter={(v: number) => formatINR(v)} />
-                  <Legend />
-                  <Line type="monotone" dataKey="Income" stroke="#2F7D5D" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="Expenses" stroke="#B4412F" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="Investments" stroke="#3A6EA5" strokeWidth={2} dot={false} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART.grid} />
+                  <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} />
+                  <YAxis tick={axisTick} width={60} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v: number) => formatINR(v)} contentStyle={tooltipStyle} />
+                  <Legend wrapperStyle={legendStyle} />
+                  <Line type="monotone" dataKey="Income" stroke={CHART.gain} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Expenses" stroke={CHART.loss} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Investments" stroke={CHART.primary} strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
