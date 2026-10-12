@@ -21,7 +21,7 @@ export const COACH_INTENTS: CoachIntent[] = [
   { id: "RETIREMENT", topicLabel: "retirement readiness", patterns: [/retir/i] },
   { id: "INSURANCE", topicLabel: "insurance coverage", patterns: [/insuran/i, /\bcoverage\b/i, /\bpolicy\b/i] },
   { id: "INVESTMENTS", topicLabel: "investment portfolio", patterns: [/invest/i, /portfolio/i, /allocation/i] },
-  { id: "SPENDING", topicLabel: "spending by category", patterns: [/\bspend/i, /\bexpense/i, /where.*money.*go/i] },
+  { id: "SPENDING", topicLabel: "spending by category", patterns: [/\bspend/i, /\bexpense/i, /where.*money.*go/i, /\bdaily\b/i, /per\s+day/i] },
   { id: "SUBSCRIPTIONS", topicLabel: "recurring subscriptions", patterns: [/subscription/i, /recurring charge/i] },
 ];
 
