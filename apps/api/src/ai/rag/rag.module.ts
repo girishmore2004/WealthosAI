@@ -14,6 +14,7 @@ import { DashboardModule } from "../../dashboard/dashboard.module";
 import { AiModule } from "../ai.module";
 import { FinancialFactsModule } from "../../common/financial-facts/financial-facts.module";
 import { FinancialCoreModule } from "../../financial-core/financial-core.module";
+import { FinancialEngineModule } from "../financial-engine/financial-engine.module";
 
 // Imports AiModule for AiGatewayService/AiQueueService (query rewriting, reranking,
 // synthesis, and indexing all call through the gateway; indexing also enqueues/
@@ -23,7 +24,8 @@ import { FinancialCoreModule } from "../../financial-core/financial-core.module"
 @Module({
   // FinancialFactsModule / FinancialCoreModule: the index now also holds structured facts about
   // the user's own records (FINANCIAL_FACT), built from FinancialFactsService and DataHealthService.
-  imports: [AiModule, ReportsModule, DashboardModule, FinancialFactsModule, FinancialCoreModule],
+  // FinancialEngineModule: deterministic live answers for questions about the user's own numbers.
+  imports: [AiModule, ReportsModule, DashboardModule, FinancialFactsModule, FinancialCoreModule, FinancialEngineModule],
   controllers: [RagController],
   providers: [
     ChunkerService,
