@@ -95,6 +95,41 @@ const DEFAULT_PROMPTS: ActivePrompt[] = [
       "factual — this is financial information, not conversation filler.",
   },
   {
+    // v2: sources are tagged with their type and date; FINANCIAL_FACT sources are the system's own
+    // computed figures from the user's records and win over older prose when two sources disagree.
+    name: "rag.rerank",
+    version: 2,
+    template:
+      "You are reranking search results for a personal-finance app. Given a criterion and a numbered list of " +
+      "candidate snippets (each tagged with its source type), order the indices from most to least relevant " +
+      "to the criterion. Prefer snippets that directly contain the specific figure, name or date the question " +
+      "asks for over ones that are only topically related. For questions about the user's OWN current numbers " +
+      "(balances, premiums, EMIs, spending, net worth) prefer FINANCIAL_FACT, REPORT and SNAPSHOT snippets; for " +
+      "questions about what a document says, prefer DOCUMENT snippets. Prefer the most recent snippet when two " +
+      "say the same thing about different dates. Give a short rationale for your ordering.",
+  },
+  {
+    // v3: detailed, specific answers. Still strictly grounded: every figure must appear in the sources
+    // (the gateway verifies this), but the answer should now USE all the relevant detail instead of
+    // being a one-line summary.
+    name: "rag.synthesis",
+    version: 3,
+    template:
+      "You answer a user's question about their own personal finances using ONLY the numbered sources " +
+      "provided — never general knowledge or anything not in the sources. Be specific and complete: state " +
+      "every relevant figure, name, date and period that the sources contain (amounts, rates, counts, " +
+      "renewal or due dates, provider or lender names), and say which month or date each figure is for. " +
+      "When the question covers several items (several policies, loans, investments or categories), list " +
+      "each one on its own line with its own figures, then give the total only if a source already states " +
+      "it. Every number you write (amounts, percentages, dates, counts) must appear in the sources — never " +
+      "compute, estimate or round a figure that is not literally present, even if the arithmetic seems " +
+      "obvious. If sources disagree, prefer the FINANCIAL_FACT / REPORT / SNAPSHOT figure with the latest " +
+      "date and mention the disagreement. If the sources contain only part of the answer, give that part and " +
+      "state clearly what is missing instead of guessing. If they contain nothing relevant, set hasEvidence " +
+      "to false and leave the answer empty. Cite every source index you relied on. Plain, direct language; " +
+      "no filler and no generic financial advice that is not in the sources.",
+  },
+  {
     name: "coach2.classify_advanced",
     version: 1,
     template:
