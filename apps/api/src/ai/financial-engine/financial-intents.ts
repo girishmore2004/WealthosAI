@@ -63,7 +63,31 @@ function projectionParams(q: string): ProjectionParams | null {
   return { years, annualReturn: parsePercent(q) };
 }
 
-export function routeIntent(question: string): RoutedIntent {
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+/** Capitalised month name for a "YYYY-MM" key. Name only (no year digits): the answer text then carries no
+ * figure the numeric verifier could mistake for an unsupported number. */
+export function monthLabel(month: string): string {
+  const name = MONTH_NAMES[Number(month.slice(5, 7)) - 1] ?? month;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** A COMPLETED month named in the question, as "YYYY-MM": "last month", "in September", "for march".
+ * Only the previous 11 months resolve (so a name is never ambiguous about its year) and never the current
+ * month, which is the default. Returns undefined when no such month is named. */
+export function parseNamedMonth(q: string, now: Date = new Date()): string | undefined {
+  const key = (y: number, m0: number) => `${y}-${String(m0 + 1).padStart(2, "0")}`;
+  const y = now.getUTCFullYear();
+  const m0 = now.getUTCMonth();
+  if (/\blast month\b|\bprevious month\b|\bprior month\b/.test(q)) return m0 === 0 ? key(y - 1, 11) : key(y, m0 - 1);
+  const m = q.match(/\b(?:in|for|during|of)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b/);
+  if (!m) return undefined;
+  const target = MONTH_NAMES.indexOf(m[1]);
+  if (target === m0) return undefined;
+  return target < m0 ? key(y, target) : key(y - 1, target);
+}
+
+export function routeIntent(question: string, now: Date = new Date()): RoutedIntent {
   const q = question.toLowerCase().trim();
 
   const projection = has(q, /\bwhat if\b|\bif i (increase|decrease|raise|cut|reduce|lower)\b/) ? null : projectionParams(q);
@@ -79,8 +103,11 @@ export function routeIntent(question: string): RoutedIntent {
     return { intent: "TRANSACTION_QUERY" };
   }
 
+  const named = parseNamedMonth(q, now);
+  const withMonth = <T extends RoutedIntent>(r: T): T => (named ? { ...r, month: named } : r);
+
   const metric = metricFor(q);
-  if (metric) return has(q, /\bthis year\b|\byear to date\b|\bytd\b/) ? { intent: "FINANCIAL_CALCULATION", metric, span: "YEAR" } : { intent: "FINANCIAL_CALCULATION", metric };
+  if (metric) return has(q, /\bthis year\b|\byear to date\b|\bytd\b/) ? { intent: "FINANCIAL_CALCULATION", metric, span: "YEAR" } : withMonth({ intent: "FINANCIAL_CALCULATION", metric });
 
   if (has(q, /\b(receivables?|owe me|owes me|owed to me|money i (gave|lent|loaned)|i (lent|loaned)|who owes)\b/) && !has(q, /\b(emi|mortgage)\b/)) return { intent: "RECEIVABLES" };
   if (has(q, /\b(daily average|average (daily|per day)|per day|top (spending )?categor(y|ies)|biggest (spending )?categor(y|ies)|categor(y|ies)\b.{0,40}\b(change|changed|compared|increase|decrease|up|down)|largest (expense|transaction)|highest spending day|essential vs|discretionary)\b/)) return { intent: "EXPENSE_BREAKDOWN" };
@@ -94,8 +121,8 @@ export function routeIntent(question: string): RoutedIntent {
   if (has(q, /\bgoals?\b/)) return { intent: "GOAL" };
   if (has(q, /\b(tax|80c|80d|itr|deduction)\b/)) return { intent: "TAX" };
   if (has(q, /\b(invest(ed|ment|ments)?|sip|portfolio|mutual funds?|stocks?)\b/)) return { intent: "INVESTMENT_ANALYSIS" };
-  if (has(q, /\b(expenses?|spending|spent)\b/)) return { intent: "EXPENSE_ANALYSIS" };
-  if (has(q, /\b(income|salary|earn(ed|ing)?)\b/)) return { intent: "INCOME_ANALYSIS" };
+  if (has(q, /\b(expenses?|spending|spent)\b/)) return withMonth({ intent: "EXPENSE_ANALYSIS" });
+  if (has(q, /\b(income|salary|earn(ed|ing)?)\b/)) return withMonth({ intent: "INCOME_ANALYSIS" });
   if (has(q, /\b(plan|how (should|can|do) i|strategy|roadmap)\b/)) return { intent: "PLANNING" };
   if (has(q, /\b(summary|overview|how am i doing|financial health|snapshot)\b/)) return { intent: "FINANCIAL_SUMMARY" };
   return { intent: "GENERAL_FINANCIAL_EDUCATION" };
