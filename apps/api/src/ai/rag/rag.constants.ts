@@ -55,6 +55,15 @@ export const TOP_K_RERANKED = 6;
 // candidate list wasn't empty.
 export const MIN_EVIDENCE_SIMILARITY = 0.35;
 
+// Lexical evidence bar: at least this share of the question's content words (stop words removed,
+// stemmed) must literally appear in a chunk for it to count as evidence when its semantic similarity is
+// below MIN_EVIDENCE_SIMILARITY — see HybridRetrievalService#hasEvidence.
+export const LEXICAL_EVIDENCE_MIN_COVERAGE = 0.67;
+
+// At most this many chunks from one source (document / report / fact) reach the candidate pool, so a
+// long source cannot crowd out every other source.
+export const MAX_CHUNKS_PER_SOURCE = 5;
+
 // "hybrid weight optimization per query type" — factual lookups lean harder on
 // keyword/exact-term matching than an open-ended exploratory question would, while
 // comparative/analytical questions lean a little more on recency (both periods being
