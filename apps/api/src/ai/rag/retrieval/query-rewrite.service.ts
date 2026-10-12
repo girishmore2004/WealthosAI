@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { AiUnavailableException } from "../../exceptions/ai.exceptions";
 import { QueryComplexity, QueryType } from "../rag.constants";
+import { contentTerms, expansionTerms } from "./keyword-scorer.service";
 
 const rewriteSchema = z.object({
   // Alternate phrasings of the same question — improves recall against chunk text
@@ -50,7 +51,7 @@ export class QueryRewriteService {
 
       return {
         originalQuery: query,
-        rewrittenQueries: result.data.rewrittenQueries,
+        rewrittenQueries: withDeterministicPhrasings(query, result.data.rewrittenQueries),
         isMultiHop: result.data.isMultiHop,
         subQuestions: result.data.isMultiHop ? result.data.subQuestions : [],
         queryType: result.data.queryType,
@@ -68,7 +69,7 @@ export class QueryRewriteService {
       if (err instanceof AiUnavailableException || err instanceof Error) {
         return {
           originalQuery: query,
-          rewrittenQueries: [query],
+          rewrittenQueries: withDeterministicPhrasings(query, [query]),
           isMultiHop: false,
           subQuestions: [],
           queryType: "exploratory",
@@ -78,6 +79,27 @@ export class QueryRewriteService {
       throw err;
     }
   }
+}
+
+/** Adds two model-free phrasings to whatever the model produced (or to the bare question when the
+ * model is unavailable), so recall never depends on a model call:
+ *   1. the question with the user's content words only (stop words stripped), which embeds and matches
+ *      far better than "tell me about my ... please";
+ *   2. the question plus related finance terms ("premium" -> policy, cover, renewal ...).
+ * The user's original wording always stays first; the list is de-duplicated and capped at 4. */
+export function withDeterministicPhrasings(query: string, modelPhrasings: string[]): string[] {
+  const out: string[] = [];
+  const push = (q: string) => {
+    const t = q.trim();
+    if (t && !out.some((o) => o.toLowerCase() === t.toLowerCase())) out.push(t);
+  };
+  push(query);
+  for (const q of modelPhrasings) push(q);
+  const core = contentTerms(query).join(" ");
+  if (core) push(core);
+  const extra = expansionTerms(query);
+  if (core && extra.length > 0) push(`${core} ${extra.join(" ")}`);
+  return out.slice(0, 4);
 }
 
 /** Local, model-free fallback for `complexity` when the gateway call itself is
