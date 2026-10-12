@@ -404,7 +404,7 @@ function ReviewItemRow({
   const [localError, setLocalError] = useState<string | null>(null);
 
   const confidence = Number(item.overallConfidence);
-  const tier = confidence >= 0.7 ? "text-gain" : confidence >= 0.4 ? "text-marigold-600" : "text-loss";
+  const tier = confidence >= 0.7 ? "text-gain" : confidence >= 0.4 ? "text-warn" : "text-loss";
 
   const approve = async () => {
     setBusy(true);
