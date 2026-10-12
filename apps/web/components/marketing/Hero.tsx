@@ -18,7 +18,7 @@ export function Hero() {
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Link
             href="/login"
-            className="w-full rounded-sm bg-marigold-500 px-6 py-3 text-sm font-medium text-white shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98] sm:w-auto"
+            className="w-full rounded-sm bg-marigold-500 px-6 py-3 text-sm font-medium text-onaccent shadow-sm transition-all duration-150 hover:bg-marigold-600 hover:shadow active:scale-[0.98] sm:w-auto"
           >
             Get started - it's free
           </Link>
