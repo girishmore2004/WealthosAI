@@ -5,6 +5,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import type { ExpenseAnalyticsDTO } from "@wealthos/types";
 import { formatINR } from "@/lib/format";
 import { formatDay, formatMonth } from "@/lib/dates";
+import { CHART, axisTick, tooltipStyle } from "@/lib/chart-theme";
 
 type Grain = "daily" | "weekly" | "monthly";
 
@@ -54,15 +55,15 @@ export function SpendingTrendChart({ analytics, defaultGrain = "daily" }: { anal
         <div style={{ width: "100%", height: 220 }} role="img" aria-label={`${grain} spending chart`}>
           <ResponsiveContainer>
             <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-              <CartesianGrid vertical={false} stroke="#E9E5D8" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A6" }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-              <YAxis tick={{ fontSize: 11, fill: "#8A93A6" }} axisLine={false} tickLine={false} width={48} tickFormatter={(v: number) => (v >= 1000 ? `${Math.round(v / 1000)}k` : String(v))} />
+              <CartesianGrid vertical={false} stroke={CHART.grid} />
+              <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+              <YAxis tick={axisTick} axisLine={false} tickLine={false} width={48} tickFormatter={(v: number) => (v >= 1000 ? `${Math.round(v / 1000)}k` : String(v))} />
               <Tooltip
                 formatter={(value: number) => [formatINR(value), "Spent"]}
                 labelFormatter={(_label, payload) => (payload && payload[0] ? (payload[0].payload as { full: string }).full : "")}
-                contentStyle={{ fontSize: 12, borderRadius: 8, borderColor: "#E9E5D8" }}
+                contentStyle={tooltipStyle}
               />
-              <Bar dataKey="total" fill="#D98F2B" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="total" fill={CHART.primary} radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
