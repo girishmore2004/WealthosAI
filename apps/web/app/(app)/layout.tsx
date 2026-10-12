@@ -56,9 +56,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-paper">
+    <div className="min-h-screen bg-paper transition-[padding] duration-200 lg:pl-[var(--sidebar-w)]">
       <AppNav />
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">{children}</main>
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">{children}</main>
     </div>
   );
 }
