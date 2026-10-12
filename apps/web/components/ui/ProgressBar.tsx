@@ -11,9 +11,9 @@ export function ProgressBar({ percent, label, tone = "gain" }: { percent: number
       aria-valuemax={100}
       aria-valuenow={percent === null ? undefined : Math.round(Math.min(100, Math.max(0, percent)))}
       aria-valuetext={percent === null ? "No target set" : `${percent}%`}
-      className="h-2.5 w-full overflow-hidden rounded-full bg-surface-muted"
+      className="h-2.5 w-full overflow-hidden rounded-full bg-line/70"
     >
-      <div className={`h-full rounded-full transition-all ${tone === "warning" ? "bg-marigold-500" : "bg-gain"}`} style={{ width: `${clamped}%` }} />
+      <div className={`h-full rounded-full transition-all ${tone === "warning" ? "bg-warn" : "bg-gain"}`} style={{ width: `${clamped}%` }} />
     </div>
   );
 }
