@@ -92,6 +92,21 @@ export interface AiCallOptions {
    * logged/returned for the caller's own UI/handling, but never blocks the response —
    * safe default for existing callers that don't yet check `hallucinationRisk`. */
   rejectOnLowGrounding?: boolean;
+  /** Selects the user-facing text of a structured result that the grounding check should
+   * score. Defaults to a projection of every string/number value in the result that drops
+   * object keys, booleans and structural numbers (indices, ranks, confidence) — see
+   * collectGroundableText() in grounding.service.ts. Callers whose result has a single
+   * prose field (e.g. RAG synthesis' `answer`) should pass it explicitly so citation
+   * bookkeeping can never be mistaken for financial claims. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  groundingText?: (result: any) => string;
+
+  // --- Retry control ---------------------------------------------------------------
+  /** Maximum corrective retries (schema OR grounding) after the first attempt. Defaults
+   * to 2 (unchanged shared behaviour) and is clamped to 0-2. A feature whose failure
+   * mode is deterministic and has a safe local fallback (e.g. Scenario Studio's prompt
+   * parser) can lower it to avoid paying for repeated, near-identical LLM calls. */
+  maxCorrectiveRetries?: number;
 }
 
 /** Every AiGatewayService call returns this shape. `confidence` is explained in
@@ -158,10 +173,43 @@ export function withConfidence<T extends z.ZodTypeAny>(schema: T) {
 export const classificationEnvelope = <T extends [string, ...string[]]>(labels: T) =>
   withConfidence(z.object({ label: z.enum(labels) }));
 
+/** The schema limit on a ranking rationale. Unchanged from the original `.max(500)`. */
+export const RATIONALE_MAX_CHARS = 500;
+export const DEFAULT_RATIONALE = "No rationale provided.";
+
+/** Brings a model-written ranking rationale inside RATIONALE_MAX_CHARS without a retry.
+ * The rationale is explanatory prose only — it never carries a score, index or identity —
+ * so shortening it cannot change a ranking. Recoverable cases are normalised:
+ *   - overlong text is cut at the last sentence end (or word boundary) that fits, with an
+ *     ellipsis when it was cut mid-sentence, and never exceeds `max` characters;
+ *   - missing, empty/whitespace-only or non-string values get DEFAULT_RATIONALE.
+ * Whitespace runs are collapsed so a rationale padded with newlines is not penalised. */
+export function normalizeRationale(value: unknown, max: number = RATIONALE_MAX_CHARS): string {
+  if (typeof value !== "string") return DEFAULT_RATIONALE;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return DEFAULT_RATIONALE;
+  if (collapsed.length <= max) return collapsed;
+
+  const budget = Math.max(1, max - 1); // leave one character for the ellipsis
+  let slice = collapsed.slice(0, budget);
+  // Never leave half of a surrogate pair at the cut.
+  const last = slice.charCodeAt(slice.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) slice = slice.slice(0, -1);
+
+  const sentenceEnd = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("! "), slice.lastIndexOf("? "));
+  if (sentenceEnd >= budget * 0.5) return slice.slice(0, sentenceEnd + 1);
+
+  const wordEnd = slice.lastIndexOf(" ");
+  const cut = wordEnd >= budget * 0.5 ? slice.slice(0, wordEnd) : slice;
+  return `${cut.replace(/[\s,;:\-\u2013\u2014]+$/, "")}\u2026`;
+}
+
 export const rankingEnvelope = withConfidence(
   z.object({
     orderedIndices: z.array(z.number().int().min(0)).describe("Item indices, best-first, per the given criterion."),
-    rationale: z.string().max(500),
+    rationale: z
+      .preprocess((v) => normalizeRationale(v), z.string().max(RATIONALE_MAX_CHARS))
+      .describe("One or two short sentences (under 300 characters) explaining the ordering"),
   }),
 );
 
