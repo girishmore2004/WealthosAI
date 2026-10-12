@@ -66,6 +66,7 @@ export interface IngestReviewItemData {
   anomalyZScore: number | null;
   transactionKind: TransactionKind;
   reconciliationNote: string | null;
+  matchedRecordId: string | null;
   missingFields: string[];
   overallConfidence: number;
   rationale: string;
@@ -135,6 +136,16 @@ export class CopilotIngestionService {
     defaultPaymentMethod: PaymentMethod,
     sourceDocumentId: string,
   ) {
+    // Retry safety: the document.ocr job is retried by the queue (3 attempts). If an earlier attempt already
+    // created this document's batch and a LATER step of the job failed, a retry must not stage the same
+    // statement a second time (duplicate review items would double-count when approved).
+    const existing = await this.prisma.client.ingestionBatch.findFirst({
+      where: { userId, sourceDocumentId },
+      orderBy: { createdAt: "desc" },
+      include: { items: true },
+    });
+    if (existing) return existing;
+
     const { parsed: deterministicallyParsed } = parseStatementText(ocrText);
     const totalLines = ocrText.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
 
@@ -168,6 +179,23 @@ export class CopilotIngestionService {
     ocrExtractionConfidence: number | null,
     sourceDocumentId: string | null,
   ) {
+    // Re-importing the exact same statement text (a double click, or the same file uploaded twice) would stage
+    // every line again. An identical, still-unreviewed batch from the last 24 hours is returned instead.
+    const excerpt = scrubPii(rawText.slice(0, MAX_RAW_TEXT_EXCERPT_CHARS));
+    const totalLinesInInput = rawText.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+    const recentSame = await this.prisma.client.ingestionBatch.findFirst({
+      where: {
+        userId,
+        rawTextExcerpt: excerpt,
+        totalLines: totalLinesInInput,
+        createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        items: { some: { status: "PENDING" } },
+      },
+      orderBy: { createdAt: "desc" },
+      include: { items: true },
+    });
+    if (recentSame) return recentSame;
+
     const { parsed: deterministicallyParsed, unparsedLines } = parseStatementText(rawText);
 
     // Cap how many leftover lines are actually offered to the AI fallback BEFORE
@@ -213,8 +241,8 @@ export class CopilotIngestionService {
         // purposes — see privacy/pii-scrub.util.ts for why this is a separate,
         // narrower pass than the redaction the AI Gateway already applies to anything
         // actually sent to a model.
-        rawTextExcerpt: scrubPii(rawText.slice(0, MAX_RAW_TEXT_EXCERPT_CHARS)),
-        totalLines: rawText.split(/\r?\n/).filter((l) => l.trim().length > 0).length,
+        rawTextExcerpt: excerpt,
+        totalLines: totalLinesInInput,
         parsedCount: allParsed.length,
         unparsedCount: stillUnparsedCount,
         sourceDocumentId,
@@ -240,6 +268,7 @@ export class CopilotIngestionService {
             anomalyZScore: item.anomalyZScore,
             transactionKind: item.transactionKind,
             reconciliationNote: item.reconciliationNote,
+            matchedRecordId: item.matchedRecordId,
             missingFields: item.missingFields,
             overallConfidence: item.overallConfidence,
             rationale: item.rationale,
@@ -323,6 +352,7 @@ export class CopilotIngestionService {
       anomalyZScore: anomalyResult.anomalyZScore,
       transactionKind: reconciliationResult.transactionKind,
       reconciliationNote: reconciliationResult.reconciliationNote,
+      matchedRecordId: reconciliationResult.matchedRecordId ?? null,
       missingFields,
       overallConfidence: score.overallConfidence,
       rationale: score.rationale,
