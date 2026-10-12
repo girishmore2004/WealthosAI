@@ -86,6 +86,11 @@ export class AnswerSynthesisService {
         cacheable: false,
         groundingContext,
         rejectOnLowGrounding: true,
+        // Score only the prose the user will read. The structured result also carries
+        // `citedIndices` (e.g. [0,1,2]); scoring the serialized object made those
+        // citation indices look like invented figures and triggered spurious
+        // "figures not present in the given facts: 0,1,2" corrective retries.
+        groundingText: (r: z.infer<typeof synthesisSchema>) => r.answer,
       });
     } catch (err) {
       // Synthesis is the ONE gateway call in the RAG pipeline (query rewrite,
