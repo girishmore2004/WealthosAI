@@ -103,6 +103,14 @@ describe("AI Search pipeline — ambiguity and no-evidence behaviour", () => {
     expect(result.citedSources.map((c) => c.chunkId)).toEqual(["a"]);
   });
 
+  it("tells the user when the index returned nothing at all, even if the live figures answered", async () => {
+    const { service } = buildRag({
+      retrieval: { search: jest.fn().mockResolvedValue([]), hasEvidence: jest.fn().mockReturnValue(false) },
+    });
+    const result = await service.search("user-1", "Do I own any cryptocurrency?");
+    expect(result.explanation).toMatch(/Reindex my data/);
+  });
+
   it("never reports answer confidence above the measured grounding", async () => {
     const { service } = buildRag({
       synth: { hasEvidence: true, answer: "Spending was 111036.", citedChunkIds: ["a"], confidence: 0.99, groundingScore: 0.8, hallucinationRisk: "medium" },
@@ -138,6 +146,25 @@ describe("AI Search pipeline — retrieval efficiency, isolation and logging", (
       expect(call[0]).toBe("user-1");
       expect(call[3].candidates).toBe(rows);
     }
+  });
+
+  it("says so when nothing is indexed for the user, instead of silently answering from live records only", async () => {
+    const { service } = buildRag({
+      plan: plan({ rewrittenQueries: ["insurance policies", "policies on file"] }),
+      retrieval: { loadCandidates: jest.fn().mockResolvedValue([]), search: jest.fn().mockResolvedValue([]), hasEvidence: jest.fn().mockReturnValue(false) },
+    });
+    const result = await service.search("user-1", "What insurance policies do I have on file?");
+    expect(result.explanation).toMatch(/Nothing is indexed for your account/);
+    expect(result.explanation).toMatch(/Reindex/);
+  });
+
+  it("does not claim the index is empty when it has rows but nothing matched", async () => {
+    const { service } = buildRag({
+      plan: plan({ rewrittenQueries: ["a loan", "b loan"] }),
+      retrieval: { loadCandidates: jest.fn().mockResolvedValue([{ id: "row" }]), search: jest.fn().mockResolvedValue([]), hasEvidence: jest.fn().mockReturnValue(false) },
+    });
+    const result = await service.search("user-1", "Do I own any cryptocurrency?");
+    expect(result.explanation).not.toMatch(/Nothing is indexed/);
   });
 
   it("scopes every retrieval stage to the requesting user", async () => {
