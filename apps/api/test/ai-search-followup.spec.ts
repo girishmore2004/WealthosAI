@@ -75,3 +75,24 @@ describe("a question about what a document says", () => {
     expect(result.answer).toBe("Your loans total X.");
   });
 });
+
+describe("relationship expansion with shared rows", () => {
+  it("does not hit the database again per phrasing when the user's rows are already loaded", async () => {
+    const { HybridRetrievalService } = jest.requireActual("../src/ai/rag/retrieval/hybrid-retrieval.service");
+    const { KeywordScorerService } = jest.requireActual("../src/ai/rag/retrieval/keyword-scorer.service");
+    const row = (id: string, sourceId: string, chunkIndex: number, text: string) => ({
+      id, userId: "u1", sourceType: "DOCUMENT", sourceId, chunkIndex, text, parentText: text, metadata: {}, embedding: [],
+      embeddingModelVersion: 1, sourcePriority: 3, sourceCreatedAt: new Date(), relatedSourceIds: [],
+    });
+    const rows = [row("a0", "doc", 0, "home loan prepayment charges nil"), row("a1", "doc", 1, "foreclosure terms and conditions apply")];
+    const findMany = jest.fn().mockResolvedValue(rows);
+    const retrieval = new HybridRetrievalService({ client: { aiEmbeddingChunk: { findMany } } }, { embedWithVersion: jest.fn().mockRejectedValue(new Error("x")) }, new KeywordScorerService());
+
+    const shared = await retrieval.loadCandidates("u1", {});
+    expect(findMany).toHaveBeenCalledTimes(1);
+    const result = await retrieval.search("u1", "home loan prepayment", {}, { candidates: shared });
+    expect(result.length).toBeGreaterThan(0);
+    await retrieval.search("u1", "loan prepayment charges", {}, { candidates: shared });
+    expect(findMany).toHaveBeenCalledTimes(1); // no per-phrasing expansion query
+  });
+});
