@@ -40,9 +40,13 @@ const RULES: RedactionRule[] = [
   { type: "upi", pattern: /\b[\w.-]{2,}@[a-z]{2,}\b/gi, replacement: "[redacted-upi]" },
   // A labelled identifier: "policy no: ABC12345", "a/c 123456789012", "folio number 1234567/89".
   // Only the identifier is replaced; the label stays so the sentence still reads.
+  // The identifier must contain at least one digit (the lookahead). Without it the case-insensitive
+  // pattern treated ANY 6+ letter word after a label as an id, so "policy covers" became
+  // "policy [redacted-id]", "loan agreement" became "loan [redacted-id]", and uploaded policy / loan
+  // documents lost the very words a question is about, both in the index and in the model input.
   {
     type: "labelled-id",
-    pattern: /\b((?:policy|account|a\/c|acct|folio|loan|customer|membership|uan|pran)\s*(?:no\.?|number|num|#|id)?\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\/-]{5,})/gi,
+    pattern: /\b((?:policy|account|a\/c|acct|folio|loan|customer|membership|uan|pran)\s*(?:no\.?|number|num|#|id)?\s*[:\-]?\s*)((?=[A-Z0-9\/-]*\d)[A-Z0-9][A-Z0-9\/-]{5,})/gi,
     replacement: "$1[redacted-id]",
   },
   // A bare 9-18 digit run (bank account numbers). Last, so 12-digit Aadhaar / 13-16 digit
