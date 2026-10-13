@@ -2,8 +2,16 @@ import { Injectable } from "@nestjs/common";
 import { z } from "zod";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { AiUnavailableException } from "../../exceptions/ai.exceptions";
-import { QueryComplexity, QueryType } from "../rag.constants";
+import { QueryComplexity, QueryType, RAG_STAGE_TIMEOUTS_MS, REWRITE_MAX_CORRECTIVE_RETRIES } from "../rag.constants";
 import { contentTerms, expansionTerms } from "./keyword-scorer.service";
+import {
+  QueryUnderstanding,
+  heuristicPlanFields,
+  introducesNoNewFigures,
+  rewritePreservesMeaning,
+  understandQuery,
+} from "./query-understanding";
+import { withStageTimeout } from "../stage-timeout";
 
 const rewriteSchema = z.object({
   // Alternate phrasings of the same question — improves recall against chunk text
@@ -31,6 +39,12 @@ export interface QueryPlan {
   subQuestions: string[];
   queryType: QueryType;
   complexity: QueryComplexity;
+  /** Deterministic reading of the question (intent, explicit dates/amounts, negations, ambiguity). */
+  understanding?: QueryUnderstanding;
+  /** "model" when the model's rewrite/classification was used, "fallback" when the local path was. */
+  planSource?: "model" | "fallback";
+  /** Observability only — never contains question text or figures. */
+  planMeta?: { cacheHit: boolean; retries: number; rejectedPhrasings: number; latencyMs: number };
 }
 
 @Injectable()
@@ -38,45 +52,92 @@ export class QueryRewriteService {
   constructor(private gateway: AiGatewayService) {}
 
   async plan(userId: string, query: string): Promise<QueryPlan> {
+    const startedAt = Date.now();
+    const understanding = understandQuery(query);
+
+    // Nothing to search for (e.g. "what about it?"): skip the model call entirely.
+    if (understanding.needsClarification) {
+      return {
+        originalQuery: query,
+        rewrittenQueries: [query],
+        isMultiHop: false,
+        subQuestions: [],
+        queryType: "exploratory",
+        complexity: "simple",
+        understanding,
+        planSource: "fallback",
+        planMeta: { cacheHit: false, retries: 0, rejectedPhrasings: 0, latencyMs: 0 },
+      };
+    }
+
     try {
-      const result = await this.gateway.extract(query, rewriteSchema, {
-        feature: "rag.query_rewrite",
-        promptName: "rag.query_rewrite",
-        userId,
-        cacheable: true,
-      });
+      const result = await withStageTimeout(
+        this.gateway.extract(query, rewriteSchema, {
+          feature: "rag.query_rewrite",
+          promptName: "rag.query_rewrite",
+          userId,
+          cacheable: true,
+          // The original query is always searched too, so a failed rewrite is not worth repeating.
+          maxCorrectiveRetries: REWRITE_MAX_CORRECTIVE_RETRIES,
+        }),
+        RAG_STAGE_TIMEOUTS_MS.rewrite,
+        "Query rewrite",
+      );
+
+      // A phrasing that drops an amount/date or flips a negation changes what the user asked.
+      const safePhrasings = result.data.rewrittenQueries.filter((q) => rewritePreservesMeaning(query, q));
+      const rejectedPhrasings = result.data.rewrittenQueries.length - safePhrasings.length;
+
+      const safeSubQuestions = result.data.isMultiHop
+        ? result.data.subQuestions.filter((q) => introducesNoNewFigures(query, q) && !hasNewNegation(query, q))
+        : [];
+      const isMultiHop = result.data.isMultiHop && safeSubQuestions.length > 0;
 
       return {
         originalQuery: query,
-        rewrittenQueries: withDeterministicPhrasings(
-          query,
-          result.data.rewrittenQueries,
-        ),
-        isMultiHop: result.data.isMultiHop,
-        subQuestions: result.data.isMultiHop
-          ? result.data.subQuestions
-          : [],
+        rewrittenQueries: withDeterministicPhrasings(query, safePhrasings),
+        isMultiHop,
+        subQuestions: isMultiHop ? safeSubQuestions : [],
         queryType: result.data.queryType,
         complexity: result.data.complexity,
+        understanding,
+        planSource: "model",
+        planMeta: {
+          cacheHit: result.meta?.cacheHit ?? false,
+          retries: result.meta?.retries ?? 0,
+          rejectedPhrasings,
+          latencyMs: Date.now() - startedAt,
+        },
       };
     } catch (err) {
       // Query rewriting and classification are enhancements, not hard dependencies.
-      // If the model call or validation fails, retrieve using the original query
-      // instead of failing the entire search.
+      // If the model call, validation or time budget fails, retrieve using the original
+      // query instead of failing the entire search.
       if (err instanceof AiUnavailableException || err instanceof Error) {
+        const local = heuristicPlanFields(query, understanding);
         return {
           originalQuery: query,
           rewrittenQueries: [query],
           isMultiHop: false,
           subQuestions: [],
-          queryType: "exploratory",
-          complexity: heuristicComplexity(query),
+          queryType: local.queryType,
+          complexity: local.complexity,
+          understanding,
+          planSource: "fallback",
+          planMeta: { cacheHit: false, retries: 0, rejectedPhrasings: 0, latencyMs: Date.now() - startedAt },
         };
       }
 
       throw err;
     }
   }
+}
+
+const NEGATION_TOKENS = /\b(not|no|never|without|excluding|exclude|except|besides|ignoring)\b/i;
+
+/** A sub-question must not introduce a negation the user did not write. */
+function hasNewNegation(original: string, derived: string): boolean {
+  return NEGATION_TOKENS.test(derived) && !NEGATION_TOKENS.test(original);
 }
 
 /**
@@ -123,29 +184,4 @@ export function withDeterministicPhrasings(
   }
 
   return out.slice(0, 4);
-}
-
-/**
- * Local fallback for complexity classification when the AI gateway is unavailable.
- *
- * This intentionally uses simple heuristics because it only runs as a fallback.
- * The default query type remains "exploratory", which uses the default retrieval
- * weight profile when the model cannot classify the query.
- */
-function heuristicComplexity(query: string): QueryComplexity {
-  const wordCount = query.trim().split(/\s+/).filter(Boolean).length;
-
-  const hasCompoundSignal =
-    /\band\b|\bcompare\b|\bversus\b|\bvs\.?\b/i.test(query) ||
-    (query.match(/\?/g)?.length ?? 0) > 1;
-
-  if (hasCompoundSignal) {
-    return "complex";
-  }
-
-  if (wordCount <= 6) {
-    return "simple";
-  }
-
-  return "moderate";
 }
