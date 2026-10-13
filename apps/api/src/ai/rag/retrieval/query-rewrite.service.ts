@@ -17,13 +17,15 @@ const rewriteSchema = z.object({
   // Alternate phrasings of the same question — improves recall against chunk text
   // that doesn't share the user's exact wording (e.g. "how's my debt" vs. "what do I
   // owe" vs. "loan balance").
-  rewrittenQueries: z.array(z.string()).min(1).max(3),
+  // A model that returns a 4th phrasing should not discard the whole rewrite: keeping the first three
+  // phrasings preserves meaning (they are alternates of the same question).
+  rewrittenQueries: z.preprocess((v) => (Array.isArray(v) ? v.slice(0, 3) : v), z.array(z.string()).min(1).max(3)),
 
   // True when the question genuinely bundles more than one thing that would each need
   // their own retrieval pass to answer well.
   isMultiHop: z.boolean(),
 
-  subQuestions: z.array(z.string()).max(4),
+  subQuestions: z.preprocess((v) => (Array.isArray(v) ? v.slice(0, 4) : v), z.array(z.string()).max(4)),
 
   // Drives HybridRetrievalService's per-query-type weight profile.
   queryType: z.enum(["factual", "comparative", "analytical", "exploratory"]),
