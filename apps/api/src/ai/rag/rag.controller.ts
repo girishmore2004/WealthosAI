@@ -41,9 +41,18 @@ export class RagController {
     // Idempotency key scoped to the current hour — re-clicking "reindex" within the
     // same hour returns the same job instead of queueing a redundant rebuild; a fresh
     // reindex is allowed again the following hour.
+    const requestedAt = Date.now();
     const idempotencyKey = `reindex:${new Date().toISOString().slice(0, 13)}`;
-    const job = await this.queue.enqueue("rag.reindex.user", { userId: user.id }, { userId: user.id, idempotencyKey });
-    return { jobId: job.id, status: job.status };
+    let job = await this.queue.enqueue("rag.reindex.user", { userId: user.id }, { userId: user.id, idempotencyKey });
+    // The idempotent response is right for a queued / running / finished job. It is wrong for a job that
+    // already FAILED: returning it would leave the index stale for the rest of the hour with no way to
+    // retry. A failed job is replaced once, under a key derived from its id (so repeat clicks still
+    // collapse onto the retry, and the 3/hour rate limit still bounds it).
+    if (job.status === "FAILED") {
+      job = await this.queue.enqueue("rag.reindex.user", { userId: user.id }, { userId: user.id, idempotencyKey: `${idempotencyKey}:retry:${job.id}` });
+    }
+    // `reused` lets the client say "already running / already done" instead of "started".
+    return { jobId: job.id, status: job.status, reused: job.createdAt.getTime() < requestedAt - 1000 };
   }
 
   @Get("history")
