@@ -20,7 +20,11 @@ export interface RerankResult {
   confidence: number;
 }
 
-const MAX_CHUNK_CHARS_FOR_RERANK = 500;
+// A child chunk is ~180 words (~1,100 chars). At 500 the reranker saw under half of it, so a passage
+// whose answer sits in the second half (a benefit list under a heading) looked irrelevant. 800 x the
+// 25-item cap stays inside the gateway's 6,000-token (~24k char) input budget, which would otherwise
+// trim the middle of the list.
+const MAX_CHUNK_CHARS_FOR_RERANK = 800;
 
 // Layer 4: cross-document reranking. `candidates` may span every source type/document
 // hybrid retrieval (and its Layer 3 relationship expansion) pulled in — this is what
