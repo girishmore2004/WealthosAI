@@ -145,7 +145,9 @@ export class HybridRetrievalService {
     const complexity: QueryComplexity = queryContext.complexity ?? "moderate";
     const candidateLimit = adaptiveCandidateLimit(complexity);
 
+    const tStart = Date.now();
     const filtered = queryContext.candidates ?? (await this.loadCandidates(userId, filters));
+    const tLoad = Date.now();
     if (filtered.length === 0) return [];
 
     // The query vector. If the embedding backend is unusable the search still works: it falls back to
@@ -164,6 +166,7 @@ export class HybridRetrievalService {
       this.logger.warn(`Query embedding unavailable, ranking lexically only: ${(err as Error).message}`);
     }
 
+    const tEmbed = Date.now();
     const baseWeights = RETRIEVAL_WEIGHT_PROFILES[queryType];
     const weights = queryEmbedding
       ? baseWeights
@@ -209,7 +212,12 @@ export class HybridRetrievalService {
     const pool = dedupeById([...seedSlice, ...expansions]);
     const deduped = suppressNearDuplicates(pool, NEAR_DUPLICATE_JACCARD_THRESHOLD);
 
-    return capPerSource(deduped.sort((a, b) => b.combinedScore - a.combinedScore), MAX_CHUNKS_PER_SOURCE).slice(0, candidateLimit);
+    const result = capPerSource(deduped.sort((a, b) => b.combinedScore - a.combinedScore), MAX_CHUNKS_PER_SOURCE).slice(0, candidateLimit);
+    // Where retrieval time goes (counts and milliseconds only): reading rows vs embedding the query vs scoring.
+    this.logger.log(
+      `retrieval timing ${JSON.stringify({ rows: filtered.length, sharedRows: Boolean(queryContext.candidates), loadMs: tLoad - tStart, embedMs: tEmbed - tLoad, scoreMs: Date.now() - tEmbed, ms: Date.now() - tStart })}`,
+    );
+    return result;
   }
 
   /** Whether any candidate is actually similar enough to the query to count as real
