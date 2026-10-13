@@ -1,0 +1,391 @@
+{
+  "description": "AI Search evaluation set. The corpus is SYNTHETIC (invented names and figures) and exists only to exercise retrieval. Each question states the evidence type it should retrieve and the behaviour expected of the answer; 'expectEvidence: false' cases must produce the controlled no-evidence / clarification response instead of an answer.",
+  "corpus": [
+    {
+      "id": "fact-loan-home",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "Home loan",
+      "text": "Loan: HDFC home loan. Outstanding principal 4500000. EMI 38500 per month. Interest rate 8.5% annual."
+    },
+    {
+      "id": "fact-ins-health",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "Health insurance policy",
+      "text": "Insurance policy: Star Health, type HEALTH. Premium 18500 yearly. Coverage 1000000. Renewal date 2027-03-15. Nominee: Asha."
+    },
+    {
+      "id": "fact-ins-term",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "Term insurance policy",
+      "text": "Insurance policy: LIC term plan, type TERM. Premium 24000 yearly. Coverage 10000000. Renewal date 2027-01-10."
+    },
+    {
+      "id": "fact-sip",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "Nifty index fund SIP",
+      "text": "Investment: Nifty 50 index fund, SIP active. Monthly contribution 10000. Current value 215000."
+    },
+    {
+      "id": "fact-ppf",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "PPF account",
+      "text": "Investment: PPF account. Current value 480000. Contributions 450000."
+    },
+    {
+      "id": "fact-goal",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "Emergency fund goal",
+      "text": "Goal: Emergency fund. Target amount 600000. Current amount 410000. Target date 2027-06-30."
+    },
+    {
+      "id": "fact-income-sep",
+      "sourceType": "FINANCIAL_FACT",
+      "title": "Income September 2026",
+      "text": "Income sources for 2026-09: Salary 110000, Freelance 10000. Total income 120000."
+    },
+    {
+      "id": "report-2026-09",
+      "sourceType": "REPORT",
+      "title": "Monthly report — 2026-09",
+      "text": "Monthly report for 2026-09. Income: 120000. Expenses: 61000. Net cashflow: 59000. Savings rate: 49.2%. Expenses by category: Groceries: 14200, Rent: 25000, Dining: 6800."
+    },
+    {
+      "id": "report-2026-08",
+      "sourceType": "REPORT",
+      "title": "Monthly report — 2026-08",
+      "text": "Monthly report for 2026-08. Income: 120000. Expenses: 58000. Net cashflow: 62000. Savings rate: 51.7%. Expenses by category: Groceries: 13100, Rent: 25000, Dining: 5200."
+    },
+    {
+      "id": "snapshot-1",
+      "sourceType": "SNAPSHOT",
+      "title": "Current financial snapshot",
+      "text": "Current financial snapshot. Net worth: 3200000. Available cash: 410000. Monthly income: 120000. Monthly expenses: 61000. Investments value: 695000. Total debt: 4500000."
+    },
+    {
+      "id": "doc-loan-agreement",
+      "sourceType": "DOCUMENT",
+      "title": "Home loan agreement.pdf",
+      "text": "Home loan agreement. Prepayment: no prepayment charges apply after 12 months for floating rate loans. Foreclosure charge: nil."
+    },
+    {
+      "id": "doc-health-policy",
+      "sourceType": "DOCUMENT",
+      "title": "Health insurance policy document.pdf",
+      "text": "Health insurance policy document. Waiting period for pre-existing diseases is 36 months. Room rent limit is 5000 per day."
+    },
+    {
+      "id": "alert-renewal",
+      "sourceType": "ALERT",
+      "title": "Insurance renewal due",
+      "text": "Insurance renewal due: Your Star Health policy renews on 2027-03-15."
+    },
+    {
+      "id": "coach-car",
+      "sourceType": "COACH_INTERACTION",
+      "title": "Can I afford a car?",
+      "text": "Q: Can I afford a car?\nA: A car loan EMI would reduce your monthly surplus; review your emergency fund first."
+    }
+  ],
+  "questions": [
+    {
+      "id": "q01",
+      "question": "What is my home loan EMI?",
+      "expectedIntent": "loans",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-loan-home"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAnswerBehavior": "States the EMI exactly as recorded; cites the loan fact."
+    },
+    {
+      "id": "q02",
+      "question": "What does my home loan agreement say about prepayment?",
+      "expectedIntent": "documents",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "doc-loan-agreement"
+      ],
+      "expectedEvidenceType": "DOCUMENT",
+      "expectedAnswerBehavior": "Quotes the document's prepayment terms with the document cited."
+    },
+    {
+      "id": "q03",
+      "question": "When does my health insurance renew?",
+      "expectedIntent": "insurance",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-ins-health",
+        "alert-renewal"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAnswerBehavior": "Gives the renewal date as recorded."
+    },
+    {
+      "id": "q04",
+      "question": "How much premium do I pay for my term plan?",
+      "expectedIntent": "insurance",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-ins-term"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAnswerBehavior": "States the premium and its frequency from the policy fact."
+    },
+    {
+      "id": "q05",
+      "question": "What is the current value of my PPF?",
+      "expectedIntent": "investments",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-ppf"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAnswerBehavior": "States the PPF value as recorded."
+    },
+    {
+      "id": "q06",
+      "question": "How much is my SIP in the Nifty index fund?",
+      "expectedIntent": [
+        "sips",
+        "investments"
+      ],
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-sip"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAnswerBehavior": "States the monthly contribution; does not invent returns."
+    },
+    {
+      "id": "q07",
+      "question": "How much did I spend on groceries in September 2026?",
+      "expectedIntent": "expenses",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "report-2026-09"
+      ],
+      "expectedEvidenceType": "REPORT",
+      "expectedDateRange": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "expectedAnswerBehavior": "Gives the September grocery figure only, not August's."
+    },
+    {
+      "id": "q08",
+      "question": "What was my savings rate in August 2026?",
+      "expectedIntent": "cash_flow",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "report-2026-08"
+      ],
+      "expectedEvidenceType": "REPORT",
+      "expectedDateRange": {
+        "from": "2026-08-01",
+        "to": "2026-08-31"
+      },
+      "expectedAnswerBehavior": "Gives the August savings rate, not September's."
+    },
+    {
+      "id": "q09",
+      "question": "What is my net worth?",
+      "expectedIntent": "portfolio",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "snapshot-1"
+      ],
+      "expectedEvidenceType": "SNAPSHOT",
+      "expectedAnswerBehavior": "States net worth from the snapshot (or the live engine) and its date."
+    },
+    {
+      "id": "q10",
+      "question": "How is my emergency fund goal progressing?",
+      "expectedIntent": [
+        "goals",
+        "cash_flow"
+      ],
+      "expectedLookup": "analytical",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-goal"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAnswerBehavior": "Reports target and current amounts as recorded; any percentage must come from a deterministic calculation, not the model."
+    },
+    {
+      "id": "q11",
+      "question": "What is my total income for 2026-09?",
+      "expectedIntent": "income",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-income-sep",
+        "report-2026-09"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedDateRange": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "expectedAnswerBehavior": "States September income."
+    },
+    {
+      "id": "q12",
+      "question": "What is the waiting period for pre-existing diseases in my health policy?",
+      "expectedIntent": [
+        "documents",
+        "insurance"
+      ],
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "doc-health-policy"
+      ],
+      "expectedEvidenceType": "DOCUMENT",
+      "expectedAnswerBehavior": "Quotes the waiting period from the document."
+    },
+    {
+      "id": "q13",
+      "question": "Which policy has a premium above 20,000?",
+      "expectedIntent": "insurance",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "fact-ins-term"
+      ],
+      "expectedEvidenceType": "FINANCIAL_FACT",
+      "expectedAmount": {
+        "min": 20000
+      },
+      "expectedAnswerBehavior": "Compares recorded premiums; only names the policy whose recorded premium exceeds the amount."
+    },
+    {
+      "id": "q14",
+      "question": "Compare my expenses in September 2026 with August 2026",
+      "expectedIntent": "expenses",
+      "expectedLookup": "analytical",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "report-2026-09",
+        "report-2026-08"
+      ],
+      "expectedEvidenceType": "REPORT",
+      "expectedAnswerBehavior": "Reports both months' recorded figures; any difference comes from a deterministic calculation."
+    },
+    {
+      "id": "q15",
+      "question": "Show my expenses excluding rent",
+      "expectedIntent": "expenses",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "report-2026-09",
+        "report-2026-08"
+      ],
+      "expectedEvidenceType": "REPORT",
+      "expectedNegations": [
+        "rent"
+      ],
+      "expectedAnswerBehavior": "Lists categories other than rent as recorded; states the exclusion was honoured, does not drop it silently."
+    },
+    {
+      "id": "q16",
+      "question": "Do I have any cryptocurrency holdings?",
+      "expectedIntent": "holdings",
+      "expectedLookup": "exact",
+      "expectEvidence": false,
+      "expectedAnswerBehavior": "Controlled no-evidence response; must not invent a holding."
+    },
+    {
+      "id": "q17",
+      "question": "What is the weather in Paris today?",
+      "expectedIntent": "general",
+      "expectedLookup": "exact",
+      "expectEvidence": false,
+      "expectedAnswerBehavior": "Controlled no-evidence response; out of scope."
+    },
+    {
+      "id": "q18",
+      "question": "What did I spend on dental treatment in 2024?",
+      "expectedIntent": "expenses",
+      "expectedLookup": "exact",
+      "expectEvidence": false,
+      "expectedDateRange": {
+        "from": "2024-01-01",
+        "to": "2024-12-31"
+      },
+      "expectedAnswerBehavior": "No matching records: says so plainly; does not substitute a different period."
+    },
+    {
+      "id": "q19",
+      "question": "what about it?",
+      "expectedIntent": "general",
+      "expectedLookup": "exact",
+      "expectEvidence": false,
+      "expectClarification": true,
+      "expectedAnswerBehavior": "Asks for a self-contained question; no retrieval and no model call."
+    },
+    {
+      "id": "q20",
+      "question": "and the same for last month?",
+      "expectedIntent": "general",
+      "expectedLookup": "exact",
+      "expectEvidence": false,
+      "expectClarification": true,
+      "expectedAnswerBehavior": "Follow-ups are not supported by the API contract; asks for a self-contained question rather than guessing the subject.",
+      "expectedDateRange": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      }
+    },
+    {
+      "id": "q21",
+      "question": "Are there any alerts about my insurance?",
+      "expectedIntent": "insurance",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "alert-renewal"
+      ],
+      "expectedEvidenceType": "ALERT",
+      "expectedAnswerBehavior": "Reports the renewal alert with its date."
+    },
+    {
+      "id": "q22",
+      "question": "Can I afford a car?",
+      "expectedIntent": "general",
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "coach-car"
+      ],
+      "expectedEvidenceType": "COACH_INTERACTION",
+      "expectedAnswerBehavior": "Surfaces the earlier coach exchange as history, labelled as such; makes no new affordability claim."
+    },
+    {
+      "id": "q23",
+      "question": "What is my total debt and my monthly income?",
+      "expectedIntent": [
+        "loans",
+        "income"
+      ],
+      "expectedLookup": "exact",
+      "expectEvidence": true,
+      "expectedTopSourceIds": [
+        "snapshot-1"
+      ],
+      "expectedEvidenceType": "SNAPSHOT",
+      "expectedAnswerBehavior": "Multi-part: answers both parts from the snapshot, or states which part is missing."
+    }
+  ]
+}
