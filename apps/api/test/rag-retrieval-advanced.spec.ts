@@ -85,7 +85,9 @@ describe("QueryRewriteService fallback classification", () => {
 
     const simplePlan = await service.plan("user-1", "loan balance");
     expect(simplePlan.complexity).toBe("simple");
-    expect(simplePlan.queryType).toBe("exploratory");
+    // The local fallback now reads the question's own wording (a short loan lookup is "factual") instead of
+    // labelling everything "exploratory"; it still searches with the original query only.
+    expect(simplePlan.queryType).toBe("factual");
     expect(simplePlan.rewrittenQueries).toEqual(["loan balance"]);
 
     const complexPlan = await service.plan("user-1", "compare my spending this month vs last month and tell me if I'm on track");
