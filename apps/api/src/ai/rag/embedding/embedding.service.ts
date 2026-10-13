@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 
 export const EMBEDDING_DIMENSIONS = 384;
 
@@ -39,13 +39,21 @@ const QUERY_CACHE_SIZE = 200;
 // once the neural model is available. Set EMBEDDING_PROVIDER=hash to skip the neural model entirely
 // (recommended on hosts with under 1GB of RAM).
 @Injectable()
-export class EmbeddingService {
+export class EmbeddingService implements OnModuleInit {
   private readonly logger = new Logger(EmbeddingService.name);
   private pipelinePromise: Promise<EmbeddingPipeline> | null = null;
   private pipeline: EmbeddingPipeline | null = null;
   private nextModelAttemptAt = 0;
   private activeVersion: number = EMBEDDING_MODEL_VERSION;
   private readonly queryCache = new Map<string, EmbeddingWithVersion>();
+
+  /** Starts loading the neural model in the background at boot, so the first search after a restart does not
+   * wait ~13s for it (observed in production logs). Not awaited: boot is never delayed, and a failed load
+   * already degrades to the lexical fallback. Skipped under test and when the hashed provider is forced. */
+  onModuleInit(): void {
+    if (process.env.NODE_ENV === "test" || this.neuralDisabled()) return;
+    void this.startLoad().catch(() => undefined);
+  }
 
   /** Version of the vectors the service is currently producing. Retrieval compares it with each
    * chunk's stored version so two incompatible vector spaces are never compared. */
