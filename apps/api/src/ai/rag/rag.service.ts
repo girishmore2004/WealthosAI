@@ -101,7 +101,11 @@ export class RagService {
       return this.clarificationResult(userId, query, understanding, t0);
     }
     // Deterministic live answer runs alongside planning: it needs no model and no index.
-    const [plan, live] = await Promise.all([this.queryRewrite.plan(userId, query), this.tryLiveAnswer(userId, query)]);
+    // A question about what a DOCUMENT says ("what does my loan agreement say about prepayment") is not
+    // answered by the live figures for the loan it mentions — leading with the EMI would answer a question
+    // nobody asked. Those questions rely on retrieval alone.
+    const wantsLive = understanding.intent !== "documents";
+    const [plan, live] = await Promise.all([this.queryRewrite.plan(userId, query), wantsLive ? this.tryLiveAnswer(userId, query) : Promise.resolve(null)]);
     const tPlan = Date.now();
 
     // Multi-hop: run retrieval once per sub-question (falling back to the rewritten
