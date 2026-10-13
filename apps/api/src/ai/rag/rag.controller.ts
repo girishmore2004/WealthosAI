@@ -38,11 +38,13 @@ export class RagController {
   @Post("reindex")
   @RateLimit(3, 3600)
   async reindex(@CurrentUser() user: User) {
-    // Idempotency key scoped to the current hour — re-clicking "reindex" within the
-    // same hour returns the same job instead of queueing a redundant rebuild; a fresh
-    // reindex is allowed again the following hour.
+    // Idempotency key scoped to the current MINUTE — a double-click returns the same job instead of
+    // queueing a redundant rebuild, but an explicit later click really re-runs. It used to be scoped to
+    // the hour, so once any reindex had finished that hour the button just returned that old finished job
+    // and a document uploaded afterwards stayed unindexed. The 3/hour rate limit still bounds the cost,
+    // and an unchanged source is skipped by the incremental index anyway.
     const requestedAt = Date.now();
-    const idempotencyKey = `reindex:${new Date().toISOString().slice(0, 13)}`;
+    const idempotencyKey = `reindex:manual:${new Date().toISOString().slice(0, 16)}`;
     let job = await this.queue.enqueue("rag.reindex.user", { userId: user.id }, { userId: user.id, idempotencyKey });
     // The idempotent response is right for a queued / running / finished job. It is wrong for a job that
     // already FAILED: returning it would leave the index stale for the rest of the hour with no way to
