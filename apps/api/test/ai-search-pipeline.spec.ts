@@ -103,6 +103,15 @@ describe("AI Search pipeline — ambiguity and no-evidence behaviour", () => {
     expect(result.citedSources.map((c) => c.chunkId)).toEqual(["a"]);
   });
 
+  it("never reports answer confidence above the measured grounding", async () => {
+    const { service } = buildRag({
+      synth: { hasEvidence: true, answer: "Spending was 111036.", citedChunkIds: ["a"], confidence: 0.99, groundingScore: 0.8, hallucinationRisk: "medium" },
+    });
+    const result = await service.search("user-1", "What is my EMI?");
+    expect(result.answerConfidence).toBe(0.8);
+    expect(result.evidenceSufficiency).toBe("partial");
+  });
+
   it("reports what it read from the question without filtering on it", async () => {
     const { service, retrieval } = buildRag();
     const result = await service.search("user-1", "Show my expenses excluding rent in September 2026");
