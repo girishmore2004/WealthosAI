@@ -137,3 +137,19 @@ export const CITATION_CONFIDENCE_BANDS = {
   high: 0.7,
   medium: 0.45,
 };
+
+// Per-stage wall-clock budgets for one search. Every model stage has a safe local fallback
+// (original query / hybrid-score order / "unavailable" answer), so a stage that exceeds its
+// budget is abandoned in favour of that fallback instead of making the user wait on a slow or
+// failing provider. Synthesis gets the largest budget because it carries the grounding retry.
+export const RAG_STAGE_TIMEOUTS_MS = {
+  rewrite: 6_000,
+  rerank: 8_000,
+  synthesis: 45_000,
+};
+
+// Rewrite and rerank both degrade locally, so a failed attempt is not worth repeating: one
+// attempt, no corrective retries. (Synthesis keeps the gateway default because its corrective
+// retry is the grounding safeguard.)
+export const REWRITE_MAX_CORRECTIVE_RETRIES = 0;
+export const RERANK_MAX_CORRECTIVE_RETRIES = 0;
