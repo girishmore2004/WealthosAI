@@ -248,7 +248,8 @@ export class RagService {
             : synthesisResult.answer,
       citedSources,
       retrievalConfidence,
-      answerConfidence: synthesisResult.confidence,
+      // The model's self-reported confidence is never shown above the measured grounding of the same answer.
+      answerConfidence: capByGrounding(synthesisResult.confidence, synthesisResult.groundingScore),
       groundingScore: synthesisResult.groundingScore,
       hallucinationRisk: synthesisResult.hallucinationRisk,
       explanation: explanationParts.join(" ") + (live ? " The leading figures come from your live records." : ""),
@@ -408,4 +409,8 @@ function evidenceSufficiencyOf(synthesis: { hasEvidence: boolean; confidence: nu
   if (!synthesis.hasEvidence) return hasLive ? "sufficient" : "insufficient";
   if (synthesis.confidence === 0 || synthesis.groundingScore === null) return hasLive ? "sufficient" : "unverified";
   return synthesis.groundingScore >= 0.85 ? "sufficient" : "partial";
+}
+
+function capByGrounding(confidence: number, grounding: number | null): number {
+  return grounding === null ? confidence : Math.min(confidence, grounding);
 }
