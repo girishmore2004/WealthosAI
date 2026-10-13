@@ -19,6 +19,13 @@ export const SOURCE_PRIORITY: Record<AiSourceType, number> = {
 
 export const MAX_SOURCE_PRIORITY = 3;
 
+// Bump whenever how a source becomes chunks changes (redaction rules, chunking). It is part of every
+// source's content hash, so the next reindex re-chunks and re-embeds sources whose TEXT is unchanged —
+// without it, chunks built by an older, buggy pipeline would stay in the index indefinitely under
+// incremental indexing.
+// 2: labelled-id redaction no longer wipes ordinary words; oversized "sentences" are split.
+export const INDEX_PIPELINE_VERSION = 2;
+
 // Combined score = semantic*W_SEMANTIC + keyword*W_KEYWORD + recency*W_RECENCY +
 // priority*W_PRIORITY, each signal pre-normalized to [0,1]. Semantic similarity gets
 // the largest weight because it's the signal most robust to the user phrasing their
