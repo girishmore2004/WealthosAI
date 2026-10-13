@@ -160,12 +160,47 @@ function splitIntoUnits(text: string, targetWords: number): string[] {
       // unsearchable even though it exists in the source document. Every character
       // of the input paragraph must end up in some unit.
       const sentences = paragraph.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [paragraph];
-      units.push(...sentences.map((s) => s.trim()).filter(Boolean));
+      // A "sentence" can itself be far larger than a chunk: text read from a PDF's text layer is one
+      // line per row with no blank lines, and lists / tables / headings have no terminal punctuation,
+      // so a whole page can come back as ONE sentence. Embedded as one chunk, only its first ~256
+      // word pieces count semantically, so the rest of a policy's benefit list was unsearchable.
+      for (const s of sentences.map((x) => x.trim()).filter(Boolean)) units.push(...splitOversizedUnit(s, targetWords));
     } else {
       units.push(paragraph.trim());
     }
   }
   return units;
+}
+
+/** Cuts a unit larger than `targetWords` into pieces of at most that size: on line breaks first (a row,
+ * heading or list item stays whole), and by a hard word-count cut only for a single line that is itself
+ * too long. A unit already within the target is returned unchanged. */
+function splitOversizedUnit(unit: string, targetWords: number): string[] {
+  if (countWords(unit) <= targetWords) return [unit];
+
+  const out: string[] = [];
+  let current: string[] = [];
+  let currentWords = 0;
+  const flush = () => {
+    if (current.length > 0) out.push(current.join("\n"));
+    current = [];
+    currentWords = 0;
+  };
+
+  for (const line of unit.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+    const lineWords = countWords(line);
+    if (lineWords > targetWords) {
+      flush();
+      const words = line.split(/\s+/).filter(Boolean);
+      for (let i = 0; i < words.length; i += targetWords) out.push(words.slice(i, i + targetWords).join(" "));
+      continue;
+    }
+    if (currentWords > 0 && currentWords + lineWords > targetWords) flush();
+    current.push(line);
+    currentWords += lineWords;
+  }
+  flush();
+  return out;
 }
 
 function countWords(text: string): number {
