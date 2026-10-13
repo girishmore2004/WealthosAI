@@ -2,7 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { AiUnavailableException } from "../../exceptions/ai.exceptions";
 import { ScoredChunk } from "./hybrid-retrieval.service";
-import { MAX_RERANK_INPUT_ITEMS, TOP_K_RERANKED } from "../rag.constants";
+import { MAX_RERANK_INPUT_ITEMS, RAG_STAGE_TIMEOUTS_MS, RERANK_MAX_CORRECTIVE_RETRIES, TOP_K_RERANKED } from "../rag.constants";
+import { withStageTimeout } from "../stage-timeout";
 import { normalizeRationale } from "../../gateway/ai-gateway.types";
 
 export interface RerankedChunk extends ScoredChunk {
@@ -60,12 +61,18 @@ export class RerankingService {
 
     try {
       const items = rerankInput.map((c) => truncate(`[${c.sourceType}] ${c.text}`, MAX_CHUNK_CHARS_FOR_RERANK));
-      const result = await this.gateway.rank(items, `Most relevant to answering: "${query}"`, {
-        feature: "rag.rerank",
-        promptName: "rag.rerank",
-        userId,
-        cacheable: false, // candidate set composition varies call to call, caching would rarely hit anyway
-      });
+      const result = await withStageTimeout(
+        this.gateway.rank(items, `Most relevant to answering: "${query}"`, {
+          feature: "rag.rerank",
+          promptName: "rag.rerank",
+          userId,
+          cacheable: false, // candidate set composition varies call to call, caching would rarely hit anyway
+          // Hybrid-score order is a safe local fallback, so one attempt is enough.
+          maxCorrectiveRetries: RERANK_MAX_CORRECTIVE_RETRIES,
+        }),
+        RAG_STAGE_TIMEOUTS_MS.rerank,
+        "Reranking",
+      );
 
       const validIndices = result.data.orderedIndices.filter((i) => i >= 0 && i < rerankInput.length);
       // The model might omit indices it didn't mention, OR duplicate one it mentioned
@@ -99,7 +106,7 @@ export class RerankingService {
       // dependency — fall back to the combined-score order already computed rather
       // than failing the whole search when the rerank call itself is unavailable.
       if (err instanceof AiUnavailableException || err instanceof Error) {
-        this.logger.warn(`Reranking unavailable, falling back to hybrid retrieval order: ${(err as Error).message}`);
+        this.logger.warn(`Reranking unavailable, falling back to hybrid retrieval order: ${(err as Error).name}`);
         const chunks = [...candidates]
           .sort((a, b) => b.combinedScore - a.combinedScore)
           .slice(0, rerankLimit)
