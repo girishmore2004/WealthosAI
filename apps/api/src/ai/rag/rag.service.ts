@@ -5,7 +5,7 @@ import { QueryRewriteService } from "./retrieval/query-rewrite.service";
 import { HybridRetrievalService, QueryContext, ScoredChunk, SearchFilters, mergeCandidatePools, suppressNearDuplicates } from "./retrieval/hybrid-retrieval.service";
 import { RerankedChunk, RerankingService } from "./retrieval/reranking.service";
 import { AnswerSynthesisService } from "./synthesis/answer-synthesis.service";
-import { CITATION_CONFIDENCE_BANDS, adaptiveRerankLimit, QueryComplexity, QueryType } from "./rag.constants";
+import { CITATION_CONFIDENCE_BANDS, TOP_K_RERANKED, adaptiveRerankLimit, QueryComplexity, QueryType } from "./rag.constants";
 import { QueryUnderstanding, normalizeForRetrieval, understandQuery } from "./retrieval/query-understanding";
 
 /** What the search could and could not establish. "unverified" means evidence was found but the
@@ -128,6 +128,14 @@ export class RagService {
     // cleared, or every document lacks extracted text) — different from "indexed but nothing matched".
     const indexEmpty = queryContext.candidates !== undefined && queryContext.candidates.length === 0;
 
+    // A question about what an uploaded document says, while no DOCUMENT chunk exists at all: the index
+    // holds the user's records but not their upload (OCR not finished / failed, or not reindexed yet).
+    // Different from "indexed but nothing matched", and invisible otherwise — the user just saw "no evidence".
+    const asksAboutDocuments = understanding.intent === "documents" || understanding.explicitSourceTypes.includes("DOCUMENT");
+    const documentsSearchable = !filters.sourceTypes?.length || filters.sourceTypes.includes("DOCUMENT");
+    const documentChunkCount = queryContext.candidates?.filter((c) => c.sourceType === "DOCUMENT").length;
+    const noDocumentsIndexed = asksAboutDocuments && documentsSearchable && documentChunkCount === 0 && !indexEmpty;
+
     const candidatePools = await Promise.all(
       searchQueries.map((q) => this.retrieval.search(userId, q, filters, queryContext)),
     );
@@ -156,6 +164,11 @@ export class RagService {
     }
     const understandingNote = describeUnderstanding(understanding);
     if (understandingNote) explanationParts.push(understandingNote);
+    if (noDocumentsIndexed) {
+      explanationParts.push(
+        "None of your uploaded documents are in the search index, so this question could not be answered from them. Check that the document finished text extraction (its status must be done, not failed or not applicable), then use “Reindex my data” and ask again.",
+      );
+    }
     if (indexEmpty) {
       explanationParts.push(
         "Nothing is indexed for your account yet (or the index was cleared), so uploaded documents could not be searched — this answer comes from your live records only. Use “Reindex my data”, and check that your documents finished text extraction.",
@@ -184,7 +197,7 @@ export class RagService {
         understanding: publicUnderstanding(understanding),
         evidenceSufficiency: "sufficient",
       };
-      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "live", result, indexEmpty });
+      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "live", result, indexEmpty, documentChunks: documentChunkCount });
       await this.logSearch(userId, query, plan, [], [], result);
       return result;
     }
@@ -209,12 +222,14 @@ export class RagService {
         understanding: publicUnderstanding(understanding),
         evidenceSufficiency: "insufficient",
       };
-      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "none", result, indexEmpty });
+      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "none", result, indexEmpty, documentChunks: documentChunkCount });
       await this.logSearch(userId, query, plan, [], [], result);
       return result;
     }
 
-    const rerankLimit = adaptiveRerankLimit(plan.complexity);
+    // A question about a document is usually answered by several neighbouring passages (a list of covered
+    // conditions, a clause and its exceptions); a "simple" question's limit of 3 kept too few of them.
+    const rerankLimit = asksAboutDocuments ? Math.max(adaptiveRerankLimit(plan.complexity), TOP_K_RERANKED) : adaptiveRerankLimit(plan.complexity);
     const rerankResult = await this.reranking.rerank(userId, query, merged, rerankLimit);
     const tRerank = Date.now();
     explanationParts.push(
@@ -274,7 +289,7 @@ export class RagService {
       evidenceSufficiency: evidenceSufficiencyOf(synthesisResult, Boolean(live)),
     };
 
-    this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: citedSources.length, mode: result.retrievalMode ?? "hybrid", result });
+    this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: citedSources.length, mode: result.retrievalMode ?? "hybrid", result, documentChunks: documentChunkCount });
     await this.logSearch(userId, query, plan, merged, synthesisResult.citedChunkIds, result);
     return result;
   }
@@ -309,7 +324,7 @@ export class RagService {
   private logSummary(
     plan: { planSource?: string; planMeta?: { cacheHit: boolean; retries: number; rejectedPhrasings: number }; queryType: QueryType; complexity: QueryComplexity; isMultiHop: boolean; rewrittenQueries: string[] },
     understanding: QueryUnderstanding,
-    stats: { candidates: number; merged: number; cited: number; mode: string; result: RagSearchResult; indexEmpty?: boolean },
+    stats: { candidates: number; merged: number; cited: number; mode: string; result: RagSearchResult; indexEmpty?: boolean; documentChunks?: number },
   ): void {
     const { result } = stats;
     this.logger.log(
@@ -326,6 +341,7 @@ export class RagService {
         rejectedPhrasings: plan.planMeta?.rejectedPhrasings ?? null,
         strategy: stats.mode,
         indexEmpty: stats.indexEmpty,
+        indexedDocumentChunks: stats.documentChunks,
         candidatesRetrieved: stats.candidates,
         afterDedup: stats.merged,
         cited: stats.cited,
