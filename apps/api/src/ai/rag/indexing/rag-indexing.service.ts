@@ -8,7 +8,7 @@ import { EmbeddingService, EMBEDDING_MODEL_VERSION } from "../embedding/embeddin
 import { AiQueueService } from "../../ops/ai-queue.service";
 import { ReportsService } from "../../../reports/reports.service";
 import { DashboardService } from "../../../dashboard/dashboard.service";
-import { MAX_RELATED_SOURCE_EXPANSIONS, SOURCE_PRIORITY } from "../rag.constants";
+import { INDEX_PIPELINE_VERSION, MAX_RELATED_SOURCE_EXPANSIONS, SOURCE_PRIORITY } from "../rag.constants";
 import { FinancialFactsService } from "../../../common/financial-facts/financial-facts.service";
 import { DataHealthService } from "../../../financial-core/data-health/data-health.service";
 import { buildFinancialFactSources } from "./financial-fact-sources";
@@ -60,7 +60,8 @@ function contentHashOf(source: SourceDocument): string {
   // Document's tags/category (and therefore its relatedSourceIds/citation title) were
   // edited without the underlying OCR text changing, which would otherwise leave a
   // stale graph edge or title cached indefinitely under incremental indexing.
-  return createHash("sha256").update(JSON.stringify({ text: source.text, metadata: source.metadata })).digest("hex");
+  // The pipeline version is hashed too, so a change to redaction / chunking re-indexes unchanged sources once.
+  return createHash("sha256").update(JSON.stringify({ text: source.text, metadata: source.metadata, pipeline: INDEX_PIPELINE_VERSION })).digest("hex");
 }
 
 @Injectable()
@@ -201,6 +202,14 @@ export class RagIndexingService implements OnModuleInit {
     }
 
     if (ops.length > 0) {
+      // Two reindex jobs for one user can overlap (the queue runs 2 at a time). Both would delete the same
+      // old rows and then both insert, leaving duplicate chunks. A per-user transaction-scoped advisory
+      // lock, taken first, makes the second job wait and then see the first one's committed rows. Guarded
+      // so a client double without raw-query support (unit tests) is unaffected.
+      const db = this.prisma.client as unknown as { $executeRaw?: (q: TemplateStringsArray, ...v: unknown[]) => Promise<unknown> };
+      if (typeof db.$executeRaw === "function") {
+        ops.unshift(db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`rag-reindex:${userId}`}))`);
+      }
       // Deletes must precede the createMany they clear space for and precede the
       // state upserts that describe the new state — $transaction runs an array of
       // prepared operations in the order given, all-or-nothing, which is exactly
