@@ -36,7 +36,21 @@ export interface SearchFilters {
 export interface QueryContext {
   queryType?: QueryType;
   complexity?: QueryComplexity;
+  /** The searching user's already-loaded, already-metadata-filtered candidate rows (from loadCandidates).
+   * RagService loads them once per search and reuses them for every phrasing / sub-question instead of
+   * re-reading the user's whole chunk table each time. They MUST have been loaded for the same userId and
+   * filters as this call; they are never shared across searches or users. */
+  candidates?: CandidateRows;
+  /** Source types the user explicitly named ("my alerts", "the monthly report"). A soft ranking boost —
+   * never a filter, so evidence from other sources is still found. */
+  boostSourceTypes?: AiSourceType[];
 }
+
+export type CandidateRows = Awaited<ReturnType<HybridRetrievalService["loadCandidates"]>>;
+
+// Added to a chunk's combined score when the user named its source type and the chunk also matched the
+// question's terms (a chunk that matched nothing is never lifted just for its type).
+const EXPLICIT_SOURCE_BOOST = 0.15;
 
 export type ExpansionReason = "seed" | "sibling" | "related_source";
 
@@ -106,6 +120,21 @@ export class HybridRetrievalService {
     private keywordScorer: KeywordScorerService,
   ) {}
 
+  /** One read of the user's own chunk rows (always `WHERE userId = …`), narrowed by the request's
+   * source-type / date / metadata filters. Exposed so one search can read once and score many phrasings. */
+  async loadCandidates(userId: string, filters: SearchFilters = {}) {
+    const rawCandidates = await this.prisma.client.aiEmbeddingChunk.findMany({
+      where: {
+        userId,
+        ...(filters.sourceTypes?.length ? { sourceType: { in: filters.sourceTypes } } : {}),
+        ...(filters.dateFrom || filters.dateTo
+          ? { sourceCreatedAt: { gte: filters.dateFrom, lte: filters.dateTo } }
+          : {}),
+      },
+    });
+    return rawCandidates.filter((c) => passesMetadataFilters(c.sourceType, c.metadata as Record<string, unknown>, filters));
+  }
+
   async search(
     userId: string,
     query: string,
@@ -116,17 +145,7 @@ export class HybridRetrievalService {
     const complexity: QueryComplexity = queryContext.complexity ?? "moderate";
     const candidateLimit = adaptiveCandidateLimit(complexity);
 
-    const rawCandidates = await this.prisma.client.aiEmbeddingChunk.findMany({
-      where: {
-        userId,
-        ...(filters.sourceTypes?.length ? { sourceType: { in: filters.sourceTypes } } : {}),
-        ...(filters.dateFrom || filters.dateTo
-          ? { sourceCreatedAt: { gte: filters.dateFrom, lte: filters.dateTo } }
-          : {}),
-      },
-    });
-
-    const filtered = rawCandidates.filter((c) => passesMetadataFilters(c.sourceType, c.metadata as Record<string, unknown>, filters));
+    const filtered = queryContext.candidates ?? (await this.loadCandidates(userId, filters));
     if (filtered.length === 0) return [];
 
     // The query vector. If the embedding backend is unusable the search still works: it falls back to
@@ -175,6 +194,13 @@ export class HybridRetrievalService {
       ...this.scoreChunk(chunk, semanticOf(chunk), keywordScores[i], weights, now, decayRate, "seed"),
       lexicalCoverage: matches[i].coverage,
     }));
+    if (queryContext.boostSourceTypes?.length) {
+      for (const seed of seeds) {
+        if (queryContext.boostSourceTypes.includes(seed.sourceType) && (seed.keywordScore > 0 || seed.semanticScore > 0)) {
+          seed.combinedScore += EXPLICIT_SOURCE_BOOST;
+        }
+      }
+    }
     seeds.sort((a, b) => b.combinedScore - a.combinedScore);
 
     const seedSlice = seeds.slice(0, candidateLimit);
@@ -392,6 +418,26 @@ function normalize(values: number[]): number[] {
   return values.map((v) => (v - min) / (max - min));
 }
 
+/** Merges candidate pools from several phrasings / sub-questions. A chunk found by more than one keeps its
+ * best-scoring version, but carries the BEST lexical coverage and keyword signal any phrasing gave it:
+ * the evidence bar asks "did any phrasing find this to be about the question", and judging it only by the
+ * phrasing that happened to rank it highest let a looser phrasing hide real evidence. Ranking
+ * (combinedScore) is untouched. */
+export function mergeCandidatePools(pools: ScoredChunk[][]): ScoredChunk[] {
+  const byId = new Map<string, ScoredChunk>();
+  const bestCoverage = new Map<string, number>();
+  const bestKeyword = new Map<string, number>();
+  for (const chunk of pools.flat()) {
+    bestCoverage.set(chunk.id, Math.max(bestCoverage.get(chunk.id) ?? 0, chunk.lexicalCoverage ?? 0));
+    bestKeyword.set(chunk.id, Math.max(bestKeyword.get(chunk.id) ?? 0, chunk.keywordScore));
+    const existing = byId.get(chunk.id);
+    if (!existing || chunk.combinedScore > existing.combinedScore) byId.set(chunk.id, chunk);
+  }
+  return [...byId.values()]
+    .map((c) => ({ ...c, lexicalCoverage: bestCoverage.get(c.id), keywordScore: bestKeyword.get(c.id) ?? c.keywordScore }))
+    .sort((a, b) => b.combinedScore - a.combinedScore);
+}
+
 function dedupeById(chunks: ScoredChunk[]): ScoredChunk[] {
   const byId = new Map<string, ScoredChunk>();
   for (const chunk of chunks) {
@@ -414,15 +460,24 @@ export function suppressNearDuplicates<T extends { id: string; text: string; com
   threshold: number = NEAR_DUPLICATE_JACCARD_THRESHOLD,
 ): T[] {
   const sorted = [...chunks].sort((a, b) => b.combinedScore - a.combinedScore);
-  const kept: { chunk: T; tokens: Set<string> }[] = [];
+  const kept: { chunk: T; tokens: Set<string>; figures: string }[] = [];
 
   for (const chunk of sorted) {
     const tokens = new Set(tokenize(chunk.text));
-    const isDuplicate = kept.some((k) => jaccard(tokens, k.tokens) >= threshold);
-    if (!isDuplicate) kept.push({ chunk, tokens });
+    const figures = figureSignature(tokens);
+    // Two chunks that read the same but state DIFFERENT figures (a premium that changed, two versions of a
+    // policy, a stale and a current value) are not duplicates — they are the conflicting / outdated
+    // evidence the answer must surface. Only chunks with the same figures are suppressed.
+    const isDuplicate = kept.some((k) => k.figures === figures && jaccard(tokens, k.tokens) >= threshold);
+    if (!isDuplicate) kept.push({ chunk, tokens, figures });
   }
 
   return kept.map((k) => k.chunk);
+}
+
+/** The sorted set of numeric tokens in a chunk, as one comparable string. */
+function figureSignature(tokens: Set<string>): string {
+  return [...tokens].filter((t) => /\d/.test(t)).sort().join("|");
 }
 
 function jaccard(a: Set<string>, b: Set<string>): number {
