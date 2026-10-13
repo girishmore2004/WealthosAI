@@ -32,13 +32,20 @@ export class RagAutoReindexService {
   // manually reindex via the existing endpoint if this silently didn't fire, and the
   // next successful auto-trigger (e.g. the user's next document upload) will also
   // catch up on anything missed.
-  async triggerFor(userId: string): Promise<void> {
+  //
+  // `scope` (e.g. a document id) is for a write that creates NEW indexable content which an
+  // already-run or already-running reindex for this hour cannot have seen. Without it, the hourly
+  // key meant a document whose OCR finished after any earlier reindex that hour was silently never
+  // indexed, and searches about it found "no evidence" until the next hour's trigger. A scoped
+  // trigger gets its own key and bypasses the per-hour throttle; repeats of the same scope in the
+  // same hour still collapse into one job.
+  async triggerFor(userId: string, scope?: string): Promise<void> {
     try {
       const hour = new Date().toISOString().slice(0, 13);
-      if (this.lastEnqueuedHour.get(userId) === hour) return;
-      const idempotencyKey = `reindex:${hour}`;
+      if (!scope && this.lastEnqueuedHour.get(userId) === hour) return;
+      const idempotencyKey = scope ? `reindex:${hour}:${scope}` : `reindex:${hour}`;
       await this.queue.enqueue("rag.reindex.user", { userId }, { userId, idempotencyKey });
-      this.lastEnqueuedHour.set(userId, hour);
+      if (!scope) this.lastEnqueuedHour.set(userId, hour);
     } catch (err) {
       this.logger.warn(`Auto-reindex trigger failed for user ${userId}: ${(err as Error).message}`);
     }
