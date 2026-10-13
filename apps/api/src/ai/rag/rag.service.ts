@@ -124,6 +124,10 @@ export class RagService {
       queryContext.candidates = await this.retrieval.loadCandidates(userId, filters);
     }
 
+    // An empty candidate set means the user has NO indexed content for this search (index never built,
+    // cleared, or every document lacks extracted text) — different from "indexed but nothing matched".
+    const indexEmpty = queryContext.candidates !== undefined && queryContext.candidates.length === 0;
+
     const candidatePools = await Promise.all(
       searchQueries.map((q) => this.retrieval.search(userId, q, filters, queryContext)),
     );
@@ -145,8 +149,18 @@ export class RagService {
         : `Searched using ${searchQueries.length} phrasing${searchQueries.length > 1 ? "s" : ""} of your question to improve recall.`,
     ];
 
+    if (candidateCount === 0) {
+      explanationParts.push(
+        "Nothing was found in your search index for this question. That usually means the index is empty or out of date, or a source / date filter is hiding everything — clear the filters or use “Reindex my data”.",
+      );
+    }
     const understandingNote = describeUnderstanding(understanding);
     if (understandingNote) explanationParts.push(understandingNote);
+    if (indexEmpty) {
+      explanationParts.push(
+        "Nothing is indexed for your account yet (or the index was cleared), so uploaded documents could not be searched — this answer comes from your live records only. Use “Reindex my data”, and check that your documents finished text extraction.",
+      );
+    }
 
     if (!hasEvidence && live) {
       // Nothing in the index matched, but the live records answer the question exactly.
@@ -170,7 +184,7 @@ export class RagService {
         understanding: publicUnderstanding(understanding),
         evidenceSufficiency: "sufficient",
       };
-      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "live", result });
+      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "live", result, indexEmpty });
       await this.logSearch(userId, query, plan, [], [], result);
       return result;
     }
@@ -195,7 +209,7 @@ export class RagService {
         understanding: publicUnderstanding(understanding),
         evidenceSufficiency: "insufficient",
       };
-      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "none", result });
+      this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: 0, mode: "none", result, indexEmpty });
       await this.logSearch(userId, query, plan, [], [], result);
       return result;
     }
@@ -295,7 +309,7 @@ export class RagService {
   private logSummary(
     plan: { planSource?: string; planMeta?: { cacheHit: boolean; retries: number; rejectedPhrasings: number }; queryType: QueryType; complexity: QueryComplexity; isMultiHop: boolean; rewrittenQueries: string[] },
     understanding: QueryUnderstanding,
-    stats: { candidates: number; merged: number; cited: number; mode: string; result: RagSearchResult },
+    stats: { candidates: number; merged: number; cited: number; mode: string; result: RagSearchResult; indexEmpty?: boolean },
   ): void {
     const { result } = stats;
     this.logger.log(
@@ -311,6 +325,7 @@ export class RagService {
         rewriteRetries: plan.planMeta?.retries ?? null,
         rejectedPhrasings: plan.planMeta?.rejectedPhrasings ?? null,
         strategy: stats.mode,
+        indexEmpty: stats.indexEmpty,
         candidatesRetrieved: stats.candidates,
         afterDedup: stats.merged,
         cited: stats.cited,
