@@ -148,7 +148,14 @@ export class HybridRetrievalService {
     const tStart = Date.now();
     const filtered = queryContext.candidates ?? (await this.loadCandidates(userId, filters));
     const tLoad = Date.now();
-    if (filtered.length === 0) return [];
+    if (filtered.length === 0) {
+      // An empty candidate set is the one retrieval outcome that is invisible otherwise (the timing line
+      // below never runs). Say which filters were active — counts and flags only, no values.
+      this.logger.warn(
+        `retrieval found no indexed chunks ${JSON.stringify({ sharedRows: Boolean(queryContext.candidates), sourceTypeFilter: filters.sourceTypes?.length ?? 0, dateFilter: Boolean(filters.dateFrom || filters.dateTo), categoryFilter: filters.categories?.length ?? 0, tagFilter: filters.tags?.length ?? 0, loadMs: tLoad - tStart })}`,
+      );
+      return [];
+    }
 
     // The query vector. If the embedding backend is unusable the search still works: it falls back to
     // lexical-only ranking (BM25 + recency + priority) instead of failing the whole request.
