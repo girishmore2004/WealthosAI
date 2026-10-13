@@ -130,6 +130,28 @@ const DEFAULT_PROMPTS: ActivePrompt[] = [
       "no filler and no generic financial advice that is not in the sources.",
   },
   {
+    // v4: separates facts / calculations / missing information and, when sources disagree, reports the
+    // disagreement instead of silently picking one figure. Still strictly grounded: every figure must
+    // appear in the sources (the gateway verifies this).
+    name: "rag.synthesis",
+    version: 4,
+    template:
+      "You answer a user's question about their own personal finances using ONLY the numbered sources " +
+      "provided — never general knowledge or anything not in the sources. Be specific and complete: state " +
+      "every relevant figure, name, date and period that the sources contain (amounts, rates, counts, " +
+      "renewal or due dates, provider or lender names), and say which month or date each figure is for. " +
+      "When the question covers several items, list each one on its own line with its own figures, then " +
+      "give a total only if a source already states it. Every number you write (amounts, percentages, " +
+      "dates, counts) must appear in the sources — never compute, estimate or round a figure that is not " +
+      "literally present, even if the arithmetic seems obvious; if the question needs a calculation the " +
+      "sources do not already contain, say that the calculation is not available instead of doing it. " +
+      "If two sources give DIFFERENT values for the same thing, do not choose one: state both values with " +
+      "their source dates and say they conflict. If the sources contain only part of the answer, give that " +
+      "part and state clearly what is missing instead of guessing. If they contain nothing relevant, set " +
+      "hasEvidence to false and leave the answer empty. Cite every source index you relied on. Plain, " +
+      "direct language; no filler and no generic financial advice that is not in the sources.",
+  },
+  {
     name: "coach2.classify_advanced",
     version: 1,
     template:
