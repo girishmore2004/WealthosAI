@@ -207,7 +207,10 @@ export class HybridRetrievalService {
     seeds.sort((a, b) => b.combinedScore - a.combinedScore);
 
     const seedSlice = seeds.slice(0, candidateLimit);
-    const expansions = await this.expandWithRelationships(userId, seedSlice, semanticOf, weights, now, decayRate);
+    // With no request filters the shared in-memory rows ARE the user's whole chunk set, so relationship
+    // expansion can read them directly instead of making another database round trip per phrasing.
+    const unfiltered = !(filters.sourceTypes?.length || filters.dateFrom || filters.dateTo || filters.categories?.length || filters.tags?.length);
+    const expansions = await this.expandWithRelationships(userId, seedSlice, semanticOf, weights, now, decayRate, unfiltered ? queryContext.candidates : undefined);
 
     const pool = dedupeById([...seedSlice, ...expansions]);
     const deduped = suppressNearDuplicates(pool, NEAR_DUPLICATE_JACCARD_THRESHOLD);
@@ -323,6 +326,7 @@ export class HybridRetrievalService {
     weights: (typeof RETRIEVAL_WEIGHT_PROFILES)[QueryType],
     now: number,
     decayRate: number,
+    preloaded?: CandidateRows,
   ): Promise<ScoredChunk[]> {
     if (seeds.length === 0) return [];
 
@@ -336,9 +340,12 @@ export class HybridRetrievalService {
     const lookupSourceIds = new Set([...seedSourceIds, ...relatedSourceIds]);
     if (lookupSourceIds.size === 0) return [];
 
-    const pool = await this.prisma.client.aiEmbeddingChunk.findMany({
-      where: { userId, sourceId: { in: [...lookupSourceIds] } },
-    });
+    // Same user's rows either way: `preloaded` was itself loaded `WHERE userId = …` for this search.
+    const pool = preloaded
+      ? preloaded.filter((row) => lookupSourceIds.has(row.sourceId))
+      : await this.prisma.client.aiEmbeddingChunk.findMany({
+          where: { userId, sourceId: { in: [...lookupSourceIds] } },
+        });
 
     const siblingsBySeedSource = new Map<string, typeof pool>();
     for (const row of pool) {
