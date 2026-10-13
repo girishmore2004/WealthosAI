@@ -114,12 +114,10 @@ export class DocumentOcrHandler implements OnModuleInit {
       // NEW (audit item #7): "reindexing is exclusively user-triggered... nothing in
       // Documents... automatically calls it, so the index can and will go stale."
       // Triggered here — not at upload time — because this is the point where
-      // genuinely new indexable content (ocrText) actually exists; an upload-time
-      // trigger would risk being suppressed by this one under RagAutoReindexService's
-      // hourly idempotency key if both fired within the same hour (a very likely
-      // scenario, since OCR typically completes within seconds of upload), leaving
-      // the OCR'd text unindexed until the next hour boundary or a manual reindex.
-      await this.ragAutoReindex.triggerFor(userId);
+      // genuinely new indexable content (ocrText) actually exists. The trigger is scoped to
+      // this document: under the plain hourly key, a document whose OCR finished after any
+      // earlier reindex in the same hour was suppressed and stayed unindexed until a later hour.
+      await this.ragAutoReindex.triggerFor(userId, documentId);
 
       return { ocrStatus: "DONE" };
     } catch (err) {
@@ -131,7 +129,7 @@ export class DocumentOcrHandler implements OnModuleInit {
         // Still triggered: even without extracted text, the document's metadata
         // (filename, category, tags, and this NOT_APPLICABLE summary) is new,
         // genuinely indexable content that wasn't present at upload time.
-        await this.ragAutoReindex.triggerFor(userId);
+        await this.ragAutoReindex.triggerFor(userId, documentId);
         return { ocrStatus: "NOT_APPLICABLE" };
       }
 
