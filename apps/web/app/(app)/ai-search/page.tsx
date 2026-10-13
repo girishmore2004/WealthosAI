@@ -274,8 +274,16 @@ export default function AiSearchPage() {
     setReindexing(true);
     setReindexMessage(null);
     try {
-      const { jobId } = await api.aiSearch.reindex();
-      setReindexMessage(`Reindex started (job ${jobId}). This runs in the background — search again in a minute or two.`);
+      const { jobId, status, reused } = await api.aiSearch.reindex();
+      setReindexMessage(
+        status === "FAILED"
+          ? `The last reindex (job ${jobId}) failed. Try again in a little while.`
+          : status === "DONE"
+            ? `Your data was already reindexed this hour (job ${jobId}) — search results are up to date with that run.`
+            : reused
+              ? `A reindex is already in progress (job ${jobId}). Search again in a minute or two.`
+              : `Reindex started (job ${jobId}). This runs in the background — search again in a minute or two.`,
+      );
     } catch (err) {
       setReindexMessage(err instanceof ApiError ? err.message : "Couldn't start reindexing right now.");
     } finally {
