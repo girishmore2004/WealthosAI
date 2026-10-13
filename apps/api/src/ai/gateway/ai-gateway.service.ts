@@ -451,7 +451,7 @@ export class AiGatewayService {
         ];
         retries++;
         this.logger.warn(
-          `AI response for "${prompt.name}" (feature "${options.feature}") failed grounding verification (attempt ${attempt + 1}), retrying with a correction: ${lastIssues[0]}`,
+          `AI response for "${prompt.name}" (feature "${options.feature}") failed grounding verification (attempt ${attempt + 1}), retrying with a correction (${unmatchedNumbers.length} unverified figure(s))`,
         );
         continue;
       }
