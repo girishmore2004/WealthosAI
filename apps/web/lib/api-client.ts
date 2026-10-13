@@ -739,7 +739,7 @@ export const api = {
   aiSearch: {
     search: (query: string, filters?: AiSearchFiltersDTO) =>
       request<AiSearchResultDTO>("/ai/search", { method: "POST", body: JSON.stringify({ query, ...filters }) }),
-    reindex: () => request<{ jobId: string; status: string }>("/ai/search/reindex", { method: "POST" }),
+    reindex: () => request<{ jobId: string; status: string; reused?: boolean }>("/ai/search/reindex", { method: "POST" }),
     jobStatus: (jobId: string) => request<AiJobStatusDTO>(`/ai/jobs/${jobId}`),
     history: (take?: number) => request<AiSearchLogDTO[]>(`/ai/search/history${take ? `?take=${take}` : ""}`),
   },
