@@ -4,6 +4,8 @@ import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { AiResult } from "../../gateway/ai-gateway.types";
 import { AiGroundingException, AiUnavailableException, AiValidationException } from "../../exceptions/ai.exceptions";
 import { RerankedChunk } from "../retrieval/reranking.service";
+import { RAG_STAGE_TIMEOUTS_MS } from "../rag.constants";
+import { withStageTimeout } from "../stage-timeout";
 
 const synthesisSchema = z.object({
   hasEvidence: z
@@ -79,7 +81,7 @@ export class AnswerSynthesisService {
 
     let result: AiResult<z.infer<typeof synthesisSchema>>;
     try {
-      result = await this.gateway.extract(input, synthesisSchema, {
+      result = await withStageTimeout(this.gateway.extract(input, synthesisSchema, {
         feature: "rag.synthesis",
         promptName: "rag.synthesis",
         userId,
@@ -91,7 +93,7 @@ export class AnswerSynthesisService {
         // citation indices look like invented figures and triggered spurious
         // "figures not present in the given facts: 0,1,2" corrective retries.
         groundingText: (r: z.infer<typeof synthesisSchema>) => r.answer,
-      });
+      }), RAG_STAGE_TIMEOUTS_MS.synthesis, "Answer synthesis");
     } catch (err) {
       // Synthesis is the ONE gateway call in the RAG pipeline (query rewrite,
       // reranking, synthesis) that previously had no fallback — an AiUnavailableException
@@ -109,7 +111,9 @@ export class AnswerSynthesisService {
       // check out numerically). Anything else (a genuine bug) still propagates rather
       // than being silently masked.
       if (err instanceof AiGroundingException) {
-        this.logger.warn(`Answer synthesis failed grounding verification for a query with ${chunks.length} retrieved chunk(s): ${err.message}`);
+        // Deliberately no err.message: it lists the unverified figures themselves, which are
+        // financial values and must not reach the logs.
+        this.logger.warn(`Answer synthesis failed grounding verification for a query with ${chunks.length} retrieved chunk(s)`);
         return {
           hasEvidence: true,
           answer: GROUNDING_FAILED_ANSWER,
@@ -120,7 +124,7 @@ export class AnswerSynthesisService {
         };
       }
       if (err instanceof AiUnavailableException || err instanceof AiValidationException) {
-        this.logger.warn(`Answer synthesis unavailable for a query with ${chunks.length} retrieved chunk(s): ${err.message}`);
+        this.logger.warn(`Answer synthesis unavailable for a query with ${chunks.length} retrieved chunk(s): ${err.name}`);
         return {
           hasEvidence: true,
           answer: AI_UNAVAILABLE_ANSWER,
