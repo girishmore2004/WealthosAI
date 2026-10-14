@@ -118,6 +118,36 @@ describe("AuthService", () => {
     });
   });
 
+  describe("demo account (no OTP)", () => {
+    it("requestOtp skips OTP generation, storage and delivery for the demo email", async () => {
+      const result = await service.requestOtp("Demo@Wealthos.ai");
+
+      expect(result.otpRequired).toBe(false);
+      expect(mockPrisma.client.otpCode.create).not.toHaveBeenCalled();
+      expect(mockOtpAdapter.send).not.toHaveBeenCalled();
+    });
+
+    it("verifyOtp signs the demo email in without checking any code", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue({ id: "demo-1", email: "demo@wealthos.ai" });
+      mockSessions.createSession.mockResolvedValue({ session: { id: "s1" }, rawToken: "tok" });
+
+      const result = await service.verifyOtp("demo@wealthos.ai", "000000");
+
+      expect(result.user.id).toBe("demo-1");
+      expect(mockPrisma.client.otpCode.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("still requires an OTP for personal emails", async () => {
+      mockPrisma.client.user.findUnique.mockResolvedValue(null);
+      mockPrisma.client.otpCode.create.mockResolvedValue({});
+
+      const result = await service.requestOtp("me@gmail.com");
+
+      expect(result.otpRequired).toBe(true);
+      expect(mockOtpAdapter.send).toHaveBeenCalled();
+    });
+  });
+
   describe("verifyOtp", () => {
     it("rejects an invalid or expired code without revealing which", async () => {
       mockPrisma.client.otpCode.findFirst.mockResolvedValue(null);
