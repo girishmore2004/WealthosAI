@@ -69,6 +69,12 @@ export default () => ({
     ? process.env.CROSS_SITE_COOKIES === "true"
     : process.env.NODE_ENV === "production",
   otpAdapter: process.env.OTP_ADAPTER ?? "mock",
+  // Emails that sign in WITHOUT an OTP (public demo account). Comma-separated; blank
+  // falls back to demo@wealthos.ai. Keep these accounts demo-data only.
+  demoLoginEmails: (process.env.DEMO_LOGIN_EMAILS ?? "demo@wealthos.ai")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
   // NEW: selects the OCR implementation Documents uses — see
   // documents/adapters/ocr-adapter.factory.ts. "tesseract" (default) is the real,
   // free/OSS OCR engine; "mock" keeps the deterministic zero-dependency placeholder
