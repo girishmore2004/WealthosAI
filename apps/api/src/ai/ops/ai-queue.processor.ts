@@ -53,7 +53,10 @@ export class AiQueueProcessor implements OnModuleInit, OnModuleDestroy {
 
         return result;
       },
-      { connection, concurrency: 2 },
+      // lockDuration: OCR and reindex run in this same process and can keep the event loop busy for far longer
+      // than BullMQ's 30s default, so the lock could not be renewed ("could not renew lock for job") and the
+      // job was failed and retried while still running. A longer lock lets a slow job finish.
+      { connection, concurrency: 2, lockDuration: 300_000 },
     );
 
     this.worker.on("failed", async (job, err) => {
