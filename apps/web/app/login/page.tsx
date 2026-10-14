@@ -6,19 +6,28 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { api, ApiError } from "@/lib/api-client";
+import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const router = useRouter();
+  const { refresh } = useAuth();
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      await api.auth.requestOtp(email);
+      const res = (await api.auth.requestOtp(email)) as { otpRequired?: boolean };
+      if (res.otpRequired === false) {
+        // Demo account: the API skips the OTP, so sign straight in (any 6 digits are accepted).
+        await api.auth.verifyOtp(email, "000000");
+        await refresh();
+        router.push("/dashboard");
+        return;
+      }
       router.push(`/login/verify?email=${encodeURIComponent(email)}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
@@ -56,7 +65,7 @@ export default function LoginPage() {
           </form>
         </Card>
         <p className="mt-4 text-center text-xs text-ink-faint">
-          No password needed — we&apos;ll email a 6-digit code. Demo login: demo@wealthos.ai
+          No password needed — we&apos;ll email a 6-digit code. Demo login (no code needed): demo@wealthos.ai
         </p>
       </div>
     </div>
