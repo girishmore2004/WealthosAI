@@ -38,7 +38,7 @@ function VerifyForm() {
         <div className="mb-8 text-center">
           <p className="font-display text-2xl text-ink">Enter your code</p>
           <p className="mt-1 text-sm text-ink-faint">
-            Sent to {email || "your email"}. In dev, check the API console log.
+            Sent to {email || "your email"}. Check your inbox for the 6-digit code.
           </p>
         </div>
         <Card>
