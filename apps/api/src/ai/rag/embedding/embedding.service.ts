@@ -153,6 +153,9 @@ export class EmbeddingService implements OnModuleInit {
         for (const text of texts) {
           const output = await extractor(clip(text), { pooling: "mean", normalize: true });
           results.push({ vector: Array.from(output.data as Float32Array), version: EMBEDDING_MODEL_VERSION });
+          // Hand the event loop back between chunks. A reindex embeds hundreds of chunks back to back; without
+          // this the API stalled for minutes on a small host (searches took 2+ minutes, queue locks expired).
+          if (texts.length > 1) await new Promise<void>((resolve) => setImmediate(resolve));
         }
         this.activeVersion = EMBEDDING_MODEL_VERSION;
         return results;
