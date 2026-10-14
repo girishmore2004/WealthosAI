@@ -11,6 +11,7 @@ import { OTP_DELIVERY_ADAPTER } from "./adapters/otp-adapter.factory";
 const OTP_TTL_SECONDS = 10 * 60;
 const OTP_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const OTP_RATE_LIMIT_MAX_REQUESTS = 5;
+const DEFAULT_DEMO_EMAILS = ["demo@wealthos.ai"];
 
 // Normalizes once, consistently, everywhere. The previous implementation lowercased in
 // three separate places but missed the `existingUser` lookup inside `requestOtp` (it
@@ -60,6 +61,16 @@ export class AuthService {
     return this.config.get<number>("otp.requestIpWindowSeconds") ?? 3600;
   }
 
+  // Demo accounts sign in WITHOUT an OTP (public showcase login). Every other email —
+  // i.e. every personal/real account — goes through the normal OTP flow, unchanged.
+  // Configure with DEMO_LOGIN_EMAILS (comma-separated); defaults to demo@wealthos.ai.
+  // IMPORTANT: anyone can sign in to these accounts, so they must hold demo data only.
+  private isDemoEmail(identifier: string): boolean {
+    const configured = this.config.get<string[]>("demoLoginEmails");
+    const list = Array.isArray(configured) && configured.length > 0 ? configured : DEFAULT_DEMO_EMAILS;
+    return list.includes(identifier);
+  }
+
   // --- Redis wrappers: fail OPEN on infra failure -------------------------------------
   // Rate limiting / lockout is a security control, but it sits in front of every login
   // attempt in the app. If Redis is unreachable, the original code (a bare `await
@@ -106,6 +117,12 @@ export class AuthService {
   async requestOtp(email: string, ipAddress?: string) {
     const identifier = normalizeEmail(email);
 
+    // Demo account: no code is generated, stored, logged or emailed. The client sees
+    // `otpRequired: false` and signs straight in (see verifyOtp below).
+    if (this.isDemoEmail(identifier)) {
+      return { message: "Demo account — no code required", isNewUser: false, otpRequired: false };
+    }
+
     // Minimum resend interval: the original implementation only capped total requests
     // per hour (5), which still allowed all 5 to be fired back-to-back instantly,
     // spamming the mailbox and leaving several simultaneously-valid codes outstanding at
@@ -139,12 +156,9 @@ export class AuthService {
       }
     }
 
+    // NOTE: the plaintext code must never be logged (Render logs are readable by anyone
+    // with dashboard access). It only ever leaves this process via the delivery adapter.
     const code = randomInt(100000, 999999).toString();
-
-    // Demo/debug visibility only.
-    // This does NOT change OTP generation, hashing, storage, verification,
-    // expiry, rate limiting, or email delivery.
-    this.logger.log(`[DEMO OTP] ${identifier}: ${code}`);
 
     const existingUser = await this.prisma.client.user.findUnique({ where: { email: identifier } });
 
@@ -161,11 +175,19 @@ export class AuthService {
     await this.safeSet(cooldownKey, "1", this.resendCooldownSeconds, "otp resend cooldown set");
     await this.audit.log("otp_requested", existingUser?.id, { email: identifier });
 
-    return { message: "OTP sent", isNewUser: !existingUser };
+    return { message: "OTP sent", isNewUser: !existingUser, otpRequired: true };
   }
 
   async verifyOtp(email: string, code: string, userAgent?: string, ipAddress?: string) {
     const identifier = normalizeEmail(email);
+
+    // Demo account: skip OTP verification entirely and open a normal session.
+    if (this.isDemoEmail(identifier)) {
+      const demoUser = await this.getOrCreateUser(identifier);
+      const demo = await this.sessions.createSession(demoUser.id, userAgent, ipAddress);
+      await this.audit.log("login_success", demoUser.id, { via: "demo" });
+      return { user: demoUser, session: demo.session, rawToken: demo.rawToken };
+    }
 
     // Lockout check happens BEFORE touching OtpCode at all. A locked-out identifier gets
     // the same 429 regardless of whether the submitted code would otherwise have
