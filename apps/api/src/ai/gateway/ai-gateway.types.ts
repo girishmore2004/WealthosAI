@@ -159,14 +159,19 @@ export interface AiResult<T> {
 // Every structured call wraps the caller's schema in this envelope so the model always
 // self-reports a confidence alongside the actual payload, rather than confidence being
 // bolted on separately after the fact.
-export function withConfidence<T extends z.ZodTypeAny>(schema: T) {
+//
+// `defaultConfidence`: when given, a response that omits `confidence` is accepted with that value instead
+// of failing validation and burning a retry. Only for callers whose payload is the real result and where
+// the number is advisory (ranking); every other envelope still requires the model to report it.
+export function withConfidence<T extends z.ZodTypeAny>(schema: T, defaultConfidence?: number) {
+  const confidence = z
+    .number()
+    .min(0)
+    .max(1)
+    .describe("Your own confidence in this result, from 0 (guessing) to 1 (certain), given only the provided input.");
   return z.object({
     result: schema,
-    confidence: z
-      .number()
-      .min(0)
-      .max(1)
-      .describe("Your own confidence in this result, from 0 (guessing) to 1 (certain), given only the provided input."),
+    confidence: defaultConfidence === undefined ? confidence : confidence.default(defaultConfidence),
   });
 }
 
@@ -211,6 +216,9 @@ export const rankingEnvelope = withConfidence(
       .preprocess((v) => normalizeRationale(v), z.string().max(RATIONALE_MAX_CHARS))
       .describe("One or two short sentences (under 300 characters) explaining the ordering"),
   }),
+  // The model sometimes returns a correct ordering without `confidence` ("confidence: Required" in the logs),
+  // which discarded the whole rerank and fell back to unranked order. 0.5 = "no stated confidence".
+  0.5,
 );
 
 export const summaryEnvelope = withConfidence(z.object({ summary: z.string() }));
