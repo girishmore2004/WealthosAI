@@ -166,7 +166,7 @@ export class RagService {
     if (understandingNote) explanationParts.push(understandingNote);
     if (noDocumentsIndexed) {
       explanationParts.push(
-        "None of your uploaded documents are in the search index, so this question could not be answered from them. Check that the document finished text extraction (its status must be done, not failed or not applicable), then use “Reindex my data” and ask again.",
+        `None of your uploaded documents are in the search index, so this question could not be answered from them. ${await this.describeDocumentStatuses(userId)}`,
       );
     }
     if (indexEmpty) {
@@ -292,6 +292,26 @@ export class RagService {
     this.logSummary(plan, understanding, { candidates: candidateCount, merged: merged.length, cited: citedSources.length, mode: result.retrievalMode ?? "hybrid", result, documentChunks: documentChunkCount });
     await this.logSearch(userId, query, plan, merged, synthesisResult.citedChunkIds, result);
     return result;
+  }
+
+  /** Why uploads are missing from the index, in the user's terms: how many documents exist per extraction
+   * status. Only an indexed document has text, and only status DONE produces text. Never throws. */
+  private async describeDocumentStatuses(userId: string): Promise<string> {
+    const generic = "Check that the document finished text extraction (its status must be done, not pending, failed or not applicable), then use “Reindex my data” and ask again.";
+    try {
+      const rows = await this.prisma.client.document.groupBy({ by: ["ocrStatus"], where: { userId }, _count: { _all: true } });
+      if (rows.length === 0) return "You have no uploaded documents yet. Upload the document first, wait for text extraction to finish, then ask again.";
+      const label: Record<string, string> = {
+        DONE: "text extracted (will be searchable after “Reindex my data”)",
+        PENDING: "still waiting for text extraction",
+        FAILED: "text extraction failed (re-upload the file)",
+        NOT_APPLICABLE: "no text could be read (unsupported or password-protected file)",
+      };
+      const parts = rows.map((r) => `${r._count._all} ${label[String(r.ocrStatus)] ?? String(r.ocrStatus).toLowerCase()}`);
+      return `Your documents: ${parts.join("; ")}.`;
+    } catch {
+      return generic;
+    }
   }
 
   private async clarificationResult(userId: string, query: string, understanding: QueryUnderstanding, t0: number): Promise<RagSearchResult> {
