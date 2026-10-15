@@ -1084,12 +1084,215 @@ export interface AiSearchLogDTO {
 
 export type CoachPath = "DETERMINISTIC" | "ADVANCED";
 
+// Mirrors the API's AdvancedCoachIntent (apps/api/src/ai/coach/coach2.constants.ts). The three
+// Phase 20 intents (create_plan, plan_progress_check, calculation_request) were missing here, so
+// the DTO below understated what POST /coach/v2/ask can actually return.
 export type AdvancedCoachIntent =
   | "prioritize_actions"
   | "goal_conflict"
   | "risk_tradeoff"
   | "compare_periods"
+  | "create_plan"
+  | "plan_progress_check"
+  | "calculation_request"
   | "general_search";
+
+// --- AI Coach unified report (additive; every field is optional on the result DTO) ----------
+// One response contract for every kind of Coach answer. Every material figure in it is either a
+// verified source value or the output of deterministic code; the language model only words it.
+
+export type CoachAnswerType = "fact" | "health" | "what_if" | "planning" | "document" | "multi_step" | "clarification" | "legacy";
+
+export type CoachEvidenceSufficiency = "sufficient" | "partial" | "insufficient";
+
+/** How trustworthy a single figure is. "verified_zero" is a recorded zero; "missing" is no record at all. */
+export type CoachDataQuality =
+  | "verified"
+  | "verified_zero"
+  | "missing"
+  | "empty"
+  | "failed_source"
+  | "stale"
+  | "conflicting"
+  | "incomplete_period"
+  | "estimate"
+  | "document_extraction";
+
+export type CoachTone = "good" | "warn" | "bad" | "info";
+
+export interface CoachFindingDTO {
+  text: string;
+  tone: CoachTone;
+}
+
+export interface CoachSnapshotItemDTO {
+  key: string;
+  label: string;
+  /** Null whenever the figure is missing or its source failed — never a fabricated zero. */
+  value: number | null;
+  display: string;
+  unit: "INR" | "%" | "months" | "count" | "text";
+  quality: CoachDataQuality;
+  note?: string;
+}
+
+export interface CoachEvidenceCardDTO {
+  id: string;
+  sourceType: string;
+  sourceName: string;
+  reference?: string;
+  period?: string;
+  value?: string;
+  excerpt?: string;
+  calculationBasis?: string;
+  citation?: { chunkId: string; page?: number };
+  quality: CoachDataQuality;
+}
+
+export interface CoachCalculationDTO {
+  id: string;
+  label: string;
+  formula: string;
+  inputs: { label: string; value: string }[];
+  result: number | null;
+  display: string;
+  unit: "INR" | "%" | "months" | "count";
+  period?: string;
+  assumptions: string[];
+  quality: CoachDataQuality;
+}
+
+export interface CoachPredictionDTO {
+  id: string;
+  label: string;
+  display: string;
+  value: number | null;
+  unit: "INR" | "%" | "months";
+  horizon: string;
+  assumptions: string[];
+}
+
+export interface CoachScenarioRowDTO {
+  metric: string;
+  baseline: string;
+  proposed: string;
+  delta: string;
+  direction: "better" | "worse" | "neutral";
+}
+
+export interface CoachScenarioComparisonDTO {
+  scenarioType: string;
+  label: string;
+  params: Record<string, number | string>;
+  rows: CoachScenarioRowDTO[];
+  source: "simulator" | "scenario_studio";
+  narrative?: string;
+  assumptions: string[];
+}
+
+export interface CoachRecommendationDTO {
+  id: string;
+  rank: number;
+  title: string;
+  issue: string;
+  evidence: string[];
+  whyItMatters: string;
+  nextStep: string;
+  estimatedImpact?: { display: string; formula: string };
+  priority: { level: "urgent" | "high" | "medium" | "low"; reason: string };
+  feasibility: string;
+  tradeoffs: string[];
+  missingInfo: string[];
+  destination?: { label: string; href: string };
+}
+
+export interface CoachActionStepDTO {
+  step: number;
+  title: string;
+  detail: string;
+  timeframe?: string;
+  href?: string;
+}
+
+export interface CoachChartDTO {
+  id: string;
+  kind: "bar" | "line" | "pie";
+  title: string;
+  unit: "INR" | "%" | "months";
+  xKey: string;
+  series: { key: string; label: string }[];
+  /** Real backend/deterministic values only. A null cell means "no data", never zero. */
+  data: Record<string, string | number | null>[];
+  note?: string;
+  source: string;
+}
+
+export interface CoachDataGapDTO {
+  code: string;
+  message: string;
+  impact: string;
+}
+
+export interface CoachExecutionActionDTO {
+  id: string;
+  kind: "OPEN" | "OPEN_SCENARIO_STUDIO" | "CREATE_PLAN";
+  label: string;
+  description: string;
+  href?: string;
+  /** True for anything that writes. The UI must show `preview` and get an explicit confirmation first. */
+  requiresConfirmation: boolean;
+  /** For CREATE_PLAN: the exact body for POST /coach/v2/plans. */
+  payload?: Record<string, unknown>;
+  preview?: { title: string; changes: { label: string; value: string }[] };
+}
+
+export interface CoachCitationDTO {
+  chunkId: string;
+  sourceType: string;
+  title: string;
+  snippet: string;
+  confidence: "high" | "medium" | "low";
+}
+
+export interface CoachEngineStatusDTO {
+  name: "financial_context" | "calculations" | "ai_search" | "scenario" | "documents" | "explanation";
+  status: "used" | "unavailable" | "skipped";
+  detail?: string;
+}
+
+export interface CoachReportMetadataDTO {
+  version: 1;
+  generatedAt: string;
+  engines: CoachEngineStatusDTO[];
+  partial: boolean;
+  /** "deterministic" = wording written by code; "model" = AI-worded and numerically verified. */
+  explanationSource: "deterministic" | "model";
+  executionMs: number;
+}
+
+export interface CoachReportDTO {
+  directAnswer: string;
+  /** Optional AI-worded explanation, present only if every number in it was verified against the facts. */
+  explanation?: string;
+  answerType: CoachAnswerType;
+  evidenceSufficiency: CoachEvidenceSufficiency;
+  keyFindings: CoachFindingDTO[];
+  financialSnapshot: { asOf: string; currency: "INR"; items: CoachSnapshotItemDTO[] };
+  evidenceCards: CoachEvidenceCardDTO[];
+  calculations: CoachCalculationDTO[];
+  predictions: CoachPredictionDTO[];
+  scenarioComparison: CoachScenarioComparisonDTO | null;
+  recommendations: CoachRecommendationDTO[];
+  actionPlan: CoachActionStepDTO[];
+  charts: CoachChartDTO[];
+  assumptions: string[];
+  risks: string[];
+  dataGaps: CoachDataGapDTO[];
+  followUpSuggestions: string[];
+  executionActions: CoachExecutionActionDTO[];
+  citations: CoachCitationDTO[];
+  metadata: CoachReportMetadataDTO;
+}
 
 export interface AgenticCoachResultDTO {
   question: string;
@@ -1106,6 +1309,8 @@ export interface AgenticCoachResultDTO {
   planId: string | null;
   criticFlags: string[];
   createdTaskIds: string[];
+  /** Unified, validated report. Optional so older clients and stored runs remain valid. */
+  report?: CoachReportDTO | null;
 }
 
 export interface AgenticCoachRunDTO {
