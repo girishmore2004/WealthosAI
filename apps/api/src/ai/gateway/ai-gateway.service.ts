@@ -12,7 +12,7 @@ import { RedactionService } from "./redaction.service";
 import { PromptRegistryService } from "../ops/prompt-registry.service";
 import { AiLoggingService } from "../ops/ai-logging.service";
 import { AiCacheService } from "../ops/ai-cache.service";
-import { AiGroundingException, AiValidationException } from "../exceptions/ai.exceptions";
+import { AiGroundingException, AiUnavailableException, AiValidationException } from "../exceptions/ai.exceptions";
 import {
   AiCallOptions,
   AiResult,
@@ -336,6 +336,9 @@ export class AiGatewayService {
     const maxAttempts = 1 + correctiveRetries;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // The caller already gave up (its stage budget ran out): do not start another model call.
+      if (options.signal?.aborted) throw new AiUnavailableException("request aborted by the caller");
+
       const messages =
         attempt === 0
           ? [
@@ -366,6 +369,7 @@ export class AiGatewayService {
             temperature,
             maxTokens: MAX_OUTPUT_TOKENS,
             jsonMode: true,
+            signal: options.signal,
           });
           modelUsed = candidateModel;
           fallbackUsed = fallbackUsed || chainIdx > 0;
@@ -373,6 +377,9 @@ export class AiGatewayService {
           chainStartIndex = chainIdx; // stick with whatever candidate just worked for any further attempts
           break;
         } catch (err) {
+          // An abort is the caller's decision, not a model failure: no cooldown, no stats, no error log, and
+          // no walking on to the next model in the chain.
+          if (options.signal?.aborted) throw err;
           this.routingStats.record(candidateModel, taskType, "ERROR", Date.now() - attemptStartedAt);
           this.markModelFailed(candidateModel, err);
           const isLastCandidate = chainIdx === routing.chain.length - 1;
