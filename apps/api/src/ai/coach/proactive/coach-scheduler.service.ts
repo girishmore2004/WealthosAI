@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/commo
 import { ConfigService } from "@nestjs/config";
 import { Queue } from "bullmq";
 import Redis from "ioredis";
-import { createAiQueueConnection } from "../../ops/ai-queue.connection";
+import { attachBullErrorLogging, createAiQueueConnection } from "../../ops/ai-queue.connection";
 
 export const COACH_PROACTIVE_QUEUE_NAME = "coach-proactive-checks";
 export const COACH_PROACTIVE_JOB_NAME = "daily-scan";
@@ -41,7 +41,7 @@ export class CoachSchedulerService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.connection = createAiQueueConnection(redisUrl);
-      this.queue = new Queue(COACH_PROACTIVE_QUEUE_NAME, { connection: this.connection });
+      this.queue = attachBullErrorLogging(new Queue(COACH_PROACTIVE_QUEUE_NAME, { connection: this.connection }), "Queue coach-proactive");
 
       // 08:00 IST daily. BullMQ's repeatable-job dedup (same queue + same jobId +
       // same repeat pattern) makes this call idempotent across API restarts/replicas
