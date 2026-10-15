@@ -185,7 +185,7 @@
 
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useEffect, useState, FormEvent } from "react";
 import type { ScenarioStudioResultDTO, ScenarioVariantLabel } from "@wealthos/types";
 import { api, ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/Card";
@@ -231,6 +231,17 @@ export default function ScenarioStudioPage() {
     e.preventDefault();
     build(prompt);
   };
+
+  // Arriving from the AI Coach ("Explore in Scenario Studio") pre-fills the question. It only fills the box:
+  // nothing runs until the user presses the build button.
+  useEffect(() => {
+    try {
+      const incoming = new URLSearchParams(window.location.search).get("prompt");
+      if (incoming) setPrompt(incoming.slice(0, 500));
+    } catch {
+      /* no URL available: leave the box empty */
+    }
+  }, []);
 
   return (
     <div className="space-y-8">
