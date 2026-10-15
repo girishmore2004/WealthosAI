@@ -54,10 +54,30 @@ const RULES: RedactionRule[] = [
   { type: "account", pattern: /\b\d{9,18}\b/g, replacement: "[redacted-account]" },
 ];
 
+export interface RedactionOptions {
+  /** Leave an insurance policy number written next to its label ("Policy No : 1234567890123456") untouched.
+   * Only for text that is the user's OWN uploaded document, where the question is often "what is my policy
+   * number": the default rules read a 13-16 digit policy number as a card number and replaced it, so that
+   * question could never be answered. Every other rule (card, Aadhaar, PAN, account, ...) still applies, and
+   * policy numbers in free text (coach questions, chat) are still redacted unless the caller opts in. */
+  keepPolicyNumbers?: boolean;
+}
+
+// "Policy No : X", "Policy Number: X", "Policy # X" followed by an identifier that contains a digit.
+const POLICY_NUMBER_PATTERN = /\bpolicy\s*(?:no\.?|number|num|#)\s*[:\-]?\s*(?=[A-Z0-9\/-]*\d)[A-Z0-9][A-Z0-9\/-]{5,}/gi;
+// Private-use characters never occur in document text, so a stashed policy number cannot be confused with it.
+const STASH_OPEN = "\uE000";
+const STASH_CLOSE = "\uE001";
+const STASH_PATTERN = new RegExp(`${STASH_OPEN}(\\d+)${STASH_CLOSE}`, "g");
+
 @Injectable()
 export class RedactionService {
-  redact(text: string): RedactionResult {
-    let result = text;
+  redact(text: string, options: RedactionOptions = {}): RedactionResult {
+    // Policy numbers to keep are set aside before the rules run and put back afterwards.
+    const kept: string[] = [];
+    let result = options.keepPolicyNumbers
+      ? text.replace(POLICY_NUMBER_PATTERN, (match) => `${STASH_OPEN}${kept.push(match) - 1}${STASH_CLOSE}`)
+      : text;
     const redactedTypes: string[] = [];
 
     for (const rule of RULES) {
@@ -68,6 +88,8 @@ export class RedactionService {
       rule.pattern.lastIndex = 0;
       result = result.replace(rule.pattern, rule.replacement);
     }
+
+    if (kept.length > 0) result = result.replace(STASH_PATTERN, (_m, i: string) => kept[Number(i)] ?? "");
 
     return { text: result, redactedTypes };
   }
