@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { AiSourceType } from "@wealthos/db";
-import { EmbeddingService, cosineSimilarity } from "../embedding/embedding.service";
+import { EmbeddingService, HASH_EMBEDDING_MODEL_VERSION, cosineSimilarity, hashEmbedding } from "../embedding/embedding.service";
 import { KeywordMatch, KeywordScorerService, tokenize } from "./keyword-scorer.service";
 import {
   LEXICAL_EVIDENCE_MIN_COVERAGE,
@@ -181,9 +181,18 @@ export class HybridRetrievalService {
     // Only vectors from the same embedding space as the query are comparable. A chunk stored under a
     // different version (mid-migration, or fallback vs neural) gets no semantic credit rather than a
     // meaningless cosine value; it can still win on keywords.
+    // When the query was embedded by the neural model but a chunk was stored by the hashed fallback (the model
+    // was still loading / failed at index time), the chunk is compared against the query hashed the SAME way
+    // instead of being given 0. Without this, one stale index made every semantic score 0 and search ran
+    // "keywords only" until a manual reindex. The reverse (neural chunk, hashed query) cannot be bridged.
+    let hashedQueryVector: number[] | null = null;
     const semanticOf = (chunk: { embedding: number[]; embeddingModelVersion?: number }): number => {
       if (!queryEmbedding) return 0;
-      if (queryVersion !== undefined && chunk.embeddingModelVersion !== undefined && chunk.embeddingModelVersion !== queryVersion) return 0;
+      if (queryVersion !== undefined && chunk.embeddingModelVersion !== undefined && chunk.embeddingModelVersion !== queryVersion) {
+        if (chunk.embeddingModelVersion !== HASH_EMBEDDING_MODEL_VERSION) return 0;
+        hashedQueryVector ??= hashEmbedding(query);
+        return cosineSimilarity(hashedQueryVector, chunk.embedding);
+      }
       return cosineSimilarity(queryEmbedding, chunk.embedding);
     };
 
