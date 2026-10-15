@@ -18,6 +18,10 @@ export interface GroqChatParams {
   jsonMode: boolean;
   /** Cancels the request (and any retry still to come). An aborted call throws AiUnavailableException. */
   signal?: AbortSignal;
+  /** Overrides the configured transport retry count for this call. The gateway passes 0 for a model that has
+   * another candidate behind it, so a slow or rate-limited model hands over to the next one after a single
+   * attempt instead of spending the caller's whole time budget on its own retries. */
+  maxRetries?: number;
 }
 
 export interface GroqChatResult {
@@ -66,8 +70,9 @@ export class GroqClient {
     }
 
     let lastError: string = "unknown error";
+    const maxRetries = Math.max(0, Math.min(params.maxRetries ?? this.maxRetries, this.maxRetries));
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (params.signal?.aborted) throw new AiUnavailableException("request aborted by the caller");
 
       const controller = new AbortController();
@@ -99,7 +104,7 @@ export class GroqClient {
         if (response.status === 429 || response.status >= 500) {
           const retryAfter = response.headers.get("retry-after");
           lastError = `HTTP ${response.status} from Groq`;
-          if (attempt < this.maxRetries) {
+          if (attempt < maxRetries) {
             const backoffMs = retryAfter ? Number(retryAfter) * 1000 : 500 * 2 ** attempt;
             await sleep(backoffMs, params.signal);
             continue;
@@ -133,7 +138,7 @@ export class GroqClient {
         // The caller gave up: stop now, no retry, no backoff.
         if (params.signal?.aborted) throw new AiUnavailableException("request aborted by the caller");
         if (err instanceof AiUnavailableException) {
-          if (attempt < this.maxRetries && err.message.includes("HTTP 5")) {
+          if (attempt < maxRetries && err.message.includes("HTTP 5")) {
             await sleep(500 * 2 ** attempt, params.signal);
             continue;
           }
@@ -141,7 +146,7 @@ export class GroqClient {
         }
         const isAbort = err instanceof Error && err.name === "AbortError";
         lastError = isAbort ? `request timed out after ${this.timeoutMs}ms` : (err as Error).message;
-        if (attempt < this.maxRetries) {
+        if (attempt < maxRetries) {
           await sleep(500 * 2 ** attempt, params.signal);
           continue;
         }
