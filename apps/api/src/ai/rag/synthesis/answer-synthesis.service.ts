@@ -85,9 +85,9 @@ export class AnswerSynthesisService {
    * does not re-filter or re-order them, it only decides whether to trust them enough
    * to answer at all and, if so, composes the answer strictly from what's given
    * (Layer 5). Numeric grounding: every call passes `groundingContext` (built from
-   * each cited chunk's *parent* text, not just its narrow child text — "contextual
-   * chunk expansion" applied specifically here, so a number that's technically in the
-   * source but fell just outside the precise matched window still counts as grounded)
+   * each chunk's own text AND its *parent* text — "contextual chunk expansion" applied
+   * specifically here, so a number that's technically in the source but fell just
+   * outside the precise matched window still counts as grounded)
    * and `rejectOnLowGrounding: true`, so the gateway itself rejects-and-retries an
    * answer that introduces figures not present anywhere in the retrieved evidence,
    * throwing AiGroundingException if a corrective retry still doesn't fix it — see
@@ -109,19 +109,26 @@ export class AnswerSynthesisService {
 
     let result: AiResult<z.infer<typeof synthesisSchema>>;
     try {
-      result = await withStageTimeout(this.gateway.extract(input, synthesisSchema, {
-        feature: "rag.synthesis",
-        promptName: "rag.synthesis",
-        userId,
-        cacheable: false,
-        groundingContext,
-        rejectOnLowGrounding: true,
-        // Score only the prose the user will read. The structured result also carries
-        // `citedIndices` (e.g. [0,1,2]); scoring the serialized object made those
-        // citation indices look like invented figures and triggered spurious
-        // "figures not present in the given facts: 0,1,2" corrective retries.
-        groundingText: (r: z.infer<typeof synthesisSchema>) => r.answer,
-      }), RAG_STAGE_TIMEOUTS_MS.synthesis, "Answer synthesis");
+      result = await withStageTimeout(
+        (signal) =>
+          this.gateway.extract(input, synthesisSchema, {
+            feature: "rag.synthesis",
+            promptName: "rag.synthesis",
+            userId,
+            cacheable: false,
+            groundingContext,
+            rejectOnLowGrounding: true,
+            // Score only the prose the user will read. The structured result also carries
+            // `citedIndices` (e.g. [0,1,2]); scoring the serialized object made those
+            // citation indices look like invented figures and triggered spurious
+            // "figures not present in the given facts: 0,1,2" corrective retries.
+            groundingText: (r: z.infer<typeof synthesisSchema>) => r.answer,
+            // The stage budget cancels the call (and its grounding retry) instead of leaving it running.
+            signal,
+          }),
+        RAG_STAGE_TIMEOUTS_MS.synthesis,
+        "Answer synthesis",
+      );
     } catch (err) {
       // Synthesis is the ONE gateway call in the RAG pipeline (query rewrite,
       // reranking, synthesis) that previously had no fallback — an AiUnavailableException
@@ -202,24 +209,28 @@ export class AnswerSynthesisService {
   }
 }
 
-/** Broader than `sourceList` above on purpose: uses each cited chunk's *parent* text
- * (the larger section it was extracted from at index time, see ChunkerService)
- * instead of just the narrow child chunk, deduplicated per (sourceType, sourceId) so
- * a source with several cited chunks doesn't repeat its own parent text multiple
- * times in the context the grounding check compares against. This is "numeric claims
- * in answers are grounded in retrieved chunks" applied with real headroom: a figure
- * that's genuinely in the source document but fell just outside the precise ~180-word
- * window that won the similarity search still passes grounding, rather than the
- * synthesis model being penalized for citing a true number the narrow child chunk
- * alone didn't happen to contain. */
+/** Broader than `sourceList` above on purpose: for every chunk the model was shown, this includes BOTH the
+ * chunk's own text and its *parent* text (the larger section it was extracted from at index time, see
+ * ChunkerService), so a figure that is genuinely in the source document but fell just outside the precise
+ * ~180-word window that won the similarity search still counts as grounded.
+ *
+ * Deduplicated by the TEXT itself, never by source. It used to keep only the first chunk's parent per
+ * (sourceType, sourceId). PDFs are chunked per page ("[Page N]"), so a multi-page policy contributed just one
+ * page to the grounding context while the model was shown (and cited) passages from several pages. Every figure
+ * taken from any other page then looked invented, the answer was rejected twice ("10 unverified figure(s)")
+ * and the user got no answer at all. Chunks that share one parent still add that parent only once. */
 function buildGroundingContext(chunks: RerankedChunk[]): string {
   const seen = new Set<string>();
   const parts: string[] = [];
+  const add = (text: string | null | undefined) => {
+    const value = text?.trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    parts.push(value);
+  };
   for (const chunk of chunks) {
-    const key = `${chunk.sourceType}:${chunk.sourceId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    parts.push(chunk.parentText || chunk.text);
+    add(chunk.text);
+    add(chunk.parentText);
   }
   return parts.join("\n\n");
 }
