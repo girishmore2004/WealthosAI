@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { CoachReportDTO, LoanDTO, RunScenarioResponseDTO, ScenarioType } from "@wealthos/types";
+import { CoachReportDTO, RunScenarioResponseDTO, ScenarioType } from "@wealthos/types";
+import { LoansService } from "../../../loans/loans.service";
 import { Dec, ZERO } from "../../../common/financial-facts/financial-formulas";
 import { SimulatorService } from "../../../simulator/simulator.service";
 import { ScenarioStudioService } from "../../scenario-studio/scenario-studio.service";
@@ -68,6 +69,9 @@ interface HandlerResult {
   explainable?: boolean;
   cited?: string[];
 }
+
+// Whatever LoansService.debtSummary actually returns, so this file never disagrees with the service about field types.
+type LoanRow = Awaited<ReturnType<LoansService["debtSummary"]>>["loans"][number];
 
 const ASSUMED_RETURN_FALLBACK_PERCENT = 10;
 const ILLUSTRATIVE_PREPAY_UNIT = 100_000;
@@ -570,7 +574,7 @@ export class CoachOrchestratorService {
         targetMonths: emergency?.targetMonths ? round2(emergency.targetMonths) : null,
         targetIsDefault: emergency?.targetIsDefault ?? false,
       },
-      loans: debt.ok ? debt.data.loans.map((l: LoanDTO) => ({ id: l.id, lender: l.lender, type: String(l.type), ratePercent: num(l.interestRateAnnual), outstanding: num(l.outstandingPrincipal), emi: num(l.emiAmount) })) : [],
+      loans: debt.ok ? debt.data.loans.map((l) => ({ id: l.id, lender: l.lender, type: String(l.type), ratePercent: num(l.interestRateAnnual), outstanding: num(l.outstandingPrincipal), emi: num(l.emiAmount) })) : [],
       emiToIncome: emiRatio ? Number(emiRatio.toFixed(4)) : null,
       goals: goals.ok ? goals.data.assessed : [],
       retirement: retirement.ok ? { onTrack: retirement.data.onTrack, corpusGap: num(retirement.data.corpusGap), requiredMonthlySip: num(retirement.data.requiredMonthlySip), yearsToRetirement: retirement.data.yearsToRetirement } : null,
@@ -707,7 +711,7 @@ export class CoachOrchestratorService {
     };
   }
 
-  private pickLoan(loans: LoanDTO[], hint?: string): { loan: LoanDTO; how: string } | null {
+  private pickLoan(loans: LoanRow[], hint?: string): { loan: LoanRow; how: string } | null {
     if (loans.length === 0) return null;
     if (hint) {
       const h = hint.toLowerCase();
