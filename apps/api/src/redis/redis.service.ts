@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
+import { REDIS_RESILIENCE_OPTIONS, attachRedisErrorLogging } from "../ai/ops/ai-queue.connection";
 
 // Thin key-value wrapper around ioredis, used for server-side sessions and rate limiting.
 // Free/self-hosted via docker-compose — no paid cache service required.
@@ -9,10 +10,14 @@ export class RedisService implements OnModuleDestroy {
   public readonly client: Redis;
 
   constructor(private config: ConfigService) {
-    this.client = new Redis(this.config.get<string>("redisUrl")!, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 2,
-    });
+    this.client = attachRedisErrorLogging(
+      new Redis(this.config.get<string>("redisUrl")!, {
+        ...REDIS_RESILIENCE_OPTIONS,
+        lazyConnect: true,
+        maxRetriesPerRequest: 2,
+      }),
+      "Cache/session",
+    );
     this.client.connect().catch((err) => {
       // eslint-disable-next-line no-console
       console.warn("Redis connection failed — is docker-compose up? Sessions will not persist.", err.message);
