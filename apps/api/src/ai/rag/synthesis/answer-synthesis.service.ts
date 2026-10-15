@@ -11,7 +11,11 @@ const synthesisSchema = z.object({
   hasEvidence: z
     .boolean()
     .describe("False if the provided sources do not actually contain enough to answer the question."),
-  answer: z.string().describe("The answer, grounded only in the provided numbered sources. Empty string if hasEvidence is false."),
+  answer: z
+    .string()
+    .describe(
+      "The answer as compact Markdown (a direct answer, then a **Key details** bullet list), grounded only in the provided numbered sources. Empty string if hasEvidence is false.",
+    ),
   citedIndices: z.array(z.number().int().min(0)).describe("Indices (from the numbered source list) actually used to compose the answer."),
 });
 
@@ -28,6 +32,19 @@ export interface SynthesisResult {
   groundingScore: number | null;
   hallucinationRisk: "unmeasured" | "low" | "medium" | "high";
 }
+
+/** How the `answer` text must be laid out, appended to every synthesis request. The web page renders exactly
+ * this small Markdown subset (plain sentences, **bold** labels, "- " bullets, [n] source markers).
+ * Deliberately no numbered lists or tables: a list number would be read by the grounding check as a figure
+ * the sources do not contain. */
+export const ANSWER_FORMAT_INSTRUCTIONS = [
+  "Format the \"answer\" as compact Markdown:",
+  "- Start with the direct answer in one or two plain sentences (no heading, no label).",
+  "- Then a blank line, a line containing only **Key details**, and one \"- \" bullet per fact, written as \"**Label:** value, with its date or period [n]\" where n is the source index. Group related items, for example one bullet per policy or per account.",
+  "- If the question asks for something the sources do not contain, add a blank line, a line containing only **Not in your documents**, and one \"- \" bullet naming each missing item.",
+  "- Use only \"- \" bullets: no numbered lists, tables, \"#\" headings or emojis. Never state the same fact twice. Keep it to about ten bullets at most.",
+  "- Every figure you write must still appear verbatim in the sources.",
+].join("\n");
 
 const NO_EVIDENCE_ANSWER =
   "I couldn't find anything in your documents, reports, coach history, or alerts that answers this — rather than guess, I'm telling you there's no evidence for it.";
@@ -76,7 +93,10 @@ export class AnswerSynthesisService {
       .map((c, i) => `[${i}] (${c.sourceType}${sourceTitle(c)}, ${formatDate(c.sourceCreatedAt)}) ${c.text}`)
       .join("\n\n");
 
-    const input = `Question: ${query}\n\nNumbered sources (answer ONLY using these, cite which you used):\n\n${sourceList}`;
+    // The format instructions sit right after the question, before the sources: if the gateway has to trim an
+    // over-long input to its token budget it removes text from the MIDDLE (TokenBudgetService.trimToBudget), so
+    // it is the sources that lose text, never the question or the instructions at the head.
+    const input = `Question: ${query}\n\n${ANSWER_FORMAT_INSTRUCTIONS}\n\nNumbered sources (answer ONLY using these, cite which you used):\n\n${sourceList}`;
     const groundingContext = buildGroundingContext(chunks);
 
     let result: AiResult<z.infer<typeof synthesisSchema>>;
