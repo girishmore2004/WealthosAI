@@ -251,7 +251,9 @@ export class RagIndexingService implements OnModuleInit {
       // Page furniture repeated on every page (letterhead, registered-office footer, "electronically generated"
       // notice) is dropped first, so chunks are about the document's content rather than its footer.
       const ocrText = doc.ocrText ? stripRepeatedPageBoilerplate(doc.ocrText) : doc.ocrText;
-      const text = this.redaction.redact([doc.summary, ocrText].filter(Boolean).join("\n\n")).text;
+      // An insurance policy number printed next to its "Policy No" label is kept (it is the user's own document and
+      // "what is my policy number" is a normal question); everything else is scrubbed as before.
+      const text = this.redaction.redact([doc.summary, ocrText].filter(Boolean).join("\n\n"), { keepPolicyNumbers: true }).text;
       if (!text.trim()) continue;
       sources.push({
         sourceType: "DOCUMENT",
