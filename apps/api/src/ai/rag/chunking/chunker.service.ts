@@ -63,6 +63,26 @@ export class ChunkerService {
     const cleaned = text.trim();
     if (!cleaned) return [];
 
+    // Text from a PDF carries "--- Page N ---" markers. Chunking each page on its own keeps a page's table or
+    // field list together (a policy schedule's premium, period and sum insured are on one page) instead of
+    // letting a chunk straddle two pages, and every chunk is labelled with its page so the label is embedded,
+    // searched and shown to the answer model ("[Page 2] ...").
+    const pages = splitIntoPages(cleaned);
+    if (pages.length > 0) {
+      const all: TextChunk[] = [];
+      for (const { label, body } of pages) {
+        for (const c of this.chunkPlain(body, targetWords, overlapWords, parentTargetWords)) {
+          const prefix = label ? `[${label}] ` : "";
+          all.push({ index: all.length, text: prefix + c.text, parentText: prefix + c.parentText });
+        }
+      }
+      return all;
+    }
+
+    return this.chunkPlain(cleaned, targetWords, overlapWords, parentTargetWords);
+  }
+
+  private chunkPlain(cleaned: string, targetWords: number, overlapWords: number, parentTargetWords: number): TextChunk[] {
     const parentSections = groupParagraphsIntoParents(cleaned, parentTargetWords);
     const children: { text: string; parentText: string }[] = [];
 
@@ -78,6 +98,27 @@ export class ChunkerService {
       .map((c, index) => ({ index, text: c.text.trim(), parentText: c.parentText.trim() || c.text.trim() }))
       .filter((c) => c.text.length > 0);
   }
+}
+
+const PAGE_MARKER_LINE = /^--- Page (\d+) ---$/;
+const EMPTY_PAGE_NOTE = "(no text detected on this page)";
+
+/** Splits text on "--- Page N ---" marker lines. Returns [] when the text has no marker (so callers use the
+ * plain path). Text before the first marker (the stored summary) is returned with no label. Pages with no
+ * text are dropped. */
+function splitIntoPages(text: string): { label: string; body: string }[] {
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((l) => PAGE_MARKER_LINE.test(l.trim()))) return [];
+
+  const pages: { label: string; body: string[] }[] = [{ label: "", body: [] }];
+  for (const line of lines) {
+    const m = PAGE_MARKER_LINE.exec(line.trim());
+    if (m) pages.push({ label: `Page ${m[1]}`, body: [] });
+    else pages[pages.length - 1].body.push(line);
+  }
+  return pages
+    .map((p) => ({ label: p.label, body: p.body.join("\n").trim() }))
+    .filter((p) => p.body.length > 0 && p.body !== EMPTY_PAGE_NOTE);
 }
 
 function groupParagraphsIntoParents(text: string, parentTargetWords: number): string[] {
