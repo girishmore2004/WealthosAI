@@ -5,7 +5,7 @@ import { QueryRewriteService } from "./retrieval/query-rewrite.service";
 import { HybridRetrievalService, QueryContext, ScoredChunk, SearchFilters, mergeCandidatePools, suppressNearDuplicates } from "./retrieval/hybrid-retrieval.service";
 import { RerankedChunk, RerankingService } from "./retrieval/reranking.service";
 import { AnswerSynthesisService } from "./synthesis/answer-synthesis.service";
-import { CITATION_CONFIDENCE_BANDS, TOP_K_RERANKED, adaptiveRerankLimit, QueryComplexity, QueryType } from "./rag.constants";
+import { CITATION_CONFIDENCE_BANDS, MAX_RERANKED, adaptiveRerankLimit, QueryComplexity, QueryType } from "./rag.constants";
 import { QueryUnderstanding, normalizeForRetrieval, understandQuery } from "./retrieval/query-understanding";
 
 /** What the search could and could not establish. "unverified" means evidence was found but the
@@ -230,9 +230,12 @@ export class RagService {
       return result;
     }
 
-    // A question about a document is usually answered by several neighbouring passages (a list of covered
-    // conditions, a clause and its exceptions); a "simple" question's limit of 3 kept too few of them.
-    const rerankLimit = asksAboutDocuments ? Math.max(adaptiveRerankLimit(plan.complexity), TOP_K_RERANKED) : adaptiveRerankLimit(plan.complexity);
+    // A question about a document is usually answered by several passages spread over a long text (a list of
+    // covered conditions, a clause and its exceptions, a table on another page); the default limit of 3-6
+    // kept too few of them for a 20-page policy. Insurance and loan questions are treated the same way: the
+    // detail lives in the uploaded policy / agreement, not in the one-line record.
+    const documentFocused = asksAboutDocuments || understanding.intent === "insurance" || understanding.intent === "loans";
+    const rerankLimit = documentFocused ? Math.max(adaptiveRerankLimit(plan.complexity), MAX_RERANKED) : adaptiveRerankLimit(plan.complexity);
     const rerankResult = await this.reranking.rerank(userId, query, merged, rerankLimit);
     const tRerank = Date.now();
     explanationParts.push(
@@ -273,7 +276,13 @@ export class RagService {
       // cited detail (documents, reports, history) follows. A degraded synthesis (unavailable / failed
       // grounding: confidence 0) is never appended. Source markers in the prose are renumbered to the
       // order of the cited sources shown with it.
-      answer: composeAnswer(live, { ...synthesisResult, answer: remapCitationMarkers(synthesisResult.answer, rerankResult.chunks, citedSources) }),
+      answer: composeAnswer(
+        live,
+        { ...synthesisResult, answer: remapCitationMarkers(synthesisResult.answer, rerankResult.chunks, citedSources) },
+        // Passages from the user's documents WERE read and the model found nothing in them: say so, rather than
+        // letting the document half of the answer silently disappear.
+        !synthesisResult.hasEvidence && rerankResult.chunks.some((c) => c.sourceType === "DOCUMENT"),
+      ),
       citedSources,
       retrievalConfidence,
       // The model's self-reported confidence is never shown above the measured grounding of the same answer.
@@ -533,8 +542,13 @@ export function formatLiveAnswer(text: string): string {
 export function composeAnswer(
   live: { answer: string } | null,
   synthesis: { hasEvidence: boolean; answer: string; confidence: number },
+  documentsReadWithoutAnswer = false,
 ): string {
   if (!live) return synthesis.answer;
-  if (!synthesis.hasEvidence || synthesis.confidence === 0) return formatLiveAnswer(live.answer);
+  if (!synthesis.hasEvidence || synthesis.confidence === 0) {
+    return documentsReadWithoutAnswer && !synthesis.hasEvidence
+      ? `${formatLiveAnswer(live.answer)}\n\n**From your documents**\nYour uploaded documents were searched, but none of the passages found answered this question. Try asking about a specific part, for example a clause, a benefit or a waiting period.`
+      : formatLiveAnswer(live.answer);
+  }
   return `**From your records**\n${formatLiveAnswer(live.answer)}\n\n**From your documents**\n${synthesis.answer}`;
 }
