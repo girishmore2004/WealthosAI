@@ -198,7 +198,10 @@ export class AiGatewayService {
     // threshold here — one source of truth for "what counts as ungrounded" that both
     // AiResult.hallucinationRisk and the reject-and-retry check below agree on.
 
-    const { text: redactedInput, redactedTypes } = this.redaction.redact(rawInput);
+    const { text: redactedInput, redactedTypes } = this.redaction.redact(
+      rawInput,
+      options.keepPolicyNumbers ? { keepPolicyNumbers: true } : undefined,
+    );
     const { text: budgetedInput, wasTrimmed } = this.tokenBudget.trimToBudget(redactedInput, MAX_CONTEXT_TOKENS);
 
     if (redactedTypes.length > 0) {
