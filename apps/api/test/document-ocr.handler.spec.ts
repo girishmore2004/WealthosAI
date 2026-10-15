@@ -126,7 +126,7 @@ describe("DocumentOcrHandler RAG auto-reindex trigger (new, audit item #7)", () 
       category: "BANK_STATEMENT",
     });
 
-    expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1");
+    expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1", "doc-1");
 
     // Also exercises the Document -> Copilot Ingestion bridge.
     expect(
@@ -156,7 +156,7 @@ describe("DocumentOcrHandler RAG auto-reindex trigger (new, audit item #7)", () 
       category: "OTHER",
     });
 
-    expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1");
+    expect(mockRagAutoReindex.triggerFor).toHaveBeenCalledWith("user-1", "doc-1");
   });
 
   it("does NOT trigger a reindex when OCR genuinely fails (no new indexable content)", async () => {
