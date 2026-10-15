@@ -74,14 +74,17 @@ export class QueryRewriteService {
 
     try {
       const result = await withStageTimeout(
-        this.gateway.extract(query, rewriteSchema, {
-          feature: "rag.query_rewrite",
-          promptName: "rag.query_rewrite",
-          userId,
-          cacheable: true,
-          // The original query is always searched too, so a failed rewrite is not worth repeating.
-          maxCorrectiveRetries: REWRITE_MAX_CORRECTIVE_RETRIES,
-        }),
+        (signal) =>
+          this.gateway.extract(query, rewriteSchema, {
+            feature: "rag.query_rewrite",
+            promptName: "rag.query_rewrite",
+            userId,
+            cacheable: true,
+            // The original query is always searched too, so a failed rewrite is not worth repeating.
+            maxCorrectiveRetries: REWRITE_MAX_CORRECTIVE_RETRIES,
+            // The stage budget cancels the call instead of leaving it running in the background.
+            signal,
+          }),
         RAG_STAGE_TIMEOUTS_MS.rewrite,
         "Query rewrite",
       );
