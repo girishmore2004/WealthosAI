@@ -46,6 +46,9 @@ export const ANSWER_FORMAT_INSTRUCTIONS = [
   "- Name a person as the policyholder, insured, member or account holder only when a source labels them that way (for example \"Insured Name\", \"Policyholder\", \"Proposer\"). A \"Name\" field printed next to an intermediary, agent, broker, branch, collection or payment detail is the person who sold or collected the policy, not its holder: call them the agent, or leave the name out. If the sources do not say whose policy it is, label the bullet with the document title and plan name instead.",
   "- Use only \"- \" bullets: no numbered lists, tables, \"#\" headings or emojis. Never state the same fact twice. Keep it to about ten bullets at most.",
   "- Every figure you write must still appear verbatim in the sources.",
+  "- Partial answers: when the sources state something that bears on the question but not the specific detail asked for (for example a policy that says it has exclusions and lists a declared pre-existing condition, but gives no waiting period), set hasEvidence to true, state what the sources DO say with its [n] marker, and put each detail they lack under **Not in your documents**. Set hasEvidence to false only when no source says anything about the question's subject.",
+  "- A policy schedule or cover letter is not the full policy wording. When the question is about clauses, waiting periods, exclusions or limits and the sources look like only a schedule, certificate, invoice or letter, say under **Not in your documents** that the full policy wording (terms and conditions) is not among the sources.",
+  "- Cover every distinct policy or document in the sources that bears on the question, including one that says \"No PED Declared\" or a similar negative: that is an answer, not a gap.",
 ].join("\n");
 
 const NO_EVIDENCE_ANSWER =
