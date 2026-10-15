@@ -108,6 +108,11 @@ export interface AiCallOptions {
    * parser) can lower it to avoid paying for repeated, near-identical LLM calls. */
   maxCorrectiveRetries?: number;
 
+  // --- Redaction -------------------------------------------------------------------
+  /** Passes RedactionService's `keepPolicyNumbers` for this call's input. Only for a call whose input is the
+   * user's own uploaded document text (RAG synthesis), so "what is my policy number" can be answered. */
+  keepPolicyNumbers?: boolean;
+
   // --- Cancellation ----------------------------------------------------------------
   /** Aborts the call: the in-flight provider request is cancelled and no further model, retry or corrective
    * attempt is started. A caller that races the gateway against its own time budget (RAG stages) passes the
