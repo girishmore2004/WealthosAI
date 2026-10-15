@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { Queue } from "bullmq";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AiJob } from "@wealthos/db";
-import { createAiQueueConnection } from "./ai-queue.connection";
+import { attachBullErrorLogging, createAiQueueConnection } from "./ai-queue.connection";
 
 export interface EnqueueOptions {
   userId?: string;
@@ -34,7 +34,7 @@ export class AiQueueService implements OnModuleDestroy {
     config: ConfigService,
   ) {
     const connection = createAiQueueConnection(config.get<string>("redisUrl")!);
-    this.queue = new Queue("ai-jobs", { connection });
+    this.queue = attachBullErrorLogging(new Queue("ai-jobs", { connection }), "Queue ai-jobs");
   }
 
   registerHandler(type: string, handler: AiJobHandler): void {
