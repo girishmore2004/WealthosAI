@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { z } from "zod";
 import { CoachService } from "../../coach/coach.service";
 import { IntentClassifierService } from "./planning/intent-classifier.service";
@@ -16,7 +16,10 @@ import { PlanMonitorService } from "./plans/plan-monitor.service";
 import { AiGatewayService } from "../gateway/ai-gateway.service";
 import { AiUnavailableException, AiValidationException } from "../exceptions/ai.exceptions";
 import { formatINR } from "../../common/utils/currency.util";
-import { CoachPlanType } from "@wealthos/db";
+import { CoachReportDTO } from "@wealthos/types";
+import { CoachOrchestratorService } from "./orchestration/coach-orchestrator.service";
+import { minimalReport, validateCoachReport } from "./report/coach-report.schema";
+import { ReportBuilder, inr as reportInr } from "./report/report-builder";
 
 export interface AgenticCoachResult {
   question: string;
@@ -35,6 +38,9 @@ export interface AgenticCoachResult {
   planId: string | null;
   criticFlags: string[];
   createdTaskIds: string[];
+  // Additive: the structured, validated answer (findings, evidence, calculations, actions...). Always set on
+  // responses from ask(); older consumers that only read `answer` are unaffected.
+  report?: CoachReportDTO | null;
 }
 
 const FALLBACK_CONFIDENCE_ON_VERIFICATION_FAILURE = 0.5;
@@ -67,22 +73,41 @@ export class AgenticCoachService {
     private taskAgent: TaskAgentService,
     private planMonitor: PlanMonitorService,
     private gateway: AiGatewayService,
+    // Optional so existing constructions of this service keep working; when absent the Coach behaves exactly as before.
+    @Optional() private orchestrator?: CoachOrchestratorService,
   ) {}
 
   async ask(userId: string, question: string): Promise<AgenticCoachResult> {
-    const classification = await this.classifier.classify(userId, question);
-    const plan = this.planner.buildPlan(classification);
+    const started = Date.now();
+    const native = await this.runNative(userId, question);
 
-    const result =
-      classification.path === "deterministic"
-        ? await this.runDeterministicPath(userId, question, classification.intent.id, plan.steps.map((s) => s.description))
-        : await this.runAdvancedPath(userId, question, classification.intent, plan);
+    let result: Omit<AgenticCoachResult, "staleAdviceNote">;
+    if (native) {
+      result = native;
+    } else {
+      const classification = await this.classifier.classify(userId, question);
+      const plan = this.planner.buildPlan(classification);
+      result =
+        classification.path === "deterministic"
+          ? await this.runDeterministicPath(userId, question, classification.intent.id, plan.steps.map((s) => s.description))
+          : await this.runAdvancedPath(userId, question, classification.intent, plan);
+    }
 
     const staleAdviceNote = await this.memory.checkForStaleOrRepeatedAdvice(
       userId,
       { matchedIntent: result.matchedIntent, advancedIntent: result.advancedIntent },
       result.facts,
     );
+
+    const report: CoachReportDTO =
+      result.report ??
+      minimalReport({
+        directAnswer: result.answer,
+        answerType: "legacy",
+        evidenceSufficiency: result.verificationPassed ? "sufficient" : "partial",
+        executionMs: Date.now() - started,
+        partial: !result.verificationPassed,
+      });
 
     await this.memory.recordRun({
       userId,
@@ -91,7 +116,9 @@ export class AgenticCoachService {
       matchedIntent: result.matchedIntent,
       advancedIntent: result.advancedIntent,
       plan: result.plan,
-      facts: result.facts,
+      // The report rides along inside the existing Json column (no schema change). hashFacts only walks keys of
+      // the facts being compared, so `__report` never causes a false "your data changed" note.
+      facts: { ...result.facts, __report: report },
       citedSources: result.citedSources,
       answer: result.answer,
       confidence: result.confidence,
@@ -102,7 +129,70 @@ export class AgenticCoachService {
       planId: result.planId,
     });
 
-    return { ...result, staleAdviceNote };
+    return { ...result, report, staleAdviceNote };
+  }
+
+  // --- NATIVE PATH: verified context + deterministic engines + validated report ----------------------------
+
+  private async runNative(userId: string, question: string): Promise<Omit<AgenticCoachResult, "staleAdviceNote"> | null> {
+    if (!this.orchestrator) return null;
+    let handled;
+    try {
+      handled = await this.orchestrator.tryHandle(userId, question);
+    } catch (err) {
+      // Never fail the request because of the new layer: the existing pipeline can still answer.
+      this.logger.warn(`Coach orchestrator failed, using the existing pipeline: ${(err as Error).name}`);
+      return null;
+    }
+    if (!handled) return null;
+
+    let report = handled.report;
+    let verificationPassed = true;
+    let criticFlags: string[] = [];
+    let answer = report.directAnswer;
+    let engineDetail = "Not attempted";
+
+    // Optional model wording. The numbers it may use are exactly those in explanationFacts, and the existing
+    // numeric verifier + critic gate it; on any problem the deterministic answer stands on its own.
+    if (handled.explanationFacts) {
+      try {
+        const outcome = await this.composeVerifyAndCritique(userId, question, handled.explanationFacts, "coach2.explain_report", undefined, true);
+        if (!outcome.usedFallback && outcome.verificationPassed && outcome.answer.trim()) {
+          const explained = validateCoachReport({ ...report, explanation: outcome.answer.trim().slice(0, 4000), metadata: { ...report.metadata, explanationSource: "model", engines: [...report.metadata.engines.filter((e) => e.name !== "explanation"), { name: "explanation", status: "used" }] } });
+          if (explained.ok) {
+            report = explained.report;
+            answer = `${report.directAnswer}\n\n${report.explanation}`;
+          }
+          criticFlags = outcome.criticFlags;
+        } else {
+          engineDetail = `Model wording was not used (${outcome.fallbackReason ?? "failed verification"}); the deterministic answer is shown.`;
+        }
+      } catch (err) {
+        this.logger.warn(`Explanation step failed, keeping the deterministic answer: ${(err as Error).name}`);
+        engineDetail = "Model wording was unavailable; the deterministic answer is shown.";
+      }
+      if (report.metadata.explanationSource !== "model") {
+        const withNote = validateCoachReport({ ...report, metadata: { ...report.metadata, engines: [...report.metadata.engines, { name: "explanation", status: "unavailable", detail: engineDetail }] } });
+        if (withNote.ok) report = withNote.report;
+      }
+    }
+
+    return {
+      question,
+      path: "ADVANCED",
+      matchedIntent: null,
+      advancedIntent: handled.kind,
+      plan: ["Read your verified records", "Ran the deterministic calculations", "Built a structured answer with evidence and assumptions"],
+      facts: handled.facts,
+      citedSources: handled.citedSources,
+      answer,
+      confidence: handled.confidence,
+      verificationPassed,
+      planId: null,
+      createdTaskIds: [],
+      criticFlags,
+      report,
+    };
   }
 
   async history(userId: string, take = 20) {
@@ -295,7 +385,6 @@ export class AgenticCoachService {
     let targetMetricType: "goal_saved_amount" | "loan_outstanding_principal" | "retirement_corpus_gap" | "custom_amount";
     let startingValue: number;
     let targetValue: number;
-    const linkedGoalId: string | null = null;
     let linkedLoanId: string | null = null;
     let calculatorFacts = "";
 
@@ -354,40 +443,61 @@ export class AgenticCoachService {
       });
     }
 
-    const { planId, steps } = await this.planAgent.createPlan({
-      userId,
-      type: parsed.type as CoachPlanType,
-      title: parsed.title,
-      objective: question,
-      targetMetricType,
-      targetValue,
-      targetDate,
-      startingValue,
-      linkedGoalId,
-      linkedLoanId,
-    });
+    // PROPOSAL ONLY. Nothing is written here: a chat message must never silently create a plan and tasks. The
+    // UI shows `preview`, and only an explicit confirmation calls POST /coach/v2/plans (which de-duplicates).
+    const title = parsed.title.trim().slice(0, 120).padEnd(3, " ");
+    const targetIso = targetDate.toISOString();
+    const factsText = `${baselineEvidence.factsText}\n\n${calculatorFacts}\n\nPlan PROPOSED (not created yet; the user must confirm): "${title}", target ${formatINR(targetValue)} by ${targetIso.slice(0, 10)}, starting from ${formatINR(startingValue)}.`;
 
-    const createdTaskIds = await this.taskAgent.createInitialTasksFromPlan(userId, planId, parsed.title, steps, null);
-
-    const factsText = `${baselineEvidence.factsText}\n\n${calculatorFacts}\n\nPlan created: "${parsed.title}", target ${formatINR(targetValue)} by ${targetDate.toISOString().slice(0, 10)}, starting from ${formatINR(startingValue)}.`;
-
-    const planContext: PlanConsistencyContext = { targetValue, targetDateIso: targetDate.toISOString().slice(0, 10) };
+    const planContext: PlanConsistencyContext = { targetValue, targetDateIso: targetIso.slice(0, 10) };
     const outcome = await this.composeVerifyAndCritique(userId, question, factsText, "coach2.compose_create_plan", planContext, true);
+
+    const builder = new ReportBuilder(new Date());
+    builder.actions.push({
+      id: "create-plan",
+      kind: "CREATE_PLAN",
+      label: "Create this plan",
+      description: "Saves a tracked plan with starter tasks. Nothing is created until you confirm.",
+      requiresConfirmation: true,
+      payload: {
+        type: parsed.type,
+        title,
+        objective: question.slice(0, 480),
+        targetMetricType,
+        targetValue,
+        targetDate: targetIso,
+        startingValue,
+        ...(linkedLoanId ? { linkedLoanId } : {}),
+      },
+      preview: {
+        title,
+        changes: [
+          { label: "Type", value: parsed.type.replace("_", " ").toLowerCase() },
+          { label: "Target", value: reportInr(targetValue) },
+          { label: "By", value: targetIso.slice(0, 10) },
+          { label: "Starting from", value: reportInr(startingValue) },
+        ],
+      },
+    });
+    builder.assume(parsed.months && parsed.months > 0 ? `Timeline of ${horizonMonths} months as you stated.` : `No timeline was stated, so ${horizonMonths} months is assumed.`);
+    const answerText = outcome.usedFallback ? factsText : outcome.answer;
+    const report = builder.build({ directAnswer: answerText.slice(0, 3900), answerType: "planning", sufficiency: outcome.usedFallback ? "partial" : "sufficient" });
 
     return {
       question,
       path: "ADVANCED",
       matchedIntent: null,
       advancedIntent: "create_plan",
-      plan: outcome.usedFallback ? [...planSteps, `Fell back to raw facts (${outcome.fallbackReason}); the plan itself was still created.`] : planSteps,
-      facts: { ...baselineEvidence.facts, planId, targetMetricType, targetValue, targetDate: targetDate.toISOString() },
+      plan: outcome.usedFallback ? [...planSteps, `Fell back to raw facts (${outcome.fallbackReason}); no plan was created, a proposal is shown for confirmation.`] : [...planSteps, "Proposed a plan for confirmation; nothing was created."],
+      facts: { ...baselineEvidence.facts, proposedTargetMetricType: targetMetricType, proposedTargetValue: targetValue, proposedTargetDate: targetIso },
       citedSources: baselineEvidence.citedSources,
-      answer: outcome.usedFallback ? factsText : outcome.answer,
+      answer: answerText,
       confidence: outcome.confidence,
       verificationPassed: outcome.verificationPassed,
-      planId,
-      createdTaskIds,
+      planId: null,
+      createdTaskIds: [],
       criticFlags: outcome.criticFlags,
+      report,
     };
   }
 
