@@ -74,6 +74,12 @@ function describeZodType(schema: z.ZodTypeAny, depth = 0): string {
   if (schema instanceof z.ZodBoolean) {
     return "boolean";
   }
+  if (schema instanceof z.ZodDefault) {
+    // A field with a default (e.g. the ranking envelope's `confidence`) must still be described to the model as
+    // its real type. Without this it was rendered as "any", so the model was free to answer with a word such as
+    // "high" where a number was required, which failed validation ("Expected number, received string").
+    return describeZodType(schema.removeDefault(), depth);
+  }
   if (schema instanceof z.ZodNullable) {
     return `${describeZodType(schema.unwrap(), depth)} | null`;
   }
