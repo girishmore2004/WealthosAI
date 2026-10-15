@@ -746,6 +746,9 @@ export const api = {
   coach2: {
     ask: (question: string) => request<AgenticCoachResultDTO>("/coach/v2/ask", { method: "POST", body: JSON.stringify({ question }) }),
     history: (take?: number) => request<AgenticCoachRunDTO[]>(`/coach/v2/history${take ? `?take=${take}` : ""}`),
+    // Called only after the user confirms a CREATE_PLAN proposal from the Coach. `body` is the proposal's own payload.
+    createPlan: (body: Record<string, unknown>) =>
+      request<{ planId: string; createdTaskIds: string[]; alreadyExisted?: boolean }>("/coach/v2/plans", { method: "POST", body: JSON.stringify(body) }),
   },
   scenarioStudio: {
     build: (prompt: string, targetGoalIds?: string[]) =>
