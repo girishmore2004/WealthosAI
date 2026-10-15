@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/commo
 import { ConfigService } from "@nestjs/config";
 import { Worker } from "bullmq";
 import Redis from "ioredis";
-import { createAiQueueConnection } from "../../ai/ops/ai-queue.connection";
+import { attachBullErrorLogging, createAiQueueConnection } from "../../ai/ops/ai-queue.connection";
 import { RecurrenceGeneratorService } from "./recurrence-generator.service";
 import { RECURRENCE_QUEUE_NAME } from "./recurrence-scheduler.service";
 
@@ -36,6 +36,8 @@ export class RecurrenceWorker implements OnModuleInit, OnModuleDestroy {
         },
         { connection: this.connection, concurrency: 1 },
       );
+
+      attachBullErrorLogging(this.worker, "Worker recurrence");
 
       this.worker.on("failed", (job, err) => {
         this.logger.error(`Recurring-transaction generation job ${job?.id} failed: ${err.message}`);
