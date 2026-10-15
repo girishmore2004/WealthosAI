@@ -107,6 +107,13 @@ export interface AiCallOptions {
    * mode is deterministic and has a safe local fallback (e.g. Scenario Studio's prompt
    * parser) can lower it to avoid paying for repeated, near-identical LLM calls. */
   maxCorrectiveRetries?: number;
+
+  // --- Cancellation ----------------------------------------------------------------
+  /** Aborts the call: the in-flight provider request is cancelled and no further model, retry or corrective
+   * attempt is started. A caller that races the gateway against its own time budget (RAG stages) passes the
+   * signal so an abandoned call stops instead of running on in the background. An aborted call throws
+   * AiUnavailableException and does NOT count against the model's health (no cooldown, no routing stats). */
+  signal?: AbortSignal;
 }
 
 /** Every AiGatewayService call returns this shape. `confidence` is explained in
@@ -163,15 +170,48 @@ export interface AiResult<T> {
 // `defaultConfidence`: when given, a response that omits `confidence` is accepted with that value instead
 // of failing validation and burning a retry. Only for callers whose payload is the real result and where
 // the number is advisory (ranking); every other envelope still requires the model to report it.
+const CONFIDENCE_WORDS: Record<string, number> = {
+  "very high": 0.95,
+  high: 0.85,
+  medium: 0.6,
+  moderate: 0.6,
+  low: 0.3,
+  "very low": 0.1,
+};
+
+/** Models sometimes send `confidence` as a string ("0.8", "85%", "high") even though the schema asks for a
+ * number. That is the same answer in a different spelling, so it is converted instead of failing the whole
+ * response (a failed attempt costs a full extra model call). Numbers are returned untouched, so a genuinely
+ * out-of-range number still fails validation. A string that cannot be read as a confidence is returned as-is
+ * (strict) or as undefined (lenient, so the caller's default applies). Exported for tests. */
+export function coerceConfidence(value: unknown, lenient = false): unknown {
+  if (typeof value !== "string") return lenient && value !== undefined && typeof value !== "number" ? undefined : value;
+  const text = value.trim().toLowerCase();
+  const fallback = lenient ? undefined : value;
+  if (text === "") return fallback;
+  const word = CONFIDENCE_WORDS[text];
+  if (word !== undefined) return word;
+  const match = /^(\d+(?:\.\d+)?)\s*(%)?$/.exec(text);
+  if (!match) return fallback;
+  const n = parseFloat(match[1]);
+  if (match[2]) return n <= 100 ? n / 100 : fallback;
+  if (n <= 1) return n;
+  return n <= 100 ? n / 100 : fallback;
+}
+
 export function withConfidence<T extends z.ZodTypeAny>(schema: T, defaultConfidence?: number) {
-  const confidence = z
+  const base = z
     .number()
     .min(0)
     .max(1)
-    .describe("Your own confidence in this result, from 0 (guessing) to 1 (certain), given only the provided input.");
+    .describe("Your own confidence in this result, as a number from 0 (guessing) to 1 (certain), given only the provided input.");
+  const confidence =
+    defaultConfidence === undefined
+      ? z.preprocess((v) => coerceConfidence(v), base)
+      : z.preprocess((v) => coerceConfidence(v, true), base.default(defaultConfidence));
   return z.object({
     result: schema,
-    confidence: defaultConfidence === undefined ? confidence : confidence.default(defaultConfidence),
+    confidence,
   });
 }
 
