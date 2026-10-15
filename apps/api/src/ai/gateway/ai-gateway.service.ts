@@ -51,10 +51,9 @@ const MAX_CORRECTIVE_RETRIES = 2;
 //   1. A transport-level failure only becomes a thrown AiUnavailableException after
 //      EVERY candidate model in the router's fallback chain has been tried (see
 //      model-router.service.ts's RoutingDecision.chain) — not just the first one.
-//      Each candidate's own GroqClient.chat call has already exhausted its own
-//      transport-level retry budget before moving to the next candidate; the model-
-//      fallback loop here is reserved for "this whole model is unavailable", not
-//      transient blips GroqClient already smooths over.
+//      A candidate that has another model behind it gets a single transport attempt
+//      (see the maxRetries note at the groq.chat call); the last candidate keeps the
+//      full transport-level retry budget.
 //   2. The final transport failure (after the chain is exhausted) is always logged
 //      with status "ERROR" before it is rethrown — AiInteractionLog/recentStats() must
 //      never under-report failures just because the model never actually answered.
@@ -373,6 +372,10 @@ export class AiGatewayService {
             maxTokens: MAX_OUTPUT_TOKENS,
             jsonMode: true,
             signal: options.signal,
+            // A candidate with another model behind it gets one attempt: if it is slow or rate-limited the next
+            // model takes over, rather than this one retrying (up to 3 x the request timeout) past the caller's
+            // stage budget and leaving no time for the fallback. The last candidate keeps the full retry budget.
+            maxRetries: chainIdx < routing.chain.length - 1 ? 0 : undefined,
           });
           modelUsed = candidateModel;
           fallbackUsed = fallbackUsed || chainIdx > 0;
@@ -393,10 +396,9 @@ export class AiGatewayService {
             continue;
           }
           // Every candidate in the chain has now failed. GroqClient has already
-          // exhausted its own transport-level retry budget for each of them before
-          // throwing, so none of this is retried again here — retrying transport
-          // failures is GroqClient's job; this loop's job was only to try the other
-          // models the router offered.
+          // exhausted its own transport-level retry budget for the last candidate, and
+          // earlier candidates got their single attempt, so none of this is retried again
+          // here — this loop's job was only to try the other models the router offered.
           const errorMessage = err instanceof Error ? err.message : String(err);
           await this.logging.log({
             userId: options.userId,
