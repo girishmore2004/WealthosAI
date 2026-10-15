@@ -66,14 +66,22 @@ export class RerankingService {
     try {
       const items = rerankInput.map((c) => truncate(`[${c.sourceType}] ${c.text}`, MAX_CHUNK_CHARS_FOR_RERANK));
       const result = await withStageTimeout(
-        this.gateway.rank(items, `Most relevant to answering: "${query}"`, {
-          feature: "rag.rerank",
-          promptName: "rag.rerank",
-          userId,
-          cacheable: false, // candidate set composition varies call to call, caching would rarely hit anyway
-          // Hybrid-score order is a safe local fallback, so one attempt is enough.
-          maxCorrectiveRetries: RERANK_MAX_CORRECTIVE_RETRIES,
-        }),
+        (signal) =>
+          this.gateway.rank(items, `Most relevant to answering: "${query}"`, {
+            feature: "rag.rerank",
+            promptName: "rag.rerank",
+            userId,
+            cacheable: false, // candidate set composition varies call to call, caching would rarely hit anyway
+            // Hybrid-score order is a safe local fallback, so one attempt is enough.
+            maxCorrectiveRetries: RERANK_MAX_CORRECTIVE_RETRIES,
+            // Ordering a list is a low-reasoning task, but a full candidate list is thousands of characters, which
+            // the router's length heuristic reads as "high complexity" and upgrades to the large model. That model
+            // could not answer inside the stage budget (rerank was abandoned and the call kept running). The small
+            // model orders a list fine, and fast.
+            complexityHint: "low",
+            // The stage budget cancels the call instead of leaving it running in the background.
+            signal,
+          }),
         RAG_STAGE_TIMEOUTS_MS.rerank,
         "Reranking",
       );
