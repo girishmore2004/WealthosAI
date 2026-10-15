@@ -105,6 +105,11 @@ export class RagService {
     // answered by the live figures for the loan it mentions — leading with the EMI would answer a question
     // nobody asked. Those questions rely on retrieval alone.
     const wantsLive = understanding.intent !== "documents";
+    // Reading the user's chunk rows does not depend on the plan, so it starts now and runs while the (slow,
+    // network-bound) query rewrite is in flight instead of after it. The no-op catch keeps a failed read from
+    // becoming an unhandled rejection if planning throws first; the real error surfaces where it is awaited.
+    const candidatesPromise = typeof this.retrieval.loadCandidates === "function" ? this.retrieval.loadCandidates(userId, filters) : undefined;
+    candidatesPromise?.catch(() => undefined);
     const [plan, live] = await Promise.all([this.queryRewrite.plan(userId, query), wantsLive ? this.tryLiveAnswer(userId, query) : Promise.resolve(null)]);
     const tPlan = Date.now();
 
@@ -117,12 +122,10 @@ export class RagService {
     const searchQueries = buildSearchQueries(baseQueries, query);
     const queryContext: QueryContext = { queryType: plan.queryType, complexity: plan.complexity, boostSourceTypes: understanding.explicitSourceTypes };
 
-    // Read the user's chunk rows ONCE and score every phrasing / sub-question against them, instead of
-    // re-reading the whole table per phrasing. Skipped for a single query (nothing to share) and for
-    // retrieval doubles that do not expose loadCandidates.
-    if (searchQueries.length > 1 && typeof this.retrieval.loadCandidates === "function") {
-      queryContext.candidates = await this.retrieval.loadCandidates(userId, filters);
-    }
+    // The user's chunk rows were read ONCE (above, alongside planning) and every phrasing / sub-question is
+    // scored against them, instead of re-reading the whole table per phrasing. Absent for retrieval doubles
+    // that do not expose loadCandidates.
+    if (candidatesPromise) queryContext.candidates = await candidatesPromise;
 
     // An empty candidate set means the user has NO indexed content for this search (index never built,
     // cleared, or every document lacks extracted text) — different from "indexed but nothing matched".
@@ -185,7 +188,7 @@ export class RagService {
         queryType: plan.queryType,
         complexity: plan.complexity,
         hasEvidence: true,
-        answer: live.answer,
+        answer: formatLiveAnswer(live.answer),
         citedSources: [],
         retrievalConfidence: 1,
         answerConfidence: 1,
@@ -268,13 +271,9 @@ export class RagService {
       hasEvidence: synthesisResult.hasEvidence || Boolean(live),
       // For a question about the user's own numbers, the verified live figures lead; the retrieved,
       // cited detail (documents, reports, history) follows. A degraded synthesis (unavailable / failed
-      // grounding: confidence 0) is never appended.
-      answer:
-        live && synthesisResult.hasEvidence && synthesisResult.confidence > 0
-          ? `${live.answer}\n\nFrom your records and documents: ${synthesisResult.answer}`
-          : live && (!synthesisResult.hasEvidence || synthesisResult.confidence === 0)
-            ? live.answer
-            : synthesisResult.answer,
+      // grounding: confidence 0) is never appended. Source markers in the prose are renumbered to the
+      // order of the cited sources shown with it.
+      answer: composeAnswer(live, { ...synthesisResult, answer: remapCitationMarkers(synthesisResult.answer, rerankResult.chunks, citedSources) }),
       citedSources,
       retrievalConfidence,
       // The model's self-reported confidence is never shown above the measured grounding of the same answer.
@@ -464,4 +463,78 @@ function evidenceSufficiencyOf(synthesis: { hasEvidence: boolean; confidence: nu
 
 function capByGrounding(confidence: number, grounding: number | null): number {
   return grounding === null ? confidence : Math.min(confidence, grounding);
+}
+
+/** Renumbers the `[n]` source markers the model wrote (n = position in the list it was given, i.e. in
+ * `rerankedChunks`) to the 1-based position of that source in the cited-sources list the user sees, so "[2]"
+ * in the text is the second card. A marker for a source that is not in the cited list is dropped rather than
+ * left pointing at nothing. */
+export function remapCitationMarkers(answer: string, rerankedChunks: { id: string }[], cited: { chunkId: string }[]): string {
+  const position = new Map<number, number>();
+  rerankedChunks.forEach((chunk, i) => {
+    const at = cited.findIndex((c) => c.chunkId === chunk.id);
+    if (at >= 0) position.set(i, at + 1);
+  });
+  return answer
+    .replace(/\s*\[(\d+)\]/g, (_m, n: string) => {
+      const mapped = position.get(Number(n));
+      return mapped === undefined ? "" : ` [${mapped}]`;
+    })
+    .replace(/[ \t]+$/gm, "");
+}
+
+/** Lays the deterministic finance engine's one-paragraph answer out as a short summary, a bullet per item
+ * and a highlighted note, when it has that shape: a sentence listing items as "label: value; label: value"
+ * and/or a trailing "Heads up: …". Any other text is returned unchanged. The words are never altered, only
+ * the layout. */
+export function formatLiveAnswer(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+
+  const noteAt = trimmed.indexOf("Heads up:");
+  const note = noteAt >= 0 ? trimmed.slice(noteAt + "Heads up:".length).trim() : "";
+  const body = noteAt >= 0 ? trimmed.slice(0, noteAt).trim() : trimmed;
+
+  const blocks: string[] = [];
+  const paragraph: string[] = [];
+  const flushParagraph = () => {
+    if (paragraph.length > 0) blocks.push(paragraph.join(" "));
+    paragraph.length = 0;
+  };
+  let listed = false;
+
+  for (const sentence of body.split(/(?<=[.!?])\s+(?=[A-Z\u20B9])/).map((s) => s.trim()).filter(Boolean)) {
+    const items = sentence.split(/;\s+/).map((p) => p.trim().replace(/\.$/, "")).filter(Boolean);
+    if (items.length >= 2 && items.every((p) => p.includes(": "))) {
+      flushParagraph();
+      blocks.push(
+        items
+          .map((item) => {
+            const at = item.indexOf(": ");
+            return `- **${item.slice(0, at)}:** ${item.slice(at + 2)}`;
+          })
+          .join("\n"),
+      );
+      listed = true;
+    } else {
+      paragraph.push(sentence);
+    }
+  }
+  flushParagraph();
+
+  if (!listed && !note) return trimmed;
+  if (note) blocks.push(`**Heads up:** ${note}`);
+  return blocks.join("\n\n");
+}
+
+/** The answer shown to the user: the live-records answer on its own, the document answer on its own, or both
+ * under labelled headings when the engine and the retrieved documents each contributed. A degraded document
+ * answer (confidence 0: model unavailable / failed grounding) is never appended to a live one. */
+export function composeAnswer(
+  live: { answer: string } | null,
+  synthesis: { hasEvidence: boolean; answer: string; confidence: number },
+): string {
+  if (!live) return synthesis.answer;
+  if (!synthesis.hasEvidence || synthesis.confidence === 0) return formatLiveAnswer(live.answer);
+  return `**From your records**\n${formatLiveAnswer(live.answer)}\n\n**From your documents**\n${synthesis.answer}`;
 }
