@@ -16,6 +16,7 @@ function makeService(overrides: {
   taskAgent?: object;
   planMonitor?: object;
   gateway?: object;
+  orchestrator?: object;
 }) {
   const defaultMemory = { checkForStaleOrRepeatedAdvice: jest.fn().mockResolvedValue(null), recordRun: jest.fn().mockResolvedValue(undefined) };
   const defaultCritic = { critique: jest.fn().mockResolvedValue({ flags: [], severity: "none", guidance: "" }) };
@@ -37,6 +38,7 @@ function makeService(overrides: {
     (overrides.taskAgent ?? {}) as never,
     (overrides.planMonitor ?? {}) as never,
     (overrides.gateway ?? {}) as never,
+    overrides.orchestrator as never,
   );
 }
 
@@ -206,7 +208,7 @@ describe("AgenticCoachService.ask — legacy advanced path", () => {
 });
 
 describe("AgenticCoachService.ask — create_plan", () => {
-  it("creates a CoachPlan via the Planner Agent and creates initial tasks via the Task Agent", async () => {
+  it("PROPOSES a plan for confirmation and does not create a CoachPlan or tasks from chat", async () => {
     const gatherer = {
       gatherGoalConflict: jest.fn().mockResolvedValue({ factsText: "income 100000, expenses 60000", facts: { surplus: 40000 }, citedSources: [] }),
       findLoanByHint: jest.fn().mockResolvedValue({
@@ -246,13 +248,21 @@ describe("AgenticCoachService.ask — create_plan", () => {
 
     const result = await service.ask("user-1", "help me pay off my HDFC car loan in 18 months");
 
-    expect(planAgent.createPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "user-1", type: "DEBT_PAYOFF", targetMetricType: "loan_outstanding_principal", targetValue: 0, startingValue: 300000, linkedLoanId: "loan-1" }),
-    );
-    expect(taskAgent.createInitialTasksFromPlan).toHaveBeenCalled();
-    expect(result.planId).toBe("plan-1");
-    expect(result.createdTaskIds).toEqual(["task-1"]);
+    // Nothing is persisted from a chat message.
+    expect(planAgent.createPlan).not.toHaveBeenCalled();
+    expect(taskAgent.createInitialTasksFromPlan).not.toHaveBeenCalled();
+    expect(result.planId).toBeNull();
+    expect(result.createdTaskIds).toEqual([]);
     expect(result.answer).toBe("Plan created: pay off your HDFC car loan.");
+
+    // The confirmable action carries the exact POST /coach/v2/plans body and a preview.
+    const action = result.report?.executionActions.find((a) => a.kind === "CREATE_PLAN");
+    expect(action).toBeDefined();
+    expect(action?.requiresConfirmation).toBe(true);
+    expect(action?.payload).toEqual(
+      expect.objectContaining({ type: "DEBT_PAYOFF", targetMetricType: "loan_outstanding_principal", targetValue: 0, startingValue: 300000, linkedLoanId: "loan-1" }),
+    );
+    expect(action?.preview?.changes.length).toBeGreaterThan(0);
   });
 
   it("asks for clarification instead of guessing when the loan hint is ambiguous", async () => {
@@ -368,5 +378,85 @@ describe("AgenticCoachService.ask — calculation_request", () => {
     expect(calculator.emiForHypotheticalLoan).toHaveBeenCalledWith(500000, 9, 60);
     expect(result.answer).toBe("Your EMI would be ₹10,379.24/month.");
     expect(result.planId).toBeNull();
+  });
+});
+
+describe("AgenticCoachService.ask — native orchestration", () => {
+  const report = {
+    directAnswer: "Your savings rate for 2026-09 is 25%.",
+    answerType: "fact",
+    evidenceSufficiency: "sufficient",
+    keyFindings: [],
+    financialSnapshot: { asOf: "2026-10-15T00:00:00.000Z", currency: "INR", items: [] },
+    evidenceCards: [],
+    calculations: [],
+    predictions: [],
+    scenarioComparison: null,
+    recommendations: [],
+    actionPlan: [],
+    charts: [],
+    assumptions: [],
+    risks: [],
+    dataGaps: [],
+    followUpSuggestions: [],
+    executionActions: [],
+    citations: [],
+    metadata: { version: 1, generatedAt: "2026-10-15T00:00:00.000Z", engines: [], partial: false, explanationSource: "deterministic", executionMs: 5 },
+  };
+
+  it("uses the orchestrator result, never calls the legacy classifier, and keeps the deterministic answer when wording is unavailable", async () => {
+    const orchestrator = { tryHandle: jest.fn().mockResolvedValue({ report, facts: { kind: "savings_rate" }, explanationFacts: "ANSWER: 25%", citedSources: [], confidence: 0.95, kind: "savings_rate" }) };
+    const classifier = { classify: jest.fn() };
+    const composer = { compose: jest.fn().mockRejectedValue(new AiUnavailableException("down")) };
+    const memory = { checkForStaleOrRepeatedAdvice: jest.fn().mockResolvedValue(null), recordRun: jest.fn().mockResolvedValue(undefined) };
+    const service = makeService({ orchestrator, classifier, composer, memory });
+
+    const result = await service.ask("user-1", "What is my savings rate?");
+
+    expect(orchestrator.tryHandle).toHaveBeenCalledWith("user-1", "What is my savings rate?");
+    expect(classifier.classify).not.toHaveBeenCalled();
+    expect(result.answer).toBe(report.directAnswer);
+    expect(result.report?.metadata.explanationSource).toBe("deterministic");
+    expect(result.report?.metadata.engines.some((e) => e.name === "explanation" && e.status === "unavailable")).toBe(true);
+    // The structured report is stored with the run inside the existing facts column.
+    expect(memory.recordRun).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.objectContaining({ kind: "savings_rate", __report: expect.any(Object) }) }));
+  });
+
+  it("adds a model explanation only when it passes numeric verification", async () => {
+    const orchestrator = { tryHandle: jest.fn().mockResolvedValue({ report, facts: { kind: "savings_rate" }, explanationFacts: "ANSWER: 25%", citedSources: [], confidence: 0.95, kind: "savings_rate" }) };
+    const composer = { compose: jest.fn().mockResolvedValue({ answer: "That means you keep a quarter of what you earn.", confidence: 0.8 }) };
+    const service = makeService({ orchestrator, composer });
+    const result = await service.ask("user-1", "What is my savings rate?");
+    expect(result.report?.explanation).toBe("That means you keep a quarter of what you earn.");
+    expect(result.report?.metadata.explanationSource).toBe("model");
+    expect(result.answer).toContain(report.directAnswer);
+  });
+
+  it("drops a model explanation that introduces an unverified number", async () => {
+    const orchestrator = { tryHandle: jest.fn().mockResolvedValue({ report, facts: { kind: "savings_rate" }, explanationFacts: "ANSWER: 25%", citedSources: [], confidence: 0.95, kind: "savings_rate" }) };
+    const composer = { compose: jest.fn().mockResolvedValue({ answer: "You save 40%.", confidence: 0.8 }) };
+    const verifierAgent = { verify: jest.fn().mockReturnValue({ passed: false, unmatchedNumbers: ["40"] }) };
+    const service = makeService({ orchestrator, composer, verifierAgent });
+    const result = await service.ask("user-1", "What is my savings rate?");
+    expect(result.report?.explanation).toBeUndefined();
+    expect(result.answer).toBe(report.directAnswer);
+  });
+
+  it("falls through to the existing pipeline when the orchestrator defers or throws, and attaches a minimal report", async () => {
+    for (const orchestrator of [{ tryHandle: jest.fn().mockResolvedValue(null) }, { tryHandle: jest.fn().mockRejectedValue(new Error("boom")) }]) {
+      const coach = { ask: jest.fn().mockResolvedValue({ answer: "Base answer", dataSources: ["x"] }) };
+      const composer = { compose: jest.fn().mockResolvedValue({ answer: "Base answer with context", confidence: 0.9 }) };
+      const service = makeService({
+        orchestrator,
+        coach,
+        composer,
+        classifier: { classify: jest.fn().mockResolvedValue({ path: "deterministic", intent: { id: "summary" }, confidence: 1 }) },
+        planner: { buildPlan: jest.fn().mockReturnValue({ steps: [{ description: "s" }] }) },
+      });
+      const result = await service.ask("user-1", "Give me a summary");
+      expect(coach.ask).toHaveBeenCalled();
+      expect(result.report?.answerType).toBe("legacy");
+      expect(result.report?.directAnswer).toBe(result.answer.slice(0, 4000));
+    }
   });
 });
