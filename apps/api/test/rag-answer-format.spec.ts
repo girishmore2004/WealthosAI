@@ -50,6 +50,12 @@ describe("composeAnswer", () => {
 
   it("never appends a degraded document answer (confidence 0) to a live answer", () => {
     expect(composeAnswer(live, { hasEvidence: true, confidence: 0, answer: "AI unavailable." })).toBe("Your EMI is ₹21,000.");
+    // ...but when document passages were found and could not be composed, the answer says so instead of
+    // silently showing only the live half.
+    const degraded = composeAnswer(live, { hasEvidence: true, confidence: 0, answer: "AI unavailable." }, false, true);
+    expect(degraded).toContain("Your EMI is ₹21,000.");
+    expect(degraded).toContain("**From your documents**");
+    expect(degraded).toContain("NOT summarised");
   });
 
   it("uses the live answer alone when the documents had no evidence", () => {
