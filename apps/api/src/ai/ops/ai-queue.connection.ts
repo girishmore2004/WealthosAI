@@ -47,6 +47,32 @@ export function attachRedisErrorLogging<T extends Redis>(client: T, label: strin
   return client;
 }
 
+/** Same throttled logging for a BullMQ Queue or Worker.
+ *
+ * attachRedisErrorLogging covers the connection we create, but BullMQ opens further connections of its own
+ * (a Worker duplicates the connection for its blocking reads, a Queue for its event stream). Errors on those
+ * are re-emitted as an 'error' event on the Queue/Worker object, and with no listener BullMQ prints the raw
+ * "Error: connect ETIMEDOUT ..." stack with console.error — the lines that kept appearing in the log. */
+export function attachBullErrorLogging<T extends { on(event: "error", listener: (err: Error) => void): unknown }>(
+  emitter: T,
+  label: string,
+): T {
+  let lastLoggedAt = 0;
+  let suppressed = 0;
+  emitter.on("error", (err: Error) => {
+    const now = Date.now();
+    if (now - lastLoggedAt < ERROR_LOG_INTERVAL_MS) {
+      suppressed++;
+      return;
+    }
+    const extra = suppressed > 0 ? ` (${suppressed} similar error(s) suppressed)` : "";
+    lastLoggedAt = now;
+    suppressed = 0;
+    logger.warn(`${label} error: ${err.message}${extra}. BullMQ reconnects automatically.`);
+  });
+  return emitter;
+}
+
 // BullMQ requires its own ioredis connection with maxRetriesPerRequest: null (it
 // manages blocking commands and retries itself) — RedisService's connection is tuned
 // for the opposite case (fast-failing session/rate-limit lookups) and isn't safe to
