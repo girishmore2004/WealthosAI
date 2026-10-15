@@ -25,7 +25,8 @@ export const MAX_SOURCE_PRIORITY = 3;
 // incremental indexing.
 // 2: labelled-id redaction no longer wipes ordinary words; oversized "sentences" are split.
 // 3: repeated page footers / letterheads are stripped from PDF text before chunking.
-export const INDEX_PIPELINE_VERSION = 3;
+// 4: footers removed everywhere (not kept once); PDF text is chunked per page and each chunk is labelled "[Page N]".
+export const INDEX_PIPELINE_VERSION = 4;
 
 // Combined score = semantic*W_SEMANTIC + keyword*W_KEYWORD + recency*W_RECENCY +
 // priority*W_PRIORITY, each signal pre-normalized to [0,1]. Semantic similarity gets
@@ -69,10 +70,10 @@ export const MIN_EVIDENCE_SIMILARITY = 0.35;
 export const LEXICAL_EVIDENCE_MIN_COVERAGE = 0.67;
 
 // At most this many chunks from one source (document / report / fact) reach the candidate pool, so a
-// long source cannot crowd out every other source. Was 5, which meant a 20-page policy was judged on at
+// long source cannot crowd out every other source. Chunks are now per page, so a 10-page PDF needs >= 10. Was 5, which meant a 20-page policy was judged on at
 // most five ~180-word passages (about a sixth of it) however well the rest matched. Ten still leaves room
 // for other sources, because the pool as a whole is bounded by adaptiveCandidateLimit.
-export const MAX_CHUNKS_PER_SOURCE = 10;
+export const MAX_CHUNKS_PER_SOURCE = 16;
 
 // "hybrid weight optimization per query type" — factual lookups lean harder on
 // keyword/exact-term matching than an open-ended exploratory question would, while
