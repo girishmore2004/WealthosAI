@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/commo
 import { ConfigService } from "@nestjs/config";
 import { Worker } from "bullmq";
 import Redis from "ioredis";
-import { createAiQueueConnection } from "../../ops/ai-queue.connection";
+import { attachBullErrorLogging, createAiQueueConnection } from "../../ops/ai-queue.connection";
 import { ProactiveCoachingService } from "./proactive-coaching.service";
 import { COACH_PROACTIVE_QUEUE_NAME } from "./coach-scheduler.service";
 
@@ -35,6 +35,8 @@ export class CoachProactiveWorker implements OnModuleInit, OnModuleDestroy {
         },
         { connection: this.connection, concurrency: 1 },
       );
+
+      attachBullErrorLogging(this.worker, "Worker coach-proactive");
 
       this.worker.on("failed", (job, err) => {
         this.logger.error(`Proactive coaching daily scan job ${job?.id} failed: ${err.message}`);
