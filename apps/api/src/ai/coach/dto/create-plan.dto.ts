@@ -21,7 +21,7 @@ export class CreatePlanDto {
   targetMetricType!: CoachPlanTargetMetric;
 
   @IsNumber()
-  @Min(0.01)
+  @Min(0)
   targetValue!: number;
 
   @IsISO8601()
