@@ -10,6 +10,7 @@ jest.mock("bullmq", () => ({
   Queue: jest.fn().mockImplementation(() => ({
     add: mockQueueAdd,
     close: mockQueueClose,
+    on: jest.fn(),
     getJobCounts: jest.fn(),
   })),
 }));
