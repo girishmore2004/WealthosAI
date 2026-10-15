@@ -27,6 +27,15 @@ export class SchemaValidatorService {
       return { ok: true, data: result.data };
     }
 
+    // Models sometimes wrap the one object they were asked for in a single-element array ("[{...}]"). That is
+    // the same answer in a different envelope: unwrap it instead of failing the attempt, because a failed
+    // attempt costs a whole extra model call (20s+ on a slow provider) and can exhaust the stage timeout.
+    // Applies only to a one-element array, and only when the unwrapped element then passes the schema.
+    if (Array.isArray(json) && json.length === 1) {
+      const unwrapped = schema.safeParse(json[0]);
+      if (unwrapped.success) return { ok: true, data: unwrapped.data };
+    }
+
     const issues = result.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
     return { ok: false, issues };
   }
