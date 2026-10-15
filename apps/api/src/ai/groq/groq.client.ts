@@ -16,6 +16,8 @@ export interface GroqChatParams {
    * needs schema validation on our side; JSON mode guarantees parseable JSON, not that
    * the JSON matches our shape. */
   jsonMode: boolean;
+  /** Cancels the request (and any retry still to come). An aborted call throws AiUnavailableException. */
+  signal?: AbortSignal;
 }
 
 export interface GroqChatResult {
@@ -66,8 +68,13 @@ export class GroqClient {
     let lastError: string = "unknown error";
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (params.signal?.aborted) throw new AiUnavailableException("request aborted by the caller");
+
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      // The caller's signal (e.g. a RAG stage budget) cancels this request too.
+      const onCallerAbort = () => controller.abort();
+      params.signal?.addEventListener("abort", onCallerAbort, { once: true });
 
       try {
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -89,14 +96,12 @@ export class GroqClient {
           signal: controller.signal,
         });
 
-        clearTimeout(timeout);
-
         if (response.status === 429 || response.status >= 500) {
           const retryAfter = response.headers.get("retry-after");
           lastError = `HTTP ${response.status} from Groq`;
           if (attempt < this.maxRetries) {
             const backoffMs = retryAfter ? Number(retryAfter) * 1000 : 500 * 2 ** attempt;
-            await sleep(backoffMs);
+            await sleep(backoffMs, params.signal);
             continue;
           }
           throw new AiUnavailableException(lastError);
@@ -125,10 +130,11 @@ export class GroqClient {
           completionTokens: body.usage?.completion_tokens ?? 0,
         };
       } catch (err) {
-        clearTimeout(timeout);
+        // The caller gave up: stop now, no retry, no backoff.
+        if (params.signal?.aborted) throw new AiUnavailableException("request aborted by the caller");
         if (err instanceof AiUnavailableException) {
           if (attempt < this.maxRetries && err.message.includes("HTTP 5")) {
-            await sleep(500 * 2 ** attempt);
+            await sleep(500 * 2 ** attempt, params.signal);
             continue;
           }
           throw err;
@@ -136,9 +142,13 @@ export class GroqClient {
         const isAbort = err instanceof Error && err.name === "AbortError";
         lastError = isAbort ? `request timed out after ${this.timeoutMs}ms` : (err as Error).message;
         if (attempt < this.maxRetries) {
-          await sleep(500 * 2 ** attempt);
+          await sleep(500 * 2 ** attempt, params.signal);
           continue;
         }
+      } finally {
+        // Also covers reading the response body: a body that stalls after the headers arrive is still bounded.
+        clearTimeout(timeout);
+        params.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
 
@@ -146,6 +156,18 @@ export class GroqClient {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Resolves after `ms`, or immediately when the caller's signal aborts (the next loop check then stops the retries). */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
