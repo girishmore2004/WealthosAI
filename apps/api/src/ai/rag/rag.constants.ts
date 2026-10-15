@@ -24,7 +24,8 @@ export const MAX_SOURCE_PRIORITY = 3;
 // without it, chunks built by an older, buggy pipeline would stay in the index indefinitely under
 // incremental indexing.
 // 2: labelled-id redaction no longer wipes ordinary words; oversized "sentences" are split.
-export const INDEX_PIPELINE_VERSION = 2;
+// 3: repeated page footers / letterheads are stripped from PDF text before chunking.
+export const INDEX_PIPELINE_VERSION = 3;
 
 // Combined score = semantic*W_SEMANTIC + keyword*W_KEYWORD + recency*W_RECENCY +
 // priority*W_PRIORITY, each signal pre-normalized to [0,1]. Semantic similarity gets
