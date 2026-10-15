@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { Job, Worker } from "bullmq";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AiQueueService } from "./ai-queue.service";
-import { createAiQueueConnection } from "./ai-queue.connection";
+import { attachBullErrorLogging, createAiQueueConnection } from "./ai-queue.connection";
 
 interface AiJobData {
   jobId: string;
@@ -58,6 +58,8 @@ export class AiQueueProcessor implements OnModuleInit, OnModuleDestroy {
       // job was failed and retried while still running. A longer lock lets a slow job finish.
       { connection, concurrency: 2, lockDuration: 300_000 },
     );
+
+    attachBullErrorLogging(this.worker, "Worker ai-jobs");
 
     this.worker.on("failed", async (job, err) => {
       if (!job) return;
