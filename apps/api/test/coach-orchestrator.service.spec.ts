@@ -57,7 +57,7 @@ function build(o: Over = {}) {
   const track = <T extends (...a: never[]) => unknown>(name: string, fn: T) =>
     jest.fn((...args: unknown[]) => {
       (calls[name] ??= []).push(args);
-      return (fn as (...a: unknown[]) => unknown)(...args);
+      return (fn as unknown as (...a: unknown[]) => unknown)(...args);
     });
   const fail = o.fail ?? {};
   const maybe = <T>(key: string, value: T) => (fail[key] ? Promise.reject(new Error(`${key} down`)) : Promise.resolve(value));
