@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/commo
 import { ConfigService } from "@nestjs/config";
 import { Queue } from "bullmq";
 import Redis from "ioredis";
-import { createAiQueueConnection } from "../../ai/ops/ai-queue.connection";
+import { attachBullErrorLogging, createAiQueueConnection } from "../../ai/ops/ai-queue.connection";
 
 export const RECURRENCE_QUEUE_NAME = "recurring-transactions-generation";
 export const RECURRENCE_JOB_NAME = "daily-generate";
@@ -42,7 +42,7 @@ export class RecurrenceSchedulerService implements OnModuleInit, OnModuleDestroy
       }
 
       this.connection = createAiQueueConnection(redisUrl);
-      this.queue = new Queue(RECURRENCE_QUEUE_NAME, { connection: this.connection });
+      this.queue = attachBullErrorLogging(new Queue(RECURRENCE_QUEUE_NAME, { connection: this.connection }), "Queue recurrence");
 
       // 03:00 IST daily. BullMQ's repeatable-job dedup (same queue + same jobId + same
       // repeat pattern) makes this call idempotent across API restarts/replicas — it
