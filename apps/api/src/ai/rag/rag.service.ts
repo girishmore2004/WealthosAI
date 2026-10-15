@@ -104,7 +104,10 @@ export class RagService {
     // A question about what a DOCUMENT says ("what does my loan agreement say about prepayment") is not
     // answered by the live figures for the loan it mentions — leading with the EMI would answer a question
     // nobody asked. Those questions rely on retrieval alone.
-    const wantsLive = understanding.intent !== "documents";
+    // Exception: when the question ALSO asks about the user's records ("whether my portfolio records agree"),
+    // the records are part of the question, so the live answer runs and is shown next to the document answer.
+    const asksAboutRecords = /\b(?:portfolio|records?|on file|agrees?|match(?:es)?|differs?|different|consistent|compare[sd]?)\b/i.test(query);
+    const wantsLive = understanding.intent !== "documents" || asksAboutRecords;
     // Reading the user's chunk rows does not depend on the plan, so it starts now and runs while the (slow,
     // network-bound) query rewrite is in flight instead of after it. The no-op catch keeps a failed read from
     // becoming an unhandled rejection if planning throws first; the real error surfaces where it is awaited.
