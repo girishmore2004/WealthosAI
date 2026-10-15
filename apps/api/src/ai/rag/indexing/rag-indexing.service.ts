@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { AiSourceType } from "@wealthos/db";
 import { ChunkerService } from "../chunking/chunker.service";
+import { stripRepeatedPageBoilerplate } from "../chunking/page-boilerplate.util";
 import { EmbeddingService, EMBEDDING_MODEL_VERSION } from "../embedding/embedding.service";
 import { AiQueueService } from "../../ops/ai-queue.service";
 import { ReportsService } from "../../../reports/reports.service";
@@ -247,7 +248,10 @@ export class RagIndexingService implements OnModuleInit {
       // Identifiers (PAN, Aadhaar, account / policy numbers, IFSC, UPI ...) are scrubbed BEFORE
       // the text is chunked, embedded, stored or later handed to a model as context. Without
       // this, OCR of a PAN card or bank statement sat in plaintext in the index.
-      const text = this.redaction.redact([doc.summary, doc.ocrText].filter(Boolean).join("\n\n")).text;
+      // Page furniture repeated on every page (letterhead, registered-office footer, "electronically generated"
+      // notice) is dropped first, so chunks are about the document's content rather than its footer.
+      const ocrText = doc.ocrText ? stripRepeatedPageBoilerplate(doc.ocrText) : doc.ocrText;
+      const text = this.redaction.redact([doc.summary, ocrText].filter(Boolean).join("\n\n")).text;
       if (!text.trim()) continue;
       sources.push({
         sourceType: "DOCUMENT",
