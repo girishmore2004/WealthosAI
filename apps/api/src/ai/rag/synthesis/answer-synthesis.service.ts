@@ -42,6 +42,8 @@ export const ANSWER_FORMAT_INSTRUCTIONS = [
   "- Start with the direct answer in one or two plain sentences (no heading, no label).",
   "- Then a blank line, a line containing only **Key details**, and one \"- \" bullet per fact, written as \"**Label:** value, with its date or period [n]\" where n is the source index. Group related items, for example one bullet per policy or per account.",
   "- If the question asks for something the sources do not contain, add a blank line, a line containing only **Not in your documents**, and one \"- \" bullet naming each missing item.",
+  "- One bullet per policy, account or document, not per passage. Passages whose source header carries the same document title belong to the same document: merge them into a single bullet instead of listing that document twice.",
+  "- Name a person as the policyholder, insured, member or account holder only when a source labels them that way (for example \"Insured Name\", \"Policyholder\", \"Proposer\"). A \"Name\" field printed next to an intermediary, agent, broker, branch, collection or payment detail is the person who sold or collected the policy, not its holder: call them the agent, or leave the name out. If the sources do not say whose policy it is, label the bullet with the document title and plan name instead.",
   "- Use only \"- \" bullets: no numbered lists, tables, \"#\" headings or emojis. Never state the same fact twice. Keep it to about ten bullets at most.",
   "- Every figure you write must still appear verbatim in the sources.",
 ].join("\n");
@@ -161,6 +163,9 @@ export class AnswerSynthesisService {
     }
 
     if (!result.data.hasEvidence) {
+      // Counts only (never text or figures): when search finds passages but the model rejects them all, this
+      // line is the only trace of how many passages it was shown and from which kinds of source.
+      this.logger.warn(`Answer synthesis: the model found no answer in ${chunks.length} source(s) (${describeSourceTypes(chunks)})`);
       return {
         hasEvidence: false,
         answer: NO_EVIDENCE_ANSWER,
@@ -211,6 +216,13 @@ function buildGroundingContext(chunks: RerankedChunk[]): string {
     parts.push(chunk.parentText || chunk.text);
   }
   return parts.join("\n\n");
+}
+
+/** "DOCUMENT x6, FINANCIAL_FACT x2" — how many passages of each source type the model was given. */
+function describeSourceTypes(chunks: RerankedChunk[]): string {
+  const counts = new Map<string, number>();
+  for (const c of chunks) counts.set(c.sourceType, (counts.get(c.sourceType) ?? 0) + 1);
+  return [...counts.entries()].map(([type, n]) => `${type} x${n}`).join(", ");
 }
 
 /** " — Title" for the source header when the chunk carries a display title (document name, policy name,
