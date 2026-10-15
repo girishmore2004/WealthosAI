@@ -286,6 +286,9 @@ export class RagService {
         // Passages from the user's documents WERE read and the model found nothing in them: say so, rather than
         // letting the document half of the answer silently disappear.
         !synthesisResult.hasEvidence && rerankResult.chunks.some((c) => c.sourceType === "DOCUMENT"),
+        // Passages were found but the AI could not turn them into an answer (timeout / unreadable reply): the
+        // live-records half must not pass for the whole answer.
+        synthesisResult.hasEvidence && synthesisResult.confidence === 0 && rerankResult.chunks.some((c) => c.sourceType === "DOCUMENT"),
       ),
       citedSources,
       retrievalConfidence,
@@ -526,7 +529,9 @@ export function buildSearchQueries(planned: string[], original: string): string[
 
 function evidenceSufficiencyOf(synthesis: { hasEvidence: boolean; confidence: number; groundingScore: number | null }, hasLive: boolean): EvidenceSufficiency {
   if (!synthesis.hasEvidence) return hasLive ? "sufficient" : "insufficient";
-  if (synthesis.confidence === 0 || synthesis.groundingScore === null) return hasLive ? "sufficient" : "unverified";
+  // Evidence was found but the AI-composed answer could not be produced or checked. With a live answer the
+  // records half is fine but the documents half is missing, so it is only partial, never "fully supported".
+  if (synthesis.confidence === 0 || synthesis.groundingScore === null) return hasLive ? "partial" : "unverified";
   return synthesis.groundingScore >= 0.85 ? "sufficient" : "partial";
 }
 
@@ -603,8 +608,12 @@ export function composeAnswer(
   live: { answer: string } | null,
   synthesis: { hasEvidence: boolean; answer: string; confidence: number },
   documentsReadWithoutAnswer = false,
+  documentsFoundButNotComposed = false,
 ): string {
   if (!live) return synthesis.answer;
+  if (documentsFoundButNotComposed) {
+    return `${formatLiveAnswer(live.answer)}\n\n**From your documents**\nPassages from your uploaded documents were found (see the sources below), but the AI could not turn them into an answer this time because the service was slow or returned an unreadable reply. The details in your PDFs are therefore NOT summarised above. Ask again, or ask about one policy or document at a time.`;
+  }
   if (!synthesis.hasEvidence || synthesis.confidence === 0) {
     return documentsReadWithoutAnswer && !synthesis.hasEvidence
       ? `${formatLiveAnswer(live.answer)}\n\n**From your documents**\nYour uploaded documents were searched, but none of the passages found answered this question. Try asking about a specific part, for example a clause, a benefit or a waiting period.`
