@@ -44,6 +44,19 @@ export class AgenticCoachController {
   @Post("plans")
   @RateLimit(20, 3600)
   async createPlan(@CurrentUser() user: User, @Body() dto: CreatePlanDto) {
+    // Idempotent: confirming the same proposal twice (double click, retry) must not create a second plan + tasks.
+    const existing = await this.planService.list(user.id);
+    const targetDay = new Date(dto.targetDate).toISOString().slice(0, 10);
+    const duplicate = existing.find(
+      (p) =>
+        (p.status === "ACTIVE" || p.status === "AT_RISK") &&
+        p.type === dto.type &&
+        p.title === dto.title &&
+        Number(p.targetValue) === dto.targetValue &&
+        new Date(p.targetDate).toISOString().slice(0, 10) === targetDay,
+    );
+    if (duplicate) return { planId: duplicate.id, steps: [], createdTaskIds: [], alreadyExisted: true };
+
     const { planId, steps } = await this.planAgent.createPlan({
       userId: user.id,
       type: dto.type,
