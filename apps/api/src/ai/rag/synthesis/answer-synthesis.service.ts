@@ -49,8 +49,10 @@ export const ANSWER_FORMAT_INSTRUCTIONS = [
   "- Partial answers: when the sources state something that bears on the question but not the specific detail asked for (for example a policy that says it has exclusions and lists a declared pre-existing condition, but gives no waiting period), set hasEvidence to true, state what the sources DO say with its [n] marker, and put each detail they lack under **Not in your documents**. Set hasEvidence to false only when no source says anything about the question's subject.",
   "- A policy schedule or cover letter is not the full policy wording. When the question is about clauses, waiting periods, exclusions or limits and the sources look like only a schedule, certificate, invoice or letter, say under **Not in your documents** that the full policy wording (terms and conditions) is not among the sources.",
   "- Take each value only from the label that names it. A number printed in the same row or table as other labels (a bonus, discount, installment, stamp duty or count) is not the sum insured, premium or amount you were asked about; if you cannot tell which label a number belongs to, leave it out or say so instead of guessing.",
-  "- Dates and periods: use the document's own period (for example \"Period of Insurance\", \"From ... To\", \"Policy period\", \"Valid from/till\"). Never use a date from a print-order, stationery, stamp or regulatory notice as a policy date.",
+  "- Dates and periods: use the document's own period (for example \"Period of Insurance\", \"From ... To\", \"Policy period\", \"Valid from/till\"). Never use a date from a print-order, stamp or regulatory notice as a policy date.",
   "- A passage that starts with \"[Page N]\" comes from page N of that document; passages of the same document are one document. When a document and a record (FINANCIAL_FACT, SNAPSHOT) give different values for the same thing, show both, each labelled by where it comes from, and say they differ.",
+  "- You are shown passages only, never the user's full portfolio records. Do not say that the user's records agree, match or are consistent with a document unless a FINANCIAL_FACT or SNAPSHOT source in the list states the value being compared. When the question asks whether the records agree and no such source is present, say under **Not in your documents** that the comparison with the user's records is shown separately, and do not give a verdict.",
+  "- Give a policy number, member id or similar identifier exactly as a source prints it next to its label. Never invent or complete one, and never describe a value shown as \"[redacted-...]\" as if you could read it: list it under **Not in your documents** instead.",
   "- Cover every distinct policy or document in the sources that bears on the question, including one that says \"No PED Declared\" or a similar negative: that is an answer, not a gap.",
 ].join("\n");
 
@@ -116,6 +118,8 @@ export class AnswerSynthesisService {
             promptName: "rag.synthesis",
             userId,
             cacheable: false,
+            // The sources are the user's own uploaded documents: keep a labelled policy number readable.
+            keepPolicyNumbers: true,
             groundingContext,
             rejectOnLowGrounding: true,
             // Score only the prose the user will read. The structured result also carries
