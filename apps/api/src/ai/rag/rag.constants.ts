@@ -26,7 +26,8 @@ export const MAX_SOURCE_PRIORITY = 3;
 // 2: labelled-id redaction no longer wipes ordinary words; oversized "sentences" are split.
 // 3: repeated page footers / letterheads are stripped from PDF text before chunking.
 // 4: footers removed everywhere (not kept once); PDF text is chunked per page and each chunk is labelled "[Page N]".
-export const INDEX_PIPELINE_VERSION = 4;
+// 5: a labelled insurance policy number in an uploaded document is kept instead of being redacted as a card number.
+export const INDEX_PIPELINE_VERSION = 5;
 
 // Combined score = semantic*W_SEMANTIC + keyword*W_KEYWORD + recency*W_RECENCY +
 // priority*W_PRIORITY, each signal pre-normalized to [0,1]. Semantic similarity gets
