@@ -252,7 +252,7 @@ export class RagService {
         sourceType: c.sourceType,
         sourceId: c.sourceId,
         title: typeof c.metadata.title === "string" ? c.metadata.title : c.sourceType,
-        snippet: c.text.slice(0, 240),
+        snippet: bestSnippet(c.text, query),
         score: Number(c.combinedScore.toFixed(3)),
         confidence: citationConfidence(c),
       }));
@@ -414,6 +414,62 @@ export class RagService {
       // search itself. Silently swallowed here rather than logged twice.
     }
   }
+}
+
+const SNIPPET_MAX_CHARS = 240;
+const SNIPPET_STOP_WORDS = new Set(["the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "my", "me", "is", "are", "what", "does", "do", "say", "says", "about", "with", "this", "that", "it", "its", "i", "how", "which", "list"]);
+
+/** The part of a cited chunk shown to the user: the sentence (or line) that shares the most words with the
+ * question, with a little of its neighbours, instead of always the first 240 characters. For a long policy the
+ * first characters of a chunk are usually an unrelated lead-in ("…with the terms and conditions. The said policy
+ * has been prepared…"), which made a correct citation look like the wrong source. Falls back to the start of the
+ * chunk when nothing overlaps. */
+export function bestSnippet(text: string, query: string, maxChars: number = SNIPPET_MAX_CHARS): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+
+  const queryWords = new Set(
+    query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2 && !SNIPPET_STOP_WORDS.has(w))
+      // crude plural/verb stripping so "diseases" matches "disease", "exclusions" matches "exclusion"
+      .map((w) => w.replace(/(ing|es|s)$/, "")),
+  );
+  const sentences = flat.match(/[^.!?]+[.!?]*\s*/g) ?? [flat];
+
+  let bestIndex = -1;
+  let bestScore = 0;
+  sentences.forEach((sentence, i) => {
+    const words = new Set(
+      sentence
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .map((w) => w.replace(/(ing|es|s)$/, "")),
+    );
+    let score = 0;
+    for (const w of queryWords) if (words.has(w)) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = i;
+    }
+  });
+  if (bestIndex < 0) return flat.slice(0, maxChars).trimEnd() + "…";
+
+  let start = bestIndex;
+  let snippet = sentences[bestIndex].trim();
+  // Pull in the previous sentence when there is room, for context.
+  if (start > 0 && (sentences[start - 1].trim() + " " + snippet).length <= maxChars) {
+    snippet = sentences[start - 1].trim() + " " + snippet;
+    start -= 1;
+  }
+  let end = bestIndex;
+  while (end + 1 < sentences.length && (snippet + " " + sentences[end + 1].trim()).length <= maxChars) {
+    end += 1;
+    snippet += " " + sentences[end].trim();
+  }
+  if (snippet.length > maxChars) snippet = snippet.slice(0, maxChars).trimEnd() + "…";
+  return (start > 0 ? "…" : "") + snippet + (end < sentences.length - 1 && !snippet.endsWith("…") ? "…" : "");
 }
 
 /** Blends a citation's own hybrid-retrieval combinedScore with how early the (separate,
