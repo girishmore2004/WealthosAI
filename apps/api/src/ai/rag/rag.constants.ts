@@ -68,8 +68,10 @@ export const MIN_EVIDENCE_SIMILARITY = 0.35;
 export const LEXICAL_EVIDENCE_MIN_COVERAGE = 0.67;
 
 // At most this many chunks from one source (document / report / fact) reach the candidate pool, so a
-// long source cannot crowd out every other source.
-export const MAX_CHUNKS_PER_SOURCE = 5;
+// long source cannot crowd out every other source. Was 5, which meant a 20-page policy was judged on at
+// most five ~180-word passages (about a sixth of it) however well the rest matched. Ten still leaves room
+// for other sources, because the pool as a whole is bounded by adaptiveCandidateLimit.
+export const MAX_CHUNKS_PER_SOURCE = 10;
 
 // "hybrid weight optimization per query type" — factual lookups lean harder on
 // keyword/exact-term matching than an open-ended exploratory question would, while
