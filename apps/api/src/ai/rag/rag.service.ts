@@ -120,7 +120,11 @@ export class RagService {
     // than one retrieval pass trying to cover all of it at once.
     const baseQueries = plan.isMultiHop && plan.subQuestions.length > 0 ? plan.subQuestions : plan.rewrittenQueries;
     const searchQueries = buildSearchQueries(baseQueries, query);
-    const queryContext: QueryContext = { queryType: plan.queryType, complexity: plan.complexity, boostSourceTypes: understanding.explicitSourceTypes };
+    // A question about what an uploaded document says is answered from several pages (schedule, benefits, terms),
+    // so it never gets the narrowest candidate net.
+    const documentQuestion = understanding.intent === "documents" || understanding.explicitSourceTypes.includes("DOCUMENT");
+    const searchComplexity: QueryComplexity = documentQuestion && plan.complexity === "simple" ? "moderate" : plan.complexity;
+    const queryContext: QueryContext = { queryType: plan.queryType, complexity: searchComplexity, boostSourceTypes: understanding.explicitSourceTypes };
 
     // The user's chunk rows were read ONCE (above, alongside planning) and every phrasing / sub-question is
     // scored against them, instead of re-reading the whole table per phrasing. Absent for retrieval doubles
