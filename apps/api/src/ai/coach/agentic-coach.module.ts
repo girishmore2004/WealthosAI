@@ -11,6 +11,15 @@ import { RetirementModule } from "../../retirement/retirement.module";
 import { ReportsModule } from "../../reports/reports.module";
 import { TaxModule } from "../../tax/tax.module";
 import { MlInsightsModule } from "../ml-insights/ml-insights.module";
+import { ScenarioStudioModule } from "../scenario-studio/scenario-studio.module";
+import { SimulatorModule } from "../../simulator/simulator.module";
+import { IncomeModule } from "../../income/income.module";
+import { ExpensesModule } from "../../expenses/expenses.module";
+import { InsuranceModule } from "../../insurance/insurance.module";
+import { FinancialFactsModule } from "../../common/financial-facts/financial-facts.module";
+import { FinancialCoreModule } from "../../financial-core/financial-core.module";
+import { CoachContextService } from "./context/coach-context.service";
+import { CoachOrchestratorService } from "./orchestration/coach-orchestrator.service";
 import { IntentClassifierService } from "./planning/intent-classifier.service";
 import { PlannerService } from "./planning/planner.service";
 import { FinancialPlanAgentService } from "./planning/financial-plan-agent.service";
@@ -56,6 +65,14 @@ import { AgenticCoachController } from "./agentic-coach.controller";
     ReportsModule,
     TaxModule,
     MlInsightsModule,
+    // Coach orchestration layer: reuses these existing services, never re-implements them.
+    ScenarioStudioModule,
+    SimulatorModule,
+    IncomeModule,
+    ExpensesModule,
+    InsuranceModule,
+    FinancialFactsModule,
+    FinancialCoreModule,
   ],
   controllers: [AgenticCoachController],
   providers: [
@@ -78,6 +95,9 @@ import { AgenticCoachController } from "./agentic-coach.controller";
     ProactiveCoachingService, // proactive coaching scan
     CoachSchedulerService, // schedules the daily proactive scan (BullMQ repeatable job)
     CoachProactiveWorker, // runs the daily proactive scan
+    // --- Coach orchestration (verified context + deterministic engines + structured report) ---
+    CoachContextService,
+    CoachOrchestratorService,
   ],
   exports: [AgenticCoachService, CoachPlanService],
 })
