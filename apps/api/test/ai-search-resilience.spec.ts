@@ -7,6 +7,7 @@ import { RerankingService } from "../src/ai/rag/retrieval/reranking.service";
 import { GroqClient } from "../src/ai/groq/groq.client";
 import { AiUnavailableException } from "../src/ai/exceptions/ai.exceptions";
 import { GroundingService } from "../src/ai/gateway/grounding.service";
+import { RedactionService } from "../src/ai/gateway/redaction.service";
 
 describe("confidence given as a string by the model", () => {
   it("accepts numeric strings, percentages and words instead of failing the whole response", () => {
@@ -131,5 +132,33 @@ describe("GroqClient cancellation", () => {
     setTimeout(() => controller.abort(), 10);
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("policy numbers in uploaded documents", () => {
+  const service = new RedactionService();
+  const sample = "Policy No : 1234567890123456 Type of Policy : Super Star. Card 4111 1111 1111 1111. PAN ABCDE1234F.";
+
+  it("redacts a labelled policy number by default (unchanged behaviour)", () => {
+    expect(service.redact(sample).text).not.toContain("1234567890123456");
+  });
+
+  it("keeps a labelled policy number when asked, while still redacting everything else", () => {
+    const out = service.redact(sample, { keepPolicyNumbers: true }).text;
+    expect(out).toContain("Policy No : 1234567890123456");
+    expect(out).not.toContain("4111");
+    expect(out).not.toContain("ABCDE1234F");
+  });
+
+  it("keeps alphanumeric policy numbers and several in one text", () => {
+    const out = service.redact("Policy Number: P/700006/01/2027/012345 and policy no: 9988776655443322", { keepPolicyNumbers: true }).text;
+    expect(out).toContain("P/700006/01/2027/012345");
+    expect(out).toContain("9988776655443322");
+  });
+
+  it("does not keep a bare number that is not labelled as a policy number", () => {
+    const out = service.redact("Account 123456789012345 and ref 1234567890123456", { keepPolicyNumbers: true }).text;
+    expect(out).not.toContain("123456789012345");
+    expect(out).not.toContain("1234567890123456");
   });
 });
