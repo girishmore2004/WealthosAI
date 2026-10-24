@@ -5,6 +5,7 @@ import { ProgressBar } from "@/components/ui/ProgressBar";
 import { formatINR, formatPercent } from "@/lib/format";
 import { formatDay, formatMonth } from "@/lib/dates";
 
+const signedINR = (v: string) => `${Number(v) > 0 ? "+" : Number(v) < 0 ? "−" : ""}${formatINR(Math.abs(Number(v)))}`;
 const rate = (v: number | null) => (v === null ? "—" : formatPercent(v));
 
 function FlowTile({ label, value, share, note }: { label: string; value: string; share?: number | null; note?: string }) {
@@ -170,11 +171,24 @@ export function MoneyOverview({ overview }: { overview: DashboardOverviewDTO }) 
           </Link>
         </div>
         <dl className="mt-3 divide-y divide-line">
+          <Row label="Total invested (net, still held)" value={formatINR(investments.totalInvested)} />
+          <Row label="Current value" value={formatINR(investments.totalValue)} />
+          <Row label="Unrealised gain / loss" value={signedINR(investments.unrealizedGain)} />
+          <Row label="Realised gain / loss" value={signedINR(investments.realizedGain)} />
+          <Row label="Return" value={investments.returnRatio === null ? "—" : formatPercent(Number(investments.returnRatio) * 100)} />
+          <Row label="Annual return (XIRR)" value={investments.xirr === null ? "Not enough history" : formatPercent(Number(investments.xirr) * 100)} />
           <Row label="Invested this month" value={formatINR(investments.contributedThisMonth)} />
-          <Row label="Invested this year" value={formatINR(investments.contributedThisYear)} />
+          <Row label="Invested this financial year" value={formatINR(investments.contributedThisFinancialYear)} />
+          <Row label="Invested this calendar year" value={formatINR(investments.contributedThisYear)} />
           <Row label="Planned per month (schedules)" value={formatINR(investments.plannedMonthlyContribution)} />
+          <Row label="Planned per year (schedules)" value={formatINR(investments.plannedAnnualContribution)} />
           <Row label="Holdings · active schedules" value={`${investments.holdings} · ${investments.activeSchedules}`} />
         </dl>
+        {investments.staleValuations > 0 && (
+          <p className="mt-2 text-xs text-ink-faint">
+            {investments.staleValuations} holding value{investments.staleValuations === 1 ? " is" : "s are"} old or undated, so the figures above may be out of date.
+          </p>
+        )}
       </details>
 
       <section aria-labelledby="wealth-heading" className="panel p-5">
