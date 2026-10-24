@@ -9,7 +9,7 @@ import { detectFileType, extensionFor } from "./file-signature.util";
 import { DocumentEntityService } from "./document-entity.service";
 import { DocumentReconciliationService } from "./document-reconciliation.service";
 
-export const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+export const MAX_DOCUMENT_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
 export const ALLOWED_MIME_TYPES = [
   "application/pdf",
   "image/jpeg",
