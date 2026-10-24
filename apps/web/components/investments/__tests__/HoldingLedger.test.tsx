@@ -18,6 +18,12 @@ jest.mock("@/lib/api-client", () => ({
       setSipSchedule: jest.fn(),
       generateSip: jest.fn(),
       recordSale: jest.fn(),
+      pauseSip: jest.fn(),
+      resumeSip: jest.fn(),
+      cancelSip: jest.fn(),
+      sipInstallments: jest.fn(),
+      sipChanges: jest.fn(),
+      recordInstallment: jest.fn(),
     },
   },
   ApiError: class ApiError extends Error {},
@@ -38,6 +44,8 @@ beforeEach(() => {
   inv.cashflows.mockResolvedValue([cashflow()]);
   inv.valuations.mockResolvedValue([{ id: "v1", userId: "u1", investmentId: "h1", value: "10500.00", valuedAt: "2026-09-30T00:00:00Z", origin: "MANUAL" }] as any);
   inv.sipSchedule.mockResolvedValue(schedule());
+  inv.sipInstallments.mockResolvedValue([]);
+  inv.sipChanges.mockResolvedValue([]);
 });
 
 describe("HoldingLedger — summary", () => {
@@ -324,7 +332,7 @@ describe("HoldingLedger — recurring contribution", () => {
   });
 
   it("a paused schedule offers no 'create now'", async () => {
-    inv.sipSchedule.mockResolvedValue(schedule({ active: false }));
+    inv.sipSchedule.mockResolvedValue(schedule({ active: false, status: "PAUSED", pausedAt: "2026-10-01T00:00:00.000Z" }));
     await openSchedule();
     expect(await screen.findByText("Paused")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create due contributions now" })).not.toBeInTheDocument();
@@ -417,5 +425,85 @@ describe("HoldingLedger — recurring contribution", () => {
       const options = within(within(dialog).getByLabelText("How often")).getAllByRole("option").map((o) => o.textContent);
       expect(options).toEqual(["Weekly", "Every 2 weeks", "Monthly", "Quarterly", "Yearly"]);
     });
+  });
+});
+
+
+describe("HoldingLedger — SIP lifecycle and instalments", () => {
+  const openRecurring = async () => {
+    setup();
+    await screen.findByText("Cost basis");
+    tab("Recurring");
+  };
+
+  it("pausing asks the server, then reports that nothing will be recorded until resumed", async () => {
+    inv.pauseSip.mockResolvedValue(schedule({ active: false, status: "PAUSED" }));
+    const { onChanged } = setup();
+    await screen.findByText("Cost basis");
+    tab("Recurring");
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(inv.pauseSip).toHaveBeenCalledWith("h1"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Schedule paused");
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("a paused schedule offers Resume", async () => {
+    inv.sipSchedule.mockResolvedValue(schedule({ active: false, status: "PAUSED" }));
+    inv.resumeSip.mockResolvedValue(schedule());
+    await openRecurring();
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(inv.resumeSip).toHaveBeenCalledWith("h1"));
+  });
+
+  it("cancelling is final, so it asks first and keeps recorded contributions", async () => {
+    inv.cancelSip.mockResolvedValue(schedule({ active: false, status: "CANCELLED" }));
+    await openRecurring();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel schedule" }));
+    expect(inv.cancelSip).not.toHaveBeenCalled();
+    expect(screen.getByText(/Contributions already recorded are kept/)).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("group", { name: "Confirm cancel schedule" })).getByRole("button", { name: "Cancel schedule" }));
+    await waitFor(() => expect(inv.cancelSip).toHaveBeenCalledWith("h1"));
+  });
+
+  it("a cancelled schedule offers no pause, resume or cancel", async () => {
+    inv.sipSchedule.mockResolvedValue(schedule({ active: false, status: "CANCELLED" }));
+    await openRecurring();
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
+    for (const name of ["Pause", "Resume", "Cancel schedule"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+  });
+
+  it("shows what each instalment became, and a failed one is not a recorded contribution", async () => {
+    inv.sipInstallments.mockResolvedValue([
+      { periodKey: "2026-10", scheduledFor: "2026-10-05T00:00:00.000Z", state: "DUE", amount: "5000.00", cashflowId: null, notes: null },
+      { periodKey: "2026-09", scheduledFor: "2026-09-05T00:00:00.000Z", state: "FAILED", amount: "5000.00", cashflowId: null, notes: "mandate bounced" },
+      { periodKey: "2026-08", scheduledFor: "2026-08-05T00:00:00.000Z", state: "RECORDED", amount: "5000.00", cashflowId: "cf1", notes: null },
+    ]);
+    await openRecurring();
+    const list = await screen.findByRole("list", { name: "Instalments" });
+    expect(within(list).getByText("Due — not recorded")).toBeInTheDocument();
+    expect(within(list).getAllByText("Failed").length).toBeGreaterThan(0); // the badge (and the due row's action)
+    expect(within(list).getByText("mandate bounced")).toBeInTheDocument();
+    expect(within(list).getByText("Recorded")).toBeInTheDocument();
+    // Only unrecorded instalments can be acted on.
+    expect(within(list).getAllByRole("button", { name: /as paid/ })).toHaveLength(2);
+  });
+
+  it("marking a due instalment paid / skipped calls the server with that period", async () => {
+    inv.sipInstallments.mockResolvedValue([{ periodKey: "2026-10", scheduledFor: "2026-10-05T00:00:00.000Z", state: "DUE", amount: "5000.00", cashflowId: null, notes: null }]);
+    inv.recordInstallment.mockResolvedValue({ periodKey: "2026-10", status: "CONFIRMED", cashflowId: "x" });
+    await openRecurring();
+    fireEvent.click(await screen.findByRole("button", { name: /as paid/ }));
+    await waitFor(() => expect(inv.recordInstallment).toHaveBeenCalledWith("h1", { periodKey: "2026-10", status: "CONFIRMED" }));
+    fireEvent.click(await screen.findByRole("button", { name: /as skipped/ }));
+    await waitFor(() => expect(inv.recordInstallment).toHaveBeenCalledWith("h1", { periodKey: "2026-10", status: "SKIPPED" }));
+  });
+
+  it("shows the server's reason when an instalment cannot be recorded (e.g. already recorded)", async () => {
+    const { ApiError } = jest.requireMock("@/lib/api-client");
+    inv.sipInstallments.mockResolvedValue([{ periodKey: "2026-10", scheduledFor: "2026-10-05T00:00:00.000Z", state: "DUE", amount: "5000.00", cashflowId: null, notes: null }]);
+    inv.recordInstallment.mockRejectedValue(new ApiError("A contribution is already recorded for that instalment."));
+    await openRecurring();
+    fireEvent.click(await screen.findByRole("button", { name: /as paid/ }));
+    expect(await screen.findByText("A contribution is already recorded for that instalment.")).toBeInTheDocument();
   });
 });
