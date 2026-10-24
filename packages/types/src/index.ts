@@ -2030,9 +2030,16 @@ export interface ExpenseRuleValuesDTO {
 export type RecurrenceEditScope = "THIS" | "FUTURE" | "RULE";
 export type RecurrenceDeleteMode = "THIS" | "FUTURE";
 
+export type SipStatus = "NONE" | "ACTIVE" | "PAUSED" | "CANCELLED" | "COMPLETED";
+
 export interface SipScheduleSummaryDTO {
   investmentId: string;
   active: boolean;
+  // Why the schedule is (not) running: ACTIVE, PAUSED (can resume), CANCELLED (final), COMPLETED
+  // (past its end date) or NONE (no schedule set up).
+  status: SipStatus;
+  pausedAt: string | null;
+  cancelledAt: string | null;
   frequency: Recurrence;
   amountPerPeriod: string | null;
   contributionDay: number | null;
@@ -2312,6 +2319,19 @@ export interface DashboardOverviewDTO {
     plannedMonthlyContribution: string;
     activeSchedules: number;
     holdings: number;
+    // From the canonical portfolio summary (the same numbers as the Investments page).
+    // Net money still invested (cost basis of what is held); see InvestmentPortfolioDTO.
+    totalInvested: string;
+    unrealizedGain: string;
+    realizedGain: string;
+    // Ratio (0.12 = 12%) over the invested capital, null when nothing is invested.
+    returnRatio: string | null;
+    // True money-weighted annual return, null when the history cannot support one.
+    xirr: string | null;
+    plannedAnnualContribution: string;
+    contributedThisFinancialYear: string;
+    // Holdings whose value is older than the staleness window or was never dated.
+    staleValuations: number;
   };
   emergencyFund: {
     balance: string;
@@ -2415,4 +2435,130 @@ export interface YearlyMonthsReportDTO {
   highestExpenseMonth: { month: string; total: string } | null;
   lowestExpenseMonth: { month: string; total: string } | null;
   narrative: string[];
+}
+
+
+// --- Investment portfolio (canonical summary used by the Investments page AND the Home dashboard) ---
+
+export type ValuationFreshness = "FRESH" | "STALE" | "UNDATED";
+export type CostBasisSource = "LEDGER" | "LEGACY";
+export type XirrReasonDTO = "OK" | "NO_FLOWS" | "NEEDS_BOTH_SIGNS" | "SHORT_HISTORY" | "NOT_CONVERGED";
+
+export interface PortfolioHoldingDTO {
+  id: string;
+  name: string;
+  type: InvestmentType;
+  // Net capital still invested: contributions in, less the cost basis already realised by sales.
+  // For a holding with no ledger this is the legacy cost basis saved on the holding.
+  invested: string;
+  costBasisSource: CostBasisSource;
+  currentValue: string;
+  valuedAt: string | null;
+  // Where the value came from: a dated VALUATION or the legacy value saved on the holding.
+  valuationSource: "VALUATION" | "LEGACY_CURRENT_VALUE";
+  freshness: ValuationFreshness;
+  unrealizedGain: string;
+  realizedGain: string;
+  dividends: string;
+  fees: string;
+  totalReturn: string;
+  returnRatio: string | null;
+  xirr: string | null;
+  sipStatus: SipStatus;
+  plannedMonthly: string | null;
+  contributedThisMonth: string;
+  contributedThisYear: string;
+  firstContributionDate: string | null;
+}
+
+export interface InvestmentPortfolioDTO {
+  basis: "ACTUAL";
+  asOfDate: string;
+  currency: string;
+  // DEFINITIONS (so each card can say exactly what it is):
+  //  totalInvested  = net capital still invested (contributions + employer + transfers in − cost basis realised by sales)
+  //  grossContributed = every contribution ever made (never reduced by withdrawals)
+  //  unrealizedGain = current value − totalInvested;  realizedGain = recorded sale gains
+  //  returnRatio    = (current value + money taken out + dividends − fees − all money put in) / all money put in
+  totals: {
+    totalInvested: string;
+    grossContributed: string;
+    withdrawn: string;
+    currentValue: string;
+    unrealizedGain: string;
+    realizedGain: string;
+    dividends: string;
+    fees: string;
+    totalReturn: string;
+    returnRatio: string | null;
+    xirr: string | null;
+    xirrReason: XirrReasonDTO;
+    // Holdings that could not contribute to XIRR (no ledger or no dated flows).
+    xirrCoveredHoldings: number;
+  };
+  contributions: {
+    plannedMonthly: string;
+    plannedAnnual: string;
+    actualThisMonth: string;
+    actualThisCalendarYear: string;
+    actualThisFinancialYear: string;
+    financialYear: string;
+  };
+  counts: {
+    holdings: number;
+    activeSips: number;
+    pausedSips: number;
+    endedSips: number;
+    oneTime: number;
+    staleValuations: number;
+    legacyCostBasis: number;
+  };
+  allocation: Array<{ type: InvestmentType; value: string; percent: number }>;
+  holdings: PortfolioHoldingDTO[];
+}
+
+export type InvestmentTransactionStatus = "COMPLETED";
+
+export interface InvestmentTransactionRowDTO {
+  id: string;
+  investmentId: string;
+  investmentName: string;
+  investmentType: InvestmentType;
+  type: InvestmentCashflowType;
+  amount: string;
+  occurredAt: string;
+  origin: string;
+  periodKey: string | null;
+  notes: string | null;
+}
+
+export interface PagedInvestmentTransactionsDTO {
+  items: InvestmentTransactionRowDTO[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  // Totals over the WHOLE filtered set, not just this page.
+  totals: { contributed: string; withdrawn: string };
+}
+
+export type SipInstallmentState = "RECORDED" | "PENDING" | "SKIPPED" | "FAILED" | "DUE" | "UPCOMING";
+
+export interface SipInstallmentDTO {
+  periodKey: string;
+  scheduledFor: string;
+  // RECORDED = a real contribution exists; DUE = scheduled date passed with nothing recorded;
+  // UPCOMING = in the future. Only RECORDED counts as invested.
+  state: SipInstallmentState;
+  amount: string | null;
+  cashflowId: string | null;
+  notes: string | null;
+}
+
+export interface SipChangeDTO {
+  id: string;
+  effectiveFrom: string;
+  amountPerPeriod: string;
+  frequency: Recurrence;
+  reason: string;
 }
