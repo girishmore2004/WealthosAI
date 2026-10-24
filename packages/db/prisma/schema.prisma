@@ -648,6 +648,13 @@ model Investment {
   // The user's ASSUMED annual return in percent, used only for projections (never overwrites
   // any actual value). Optional.
   expectedAnnualReturn  Decimal?  @db.Decimal(6, 3)
+  // SIP lifecycle markers. `sipActive` stays the single switch the generator reads; these only
+  // explain WHY a schedule is not active: paused (can resume) vs cancelled (final). Both NULL on
+  // every existing row, so existing schedules keep their meaning.
+  sipPausedAt           DateTime?
+  sipCancelledAt        DateTime?
+  sipChanges            InvestmentSipChange[]
+  sipInstallments       SipInstallmentEvent[]
 
   @@index([userId])
   @@index([goalId])
@@ -2010,3 +2017,50 @@ model EmergencyFundPlan {
   updatedAt           DateTime  @updatedAt
 }
 
+
+
+// --- Investment module upgrade: SIP installment outcomes and schedule change history ---------------
+//
+// Purely additive. A contribution that really happened stays an InvestmentCashflow (the only thing
+// that ever counts as "invested"). These tables record what did NOT become a contribution, and how
+// the plan changed, so a skipped or failed installment is visible without ever entering a total.
+
+enum SipInstallmentStatus {
+  PENDING // expected, not yet confirmed — never counted as invested
+  SKIPPED // deliberately not made
+  FAILED  // attempted and failed (e.g. mandate bounced)
+}
+
+model SipInstallmentEvent {
+  id           String               @id @default(cuid())
+  userId       String
+  investment   Investment           @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  investmentId String
+  // The same period key the schedule uses for its contributions ("2026-09", "2026-Q3", "2026-09-14"…).
+  periodKey    String
+  status       SipInstallmentStatus
+  scheduledFor DateTime
+  notes        String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@unique([investmentId, periodKey])
+  @@index([userId, investmentId])
+}
+
+// One row each time a schedule is created or its amount / frequency changes (a step-up). Past
+// contributions are never rewritten; this is the audit trail of what the plan was and from when.
+model InvestmentSipChange {
+  id              String     @id @default(cuid())
+  userId          String
+  investment      Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  investmentId    String
+  effectiveFrom   DateTime
+  amountPerPeriod Decimal    @db.Decimal(14, 2)
+  frequency       Recurrence @default(MONTHLY)
+  // "CREATED" | "STEP_UP" | "STEP_DOWN" | "FREQUENCY_CHANGE" | "PAUSED" | "RESUMED" | "CANCELLED"
+  reason          String
+  createdAt       DateTime   @default(now())
+
+  @@index([userId, investmentId, effectiveFrom])
+}
