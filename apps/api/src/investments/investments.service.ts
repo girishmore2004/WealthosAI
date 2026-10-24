@@ -85,10 +85,27 @@ export class InvestmentsService {
       await this.assertGoalOwnership(userId, dto.goalId);
     }
 
-    const result = await this.prisma.client.investment.updateMany({
-      where: { id, userId },
-      data: { ...dto, purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined },
-    });
+    const data = { ...dto, purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined };
+
+    // Editing the value on the holding must reach Net Worth and the Home dashboard, which read the
+    // LATEST DATED VALUATION (falling back to this field only when none exists). Without a matching
+    // valuation row the edit would be silently ignored wherever a valuation already exists, so a changed
+    // value is also recorded as a dated, manual valuation — in the same transaction as the update.
+    if (dto.currentValue !== undefined) {
+      const changed = await this.prisma.client.$transaction(async (tx) => {
+        const before = await tx.investment.findFirst({ where: { id, userId }, select: { currentValue: true } });
+        if (!before) return null;
+        await tx.investment.updateMany({ where: { id, userId }, data });
+        if (Number(before.currentValue) !== dto.currentValue) {
+          await tx.investmentValuation.create({ data: { userId, investmentId: id, value: dto.currentValue as number, valuedAt: new Date(), origin: "MANUAL" } });
+        }
+        return true;
+      });
+      if (!changed) throw new NotFoundException("Investment not found");
+      return this.prisma.client.investment.findUnique({ where: { id } });
+    }
+
+    const result = await this.prisma.client.investment.updateMany({ where: { id, userId }, data });
 
     if (result.count === 0) {
       throw new NotFoundException("Investment not found");
@@ -336,9 +353,15 @@ export class InvestmentsService {
     return { fixedTypes, effectiveTargetValueByType };
   }
 
+  // The portfolio's current value as Net Worth sees it: each holding's LATEST DATED VALUATION, falling
+  // back to the value saved on the holding only when no valuation exists. The Home dashboard's headline
+  // investment value therefore always equals the investment value inside Net Worth.
   async totalCurrentValue(userId: string): Promise<number> {
-    const investments = await this.list(userId);
-    return investments.reduce((sum, i) => sum + Number(i.currentValue), 0);
+    const investments = await this.prisma.client.investment.findMany({
+      where: { userId },
+      select: { currentValue: true, valuations: { orderBy: { valuedAt: "desc" }, take: 1, select: { value: true } } },
+    });
+    return investments.reduce((sum, i) => sum + Number(i.valuations[0]?.value ?? i.currentValue), 0);
   }
 
   // NEW (audit item #11): records an explicit sale/disposal of (a portion of) an
