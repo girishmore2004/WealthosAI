@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Job, Worker } from "bullmq";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -18,7 +18,7 @@ interface AiJobData {
 // GET /ai/jobs/:id always reflects reality even though the actual execution happened
 // on a queue this endpoint never touches directly.
 @Injectable()
-export class AiQueueProcessor implements OnModuleInit, OnModuleDestroy {
+export class AiQueueProcessor implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(AiQueueProcessor.name);
   private worker?: Worker;
 
@@ -56,7 +56,11 @@ export class AiQueueProcessor implements OnModuleInit, OnModuleDestroy {
       // lockDuration: OCR and reindex run in this same process and can keep the event loop busy for far longer
       // than BullMQ's 30s default, so the lock could not be renewed ("could not renew lock for job") and the
       // job was failed and retried while still running. A longer lock lets a slow job finish.
-      { connection, concurrency: 2, lockDuration: 300_000 },
+      // autorun: false — the worker is created here but only STARTED in onApplicationBootstrap(), after every
+      // module's onModuleInit() has run. Otherwise jobs left in Redis from before a restart/redeploy were
+      // picked up immediately, before modules such as DocumentsModule had registered their handler, and
+      // failed all 3 attempts with "No AI job handler registered".
+      { connection, concurrency: 2, lockDuration: 300_000, autorun: false },
     );
 
     attachBullErrorLogging(this.worker, "Worker ai-jobs");
@@ -80,6 +84,11 @@ export class AiQueueProcessor implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Failed to write FAILED status for job ${job.data.jobId}: ${(updateErr as Error).message}`);
       }
     });
+  }
+
+  onApplicationBootstrap() {
+    // run() resolves only when the worker closes, so it is deliberately not awaited.
+    this.worker?.run().catch((err) => this.logger.error(`AI worker stopped unexpectedly: ${(err as Error).message}`));
   }
 
   async onModuleDestroy() {
