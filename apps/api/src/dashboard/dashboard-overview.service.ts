@@ -7,7 +7,7 @@ import { monthlyNarrative, monthName } from "../common/financial-facts/financial
 import { currentMonthString, monthRange } from "../common/utils/financial-period.util";
 import { ExpensesService } from "../expenses/expenses.service";
 import { EmergencyFundService } from "../financial-core/emergency-fund/emergency-fund.service";
-import { InvestmentAnalyticsService } from "../investments/investment-analytics.service";
+import { InvestmentPortfolioService } from "../investments/investment-portfolio.service";
 import { ReceivablesService } from "../receivables/receivables.service";
 
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
@@ -31,7 +31,7 @@ export class DashboardOverviewService {
     private expenses: ExpensesService,
     private emergency: EmergencyFundService,
     private receivables: ReceivablesService,
-    private investments: InvestmentAnalyticsService,
+    private portfolioService: InvestmentPortfolioService,
   ) {}
 
   async overview(userId: string, now: Date = new Date()): Promise<DashboardOverviewDTO> {
@@ -40,14 +40,14 @@ export class DashboardOverviewService {
     const lastDay = new Date(end.getTime() - 86_400_000);
     const todayIso = isoDate(now);
 
-    const [flow, position, analytics, totals, investmentAnalytics, emergency, receivables] = await Promise.all([
+    const [flow, position, analytics, totals, emergency, receivables, portfolio] = await Promise.all([
       this.facts.getMoneyFlow(userId, month),
       this.facts.getFinancialPosition(userId),
       this.expenses.analytics(userId, { from: isoDate(start), to: isoDate(lastDay), today: todayIso }),
       this.expenses.periodTotals(userId, todayIso),
-      this.investments.analytics(userId, 1, now),
       this.emergency.overview(userId, now),
       this.receivables.summary(userId),
+      this.portfolioService.portfolio(userId, now),
     ]);
 
     const byType = (type: string) =>
@@ -79,12 +79,23 @@ export class DashboardOverviewService {
         comparison: analytics.comparison,
       },
       investments: {
+        // One source: the canonical portfolio summary, the same one the Investments page renders. Net
+        // worth uses position.investmentValue (latest dated valuations), which the portfolio's
+        // currentValue mirrors holding by holding.
         totalValue: position.investmentValue,
         contributedThisMonth: flow.outflows.investments,
-        contributedThisYear: investmentAnalytics.overview.actualContributionsThisYear,
-        plannedMonthlyContribution: investmentAnalytics.overview.plannedMonthlyContribution,
-        activeSchedules: investmentAnalytics.overview.activeSchedules,
-        holdings: investmentAnalytics.overview.holdings,
+        contributedThisYear: portfolio.contributions.actualThisCalendarYear,
+        plannedMonthlyContribution: portfolio.contributions.plannedMonthly,
+        activeSchedules: portfolio.counts.activeSips,
+        holdings: portfolio.counts.holdings,
+        totalInvested: portfolio.totals.totalInvested,
+        unrealizedGain: portfolio.totals.unrealizedGain,
+        realizedGain: portfolio.totals.realizedGain,
+        returnRatio: portfolio.totals.returnRatio,
+        xirr: portfolio.totals.xirr,
+        plannedAnnualContribution: portfolio.contributions.plannedAnnual,
+        contributedThisFinancialYear: portfolio.contributions.actualThisFinancialYear,
+        staleValuations: portfolio.counts.staleValuations,
       },
       emergencyFund: {
         balance: emergency.balance,
