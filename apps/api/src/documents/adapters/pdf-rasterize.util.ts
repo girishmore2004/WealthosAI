@@ -43,6 +43,11 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js";
 // while still processing genuinely long statements in full.
 export const MAX_PDF_PAGES_TO_RASTERIZE = 20;
 
+// Reading the embedded text layer of a digital PDF is cheap (no canvas, no OCR), so it gets a much
+// higher cap than rasterization. This lets long e-statements / policy wordings (50-100+ pages) be
+// read in full, while scanned pages are still OCR'd only up to MAX_PDF_PAGES_TO_RASTERIZE.
+export const MAX_PDF_PAGES_TO_READ_TEXT = 100;
+
 // Render scale: 2.0 (~144 DPI equivalent from a 72-DPI PDF point space) balances OCR
 // accuracy (too low and small print becomes unrecognizable) against memory/time cost
 // (too high and a single page becomes tens of megabytes) — a reasonable middle ground
@@ -174,7 +179,7 @@ export interface PdfTextPage {
   text: string;
 }
 
-// Reads the embedded text layer of every page (up to MAX_PDF_PAGES_TO_RASTERIZE). Digital PDFs (bank
+// Reads the embedded text layer of every page (up to MAX_PDF_PAGES_TO_READ_TEXT). Digital PDFs (bank
 // e-statements, insurance schedules, salary slips) carry real text, which is exact and instant — far
 // more accurate than rasterising and OCR-ing it, and it needs no canvas at all. Rows are rebuilt from
 // text items by their vertical position, so a statement table keeps one transaction per line.
@@ -183,7 +188,7 @@ export async function extractPdfTextPages(pdfBuffer: Buffer): Promise<{ pages: P
   try {
     const totalPages = pdfDocument.numPages;
     const pages: PdfTextPage[] = [];
-    for (let pageNumber = 1; pageNumber <= Math.min(totalPages, MAX_PDF_PAGES_TO_RASTERIZE); pageNumber++) {
+    for (let pageNumber = 1; pageNumber <= Math.min(totalPages, MAX_PDF_PAGES_TO_READ_TEXT); pageNumber++) {
       const page = await pdfDocument.getPage(pageNumber);
       const content = await page.getTextContent();
       pages.push({ pageNumber, text: textItemsToLines(content.items as PdfTextItem[]) });
