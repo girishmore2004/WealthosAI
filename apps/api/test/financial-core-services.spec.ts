@@ -152,6 +152,8 @@ describe("InvestmentLedgerService SIP generation", () => {
     const db = {
       investment: { findFirst: jest.fn().mockResolvedValue(investment), update: jest.fn(), findMany: jest.fn() },
       investmentCashflow: { findMany: jest.fn().mockResolvedValueOnce(keyed).mockResolvedValue([]), create: jest.fn().mockResolvedValue({}) },
+      sipInstallmentEvent: { findMany: jest.fn().mockResolvedValue([]) },
+      investmentSipChange: { findMany: jest.fn().mockResolvedValue([]) },
     };
     return { db, svc: new InvestmentLedgerService({ client: db } as never, {} as never) };
   };
