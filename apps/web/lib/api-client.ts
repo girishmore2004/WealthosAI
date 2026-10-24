@@ -91,6 +91,9 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
+// Must match MAX_DOCUMENT_SIZE_BYTES in apps/api/src/documents/documents.service.ts.
+export const MAX_DOCUMENT_UPLOAD_BYTES = 100 * 1024 * 1024; // 100MB
+
 class ApiError extends Error {
   constructor(
     public statusCode: number,
@@ -732,6 +735,9 @@ export const api = {
       file: File,
       meta: { category: string; tags?: string; expiryDate?: string; entityType?: string; entityId?: string; documentType?: string },
     ) => {
+      if (file.size > MAX_DOCUMENT_UPLOAD_BYTES) {
+        throw new ApiError(413, `File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). The maximum is 100MB.`);
+      }
       const formData = new FormData();
       formData.append("file", file);
       formData.append("category", meta.category);
