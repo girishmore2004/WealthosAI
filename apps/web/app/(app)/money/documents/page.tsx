@@ -143,7 +143,7 @@
 //             {uploading ? "Uploading…" : "Upload"}
 //           </Button>
 //         </form>
-//         <p className="mt-2 text-[11px] text-ink-faint">PDF, JPG, PNG, WEBP, or Word docs, up to 10MB.</p>
+//         <p className="mt-2 text-[11px] text-ink-faint">PDF, JPG, PNG, WEBP, or Word docs, up to 100MB.</p>
 //       </Card>
 
 //       <div className="flex items-center gap-2">
@@ -262,6 +262,8 @@ const EDIT_FIELDS: EditField[] = [
   { key: "expiryDate", label: "Expiry date", type: "date" },
 ];
 
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // keep in sync with MAX_DOCUMENT_SIZE_BYTES in the API
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -295,6 +297,10 @@ export default function DocumentsPage() {
   const onUpload = async (e: FormEvent) => {
     e.preventDefault();
     if (!file) return;
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(`This file is ${formatBytes(file.size)}. The maximum allowed size is 100MB.`);
+      return;
+    }
     setUploading(true);
     setError(null);
     try {
@@ -373,7 +379,7 @@ export default function DocumentsPage() {
             {uploading ? "Uploading…" : "Upload"}
           </Button>
         </form>
-        <p className="mt-2 text-[11px] text-ink-faint">PDF, JPG, PNG, WEBP, or Word docs, up to 10MB.</p>
+        <p className="mt-2 text-[11px] text-ink-faint">PDF, JPG, PNG, WEBP, or Word docs, up to 100MB.</p>
       </Card>
 
       <div className="flex items-center gap-2">
