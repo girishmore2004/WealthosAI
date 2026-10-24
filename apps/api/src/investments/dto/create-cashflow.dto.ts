@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsNumber, IsOptional, IsPositive, IsString, Max, MaxLength } from "class-validator";
+import { IsBoolean, IsDateString, IsEnum, IsNumber, IsOptional, IsPositive, IsString, Max, MaxLength } from "class-validator";
 import { Transform } from "class-transformer";
 import { MAX_INVESTMENT_AMOUNT } from "./create-investment.dto";
 
@@ -28,4 +28,10 @@ export class CreateCashflowDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  // An identical entry (same type, amount and day) is refused as a probable double-entry unless the
+  // caller says it is intentional — so a retried request or a re-imported statement cannot double-count.
+  @IsOptional()
+  @IsBoolean()
+  allowDuplicate?: boolean;
 }
