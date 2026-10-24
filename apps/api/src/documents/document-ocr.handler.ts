@@ -123,6 +123,22 @@ export class DocumentOcrHandler implements OnModuleInit {
 
       return { ocrStatus: "DONE" };
     } catch (err) {
+      // The stored file is gone (Render's free-tier disk is wiped on every redeploy/restart, while the
+      // queued job survives in Redis). Retrying can never succeed, so mark it FAILED once with a clear
+      // message and do NOT rethrow — otherwise BullMQ retries 3 times and logs three identical errors.
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        this.logger.warn(`document.ocr for ${documentId} skipped: stored file is missing from disk`);
+        try {
+          await this.prisma.client.document.update({
+            where: { id: documentId },
+            data: { ocrStatus: "FAILED", summary: "The stored file is no longer available. Please delete this entry and upload the document again." },
+          });
+        } catch {
+          // best-effort
+        }
+        return { ocrStatus: "FAILED", reason: "file-missing" };
+      }
+
       if (err instanceof OcrNotApplicableError) {
         await this.prisma.client.document.update({
           where: { id: documentId },
