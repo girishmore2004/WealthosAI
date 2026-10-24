@@ -19,6 +19,10 @@ import type {
   UserDTO,
   InvestmentDTO,
   InvestmentSummaryDTO,
+  InvestmentPortfolioDTO,
+  PagedInvestmentTransactionsDTO,
+  SipChangeDTO,
+  SipInstallmentDTO,
   RebalancePlanDTO,
   LoanDTO,
   DebtSummaryDTO,
@@ -204,6 +208,32 @@ export interface CashflowInput {
   amount: number;
   occurredAt: string;
   notes?: string;
+  // The server refuses an identical same-day entry as a probable double entry unless this is set.
+  allowDuplicate?: boolean;
+}
+
+export interface CashflowPatch {
+  amount?: number;
+  occurredAt?: string;
+  notes?: string;
+}
+
+export interface InvestmentTransactionParams {
+  page?: number;
+  pageSize?: number;
+  type?: InvestmentCashflowType;
+  investmentId?: string;
+  from?: string;
+  to?: string;
+  q?: string;
+  sort?: "date_desc" | "date_asc" | "amount_desc" | "amount_asc";
+}
+
+export interface InstallmentInput {
+  periodKey: string;
+  status: "CONFIRMED" | "PENDING" | "SKIPPED" | "FAILED";
+  amount?: number;
+  notes?: string;
 }
 
 export interface SipScheduleInput {
@@ -217,6 +247,8 @@ export interface SipScheduleInput {
   expectedAnnualReturn?: number;
   // Required by the server when the start date is before this month (past contributions become actuals).
   confirmBackfill?: boolean;
+  // When a changed amount / frequency takes effect (a step-up). Earlier contributions keep their amount.
+  effectiveFrom?: string;
 }
 
 export interface ProjectionParams {
@@ -413,6 +445,10 @@ export const api = {
   investments: {
     list: () => request<InvestmentDTO[]>("/investments"),
     summary: () => request<InvestmentSummaryDTO>("/investments/summary"),
+    // The canonical portfolio summary (also what the Home dashboard's investment card reads).
+    portfolio: () => request<InvestmentPortfolioDTO>("/investments/portfolio"),
+    // The portfolio-wide ledger: filtered, searched and paged on the server.
+    transactions: (params: InvestmentTransactionParams = {}) => request<PagedInvestmentTransactionsDTO>(`/investments/transactions${qs({ ...params })}`),
     create: (data: {
       type: string;
       name: string;
@@ -433,6 +469,8 @@ export const api = {
     cashflows: (id: string) => request<InvestmentCashflowDTO[]>(`/investments/${id}/cashflows`),
     addCashflow: (id: string, data: CashflowInput) =>
       request<InvestmentCashflowDTO>(`/investments/${id}/cashflows`, { method: "POST", body: JSON.stringify(data) }),
+    updateCashflow: (id: string, cashflowId: string, data: CashflowPatch) =>
+      request<InvestmentCashflowDTO>(`/investments/${id}/cashflows/${cashflowId}`, { method: "PATCH", body: JSON.stringify(data) }),
     removeCashflow: (id: string, cashflowId: string) => request<{ deleted: true }>(`/investments/${id}/cashflows/${cashflowId}`, { method: "DELETE" }),
     // --- dated valuations: what the holding was WORTH (a valuation is never a contribution) ---
     valuations: (id: string) => request<InvestmentValuationDTO[]>(`/investments/${id}/valuations`),
@@ -443,6 +481,13 @@ export const api = {
     sipSchedule: (id: string) => request<SipScheduleSummaryDTO>(`/investments/${id}/sip-schedule`),
     setSipSchedule: (id: string, data: SipScheduleInput) =>
       request<InvestmentDTO>(`/investments/${id}/sip-schedule`, { method: "PUT", body: JSON.stringify(data) }),
+    pauseSip: (id: string) => request<SipScheduleSummaryDTO>(`/investments/${id}/sip/pause`, { method: "POST" }),
+    resumeSip: (id: string) => request<SipScheduleSummaryDTO>(`/investments/${id}/sip/resume`, { method: "POST" }),
+    cancelSip: (id: string) => request<SipScheduleSummaryDTO>(`/investments/${id}/sip/cancel`, { method: "POST" }),
+    sipInstallments: (id: string) => request<SipInstallmentDTO[]>(`/investments/${id}/sip/installments`),
+    recordInstallment: (id: string, data: InstallmentInput) =>
+      request<{ periodKey: string; status: string; cashflowId: string | null }>(`/investments/${id}/sip/installments`, { method: "POST", body: JSON.stringify(data) }),
+    sipChanges: (id: string) => request<SipChangeDTO[]>(`/investments/${id}/sip/changes`),
     generateSip: (id: string) => request<{ created: string[]; alreadyExisted: string[] }>(`/investments/${id}/sip/generate`, { method: "POST" }),
     generateAllSip: () => request<unknown>("/investments/sip/generate", { method: "POST" }),
     // --- a sale: tax record, optionally with the cash effect in the same atomic write ---
