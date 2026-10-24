@@ -156,6 +156,9 @@ function build(inv: Row) {
         return data;
       }),
     },
+    // The SIP lifecycle tables (outcomes of individual instalments, and the amount history).
+    sipInstallmentEvent: { findMany: jest.fn(async () => []), createMany: jest.fn(async () => ({ count: 0 })) },
+    investmentSipChange: { findMany: jest.fn(async () => []), create: jest.fn(async ({ data }: any) => data) },
   };
   return { db, investment, cashflows, svc: new InvestmentLedgerService({ client: db } as never, {} as never) };
 }
