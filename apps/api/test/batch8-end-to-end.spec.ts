@@ -125,7 +125,15 @@ function buildAll(sc: Scenario = SCENARIO) {
     }),
   };
 
-  const overviewSvc = new DashboardOverviewService(facts, expenses as never, emergency as never, receivables as never, investmentAnalytics as never);
+  // The canonical portfolio summary the dashboard now reads (only the fields the overview consumes).
+  const portfolioSummary = {
+    portfolio: jest.fn(async () => ({
+      totals: { totalInvested: "10000.00", unrealizedGain: "0.00", realizedGain: "0.00", returnRatio: null, xirr: null },
+      contributions: { plannedMonthly: "10000.00", plannedAnnual: "120000.00", actualThisCalendarYear: "10000.00", actualThisFinancialYear: "10000.00" },
+      counts: { holdings: 1, activeSips: 1, staleValuations: 0 },
+    })),
+  };
+  const overviewSvc = new DashboardOverviewService(facts, expenses as never, emergency as never, receivables as never, portfolioSummary as never);
   const reports = new ReportsService({} as never, {} as never, expenses as never, {} as never, {} as never, {} as never, facts);
   const tools = new FinancialToolsService(
     facts,
@@ -144,6 +152,21 @@ function buildAll(sc: Scenario = SCENARIO) {
 const NOW = new Date("2026-10-15T10:00:00.000Z");
 
 describe("Batch 8 — dashboard, report and AI Coach agree (spec Parts 55-63)", () => {
+  it("dashboard investments card comes from the canonical portfolio summary", async () => {
+    const { overviewSvc } = buildAll();
+    const o = await overviewSvc.overview("u1", NOW);
+    expect(o.investments).toMatchObject({
+      totalInvested: "10000.00",
+      plannedMonthlyContribution: "10000.00",
+      plannedAnnualContribution: "120000.00",
+      contributedThisYear: "10000.00",
+      contributedThisFinancialYear: "10000.00",
+      activeSchedules: 1,
+      holdings: 1,
+      xirr: null,
+    });
+  });
+
   it("dashboard overview keeps all six flows separate", async () => {
     const { overviewSvc } = buildAll();
     const o = await overviewSvc.overview("u1", NOW);
