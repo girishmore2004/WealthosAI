@@ -6,6 +6,7 @@ import { api, ApiError } from "@/lib/api-client";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { BasisTag } from "@/components/ui/BasisTag";
+import { SipInstallments, SipLifecycleButtons, SipStatusBadge } from "@/components/investments/SipManager";
 import { CashflowDialog, CASHFLOW_TYPES, SaleDialog, ScheduleDialog, ValuationDialog } from "@/components/investments/LedgerDialogs";
 import { emitFinancialChange, useFinancialVersion } from "@/lib/financial-events";
 import { formatINR } from "@/lib/format";
@@ -270,7 +271,7 @@ export function HoldingLedger({ investment, onChanged }: { investment: Investmen
             <div className="space-y-3">
               <p className="flex flex-wrap items-center gap-2 text-sm text-ink">
                 {formatINR(schedule.amountPerPeriod)} · {schedule.frequency.toLowerCase().replace("biweekly", "every 2 weeks")}
-                <Badge tone={schedule.active ? "success" : "info"}>{schedule.active ? "Active" : "Paused"}</Badge>
+                {schedule.status ? <SipStatusBadge status={schedule.status} /> : <Badge tone={schedule.active ? "success" : "info"}>{schedule.active ? "Active" : "Paused"}</Badge>}
               </p>
               <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <Kpi label="Next contribution" value={schedule.nextContributionDate ? formatDay(schedule.nextContributionDate) : "—"} />
@@ -291,7 +292,24 @@ export function HoldingLedger({ investment, onChanged }: { investment: Investmen
                     {generating ? "Working…" : "Create due contributions now"}
                   </Button>
                 )}
+                {schedule.status && (
+                  <SipLifecycleButtons
+                    investmentId={id}
+                    status={schedule.status}
+                    onChanged={(message) => {
+                      setNotice(message);
+                      onChanged();
+                    }}
+                    onError={setError}
+                  />
+                )}
               </div>
+              {schedule.status && (
+                <div>
+                  <p className="stat-label mb-1">Instalments</p>
+                  <SipInstallments investmentId={id} version={version} onChanged={saved} />
+                </div>
+              )}
             </div>
           ))}
       </div>
