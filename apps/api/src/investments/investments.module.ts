@@ -6,12 +6,13 @@ import { InvestmentLedgerService } from "./investment-ledger.service";
 import { InvestmentProjectionController } from "./investment-projection.controller";
 import { InvestmentProjectionService } from "./investment-projection.service";
 import { InvestmentAnalyticsService } from "./investment-analytics.service";
+import { InvestmentPortfolioService } from "./investment-portfolio.service";
 import { FinancialFactsModule } from "../common/financial-facts/financial-facts.module";
 
 @Module({
   imports: [FinancialFactsModule],
   controllers: [InvestmentsController, InvestmentLedgerController, InvestmentProjectionController],
-  providers: [InvestmentsService, InvestmentLedgerService, InvestmentProjectionService, InvestmentAnalyticsService],
-  exports: [InvestmentsService, InvestmentLedgerService, InvestmentAnalyticsService, InvestmentProjectionService],
+  providers: [InvestmentsService, InvestmentLedgerService, InvestmentProjectionService, InvestmentAnalyticsService, InvestmentPortfolioService],
+  exports: [InvestmentsService, InvestmentLedgerService, InvestmentAnalyticsService, InvestmentProjectionService, InvestmentPortfolioService],
 })
 export class InvestmentsModule {}
