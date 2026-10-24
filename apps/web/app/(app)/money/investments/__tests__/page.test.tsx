@@ -1,13 +1,17 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import InvestmentsPage from "../page";
 import { api } from "@/lib/api-client";
-import { analyticsData, cashflow, holding, metrics, portfolioProjection, schedule } from "@/__fixtures__/investments";
+import { analyticsData, cashflow, holding, metrics, portfolioData, portfolioHolding, portfolioProjection, schedule } from "@/__fixtures__/investments";
 
 jest.mock("@/lib/api-client", () => ({
   api: {
     investments: {
       list: jest.fn(),
       summary: jest.fn(),
+      portfolio: jest.fn(),
+      transactions: jest.fn(),
+      sipInstallments: jest.fn(),
+      sipChanges: jest.fn(),
       analytics: jest.fn(),
       portfolioProjection: jest.fn(),
       projection: jest.fn(),
@@ -42,6 +46,10 @@ beforeEach(() => {
   jest.clearAllMocks();
   inv.list.mockResolvedValue([holding()]);
   inv.summary.mockResolvedValue(summary as any);
+  inv.portfolio.mockResolvedValue(portfolioData());
+  inv.transactions.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20, totalPages: 1, totals: { contributed: "0.00", withdrawn: "0.00" } });
+  inv.sipInstallments.mockResolvedValue([]);
+  inv.sipChanges.mockResolvedValue([]);
   inv.analytics.mockResolvedValue(analyticsData());
   inv.portfolioProjection.mockResolvedValue(portfolioProjection());
   inv.metrics.mockResolvedValue(metrics());
@@ -56,8 +64,8 @@ describe("InvestmentsPage — overview", () => {
     await screen.findByText("Nifty 50 Index Fund");
 
     const today = (await screen.findByText("Your portfolio today")).closest("section") as HTMLElement;
-    expect(within(today).getAllByText("ACTUAL")).toHaveLength(4);
-    expect(within(today).getByText("₹10,000")).toBeInTheDocument(); // total invested
+    expect(within(today).getAllByText("ACTUAL")).toHaveLength(6);
+    expect(within(today).getAllByText("₹10,000").length).toBeGreaterThan(0); // total invested (and total put in)
     expect(within(today).getByText("₹10,500")).toBeInTheDocument(); // current value
     expect(within(today).getByText("+₹500")).toBeInTheDocument(); // gain
     expect(within(today).getByText("+5.0%")).toBeInTheDocument(); // return
@@ -76,15 +84,16 @@ describe("InvestmentsPage — overview", () => {
   });
 
   it("labels a loss as a loss, with a sign", async () => {
-    inv.summary.mockResolvedValue({ ...summary, totalCurrentValue: "9000", totalGainLoss: "-1000", totalGainLossPercent: -10 } as any);
+    inv.portfolio.mockResolvedValue(portfolioData({ totals: { ...portfolioData().totals, currentValue: "9000.00", unrealizedGain: "-1000.00", totalReturn: "-1000.00", returnRatio: "-0.100000" } }));
     render(<InvestmentsPage />);
     const today = (await screen.findByText("Your portfolio today")).closest("section") as HTMLElement;
     expect(await within(today).findByText("−₹1,000")).toBeInTheDocument();
-    expect(within(today).getByText("below what you put in")).toBeInTheDocument();
+    expect(within(today).getByText(/10\.0%/)).toBeInTheDocument();
   });
 
   it("allocation by type, risk and liquidity comes from the server's analytics", async () => {
     render(<InvestmentsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Performance" }));
     await screen.findByText("By type");
     expect(screen.getByText("By risk")).toBeInTheDocument();
     expect(screen.getByText("By liquidity")).toBeInTheDocument();
@@ -93,6 +102,7 @@ describe("InvestmentsPage — overview", () => {
 
   it("renders the trend and comparison charts", async () => {
     render(<InvestmentsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Performance" }));
     expect(await screen.findByTestId("invested-chart")).toBeInTheDocument();
     for (const id of ["contrib-chart", "value-chart", "gain-chart"]) expect(await screen.findByTestId(id)).toBeInTheDocument();
   });
@@ -100,6 +110,7 @@ describe("InvestmentsPage — overview", () => {
   it("says what the gain trend is based on when only some holdings have a ledger", async () => {
     inv.analytics.mockResolvedValue(analyticsData({ overview: { ...analyticsData().overview, holdings: 3, holdingsWithLedger: 1 } }));
     render(<InvestmentsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Performance" }));
     expect(await screen.findByText(/Based on 1 of 3 holdings/)).toBeInTheDocument();
   });
 
@@ -107,6 +118,7 @@ describe("InvestmentsPage — overview", () => {
     inv.analytics.mockRejectedValue(new Error("down"));
     render(<InvestmentsPage />);
     expect(await screen.findByText("Nifty 50 Index Fund")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Performance" }));
     expect(await screen.findByText("Allocation is unavailable right now.")).toBeInTheDocument();
   });
 
@@ -134,8 +146,10 @@ describe("InvestmentsPage — holdings", () => {
 
   it("marks a holding that has an active recurring contribution", async () => {
     inv.list.mockResolvedValue([holding({ sipActive: true })]);
+    inv.portfolio.mockResolvedValue(portfolioData({ holdings: [portfolioHolding({ sipStatus: "ACTIVE", plannedMonthly: "1000.00" })] }));
     render(<InvestmentsPage />);
-    expect(await screen.findByText("Recurring")).toBeInTheDocument();
+    const row = (await screen.findByText("Nifty 50 Index Fund")).closest("li") as HTMLElement;
+    expect(await within(row).findByText("Active")).toBeInTheDocument();
   });
 
   it("opens a holding's ledger on demand — and only then asks for its history", async () => {
@@ -144,9 +158,10 @@ describe("InvestmentsPage — holdings", () => {
     expect(inv.metrics).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Show details for Nifty 50 Index Fund" }));
     await waitFor(() => expect(inv.metrics).toHaveBeenCalledWith("h1"));
-    expect(await screen.findByRole("tab", { name: "Transactions" })).toBeInTheDocument();
+    const holdingTabs = await screen.findByRole("tablist", { name: "Nifty 50 Index Fund details" });
+    expect(within(holdingTabs).getByRole("tab", { name: "Transactions" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Hide details for Nifty 50 Index Fund" }));
-    expect(screen.queryByRole("tab", { name: "Transactions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Nifty 50 Index Fund details" })).not.toBeInTheDocument();
   });
 
   it("deleting asks first and warns that the whole history goes with the holding", async () => {
@@ -225,5 +240,84 @@ describe("InvestmentsPage — projection", () => {
     await screen.findByText("Nifty 50 Index Fund");
     await waitFor(() => expect(inv.portfolioProjection).toHaveBeenCalledWith({ annualReturn: 12 }));
     expect(screen.getByText("Currently assuming 12% a year.")).toBeInTheDocument();
+  });
+});
+
+describe("InvestmentsPage — sections and filters", () => {
+  const mixed = () => {
+    inv.list.mockResolvedValue([
+      holding({ id: "h1", name: "Nifty 50 Index Fund", type: "MUTUAL_FUND" }),
+      holding({ id: "h2", name: "Infosys", type: "STOCK" }),
+      holding({ id: "h3", name: "My EPF", type: "EPF" }),
+      holding({ id: "h4", name: "Gold coins", type: "GOLD" }),
+    ]);
+    inv.portfolio.mockResolvedValue(
+      portfolioData({
+        holdings: [
+          portfolioHolding({ id: "h1", sipStatus: "ACTIVE" }),
+          portfolioHolding({ id: "h2", name: "Infosys", type: "STOCK", sipStatus: "NONE" }),
+          portfolioHolding({ id: "h3", name: "My EPF", type: "EPF", sipStatus: "ACTIVE" }),
+          portfolioHolding({ id: "h4", name: "Gold coins", type: "GOLD", sipStatus: "NONE" }),
+        ],
+      }),
+    );
+  };
+  const shown = () => screen.getAllByRole("listitem").map((li) => li.textContent ?? "");
+
+  it("filters holdings by kind: stocks, SIPs, one-time, retirement and other", async () => {
+    mixed();
+    render(<InvestmentsPage />);
+    await screen.findByText("Infosys");
+    fireEvent.click(screen.getByRole("button", { name: "Stocks" }));
+    expect(screen.queryByText("My EPF")).not.toBeInTheDocument();
+    expect(screen.getByText("Infosys")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "SIPs" }));
+    expect(screen.getByText("Nifty 50 Index Fund")).toBeInTheDocument();
+    expect(screen.getByText("My EPF")).toBeInTheDocument();
+    expect(screen.queryByText("Infosys")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "One-time" }));
+    expect(screen.getByText("Infosys")).toBeInTheDocument();
+    expect(screen.getByText("Gold coins")).toBeInTheDocument();
+    expect(screen.queryByText("My EPF")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retirement" }));
+    expect(shown().join()).toContain("My EPF");
+    expect(screen.queryByText("Gold coins")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Other" }));
+    expect(screen.getByText("Gold coins")).toBeInTheDocument();
+    expect(screen.queryByText("Infosys")).not.toBeInTheDocument();
+  });
+
+  it("says so when a filter matches nothing", async () => {
+    inv.list.mockResolvedValue([holding()]);
+    render(<InvestmentsPage />);
+    await screen.findByText("Nifty 50 Index Fund");
+    fireEvent.click(screen.getByRole("button", { name: "Stocks" }));
+    expect(screen.getByText("No holdings match this filter.")).toBeInTheDocument();
+  });
+
+  it("the SIPs tab lists the schedules and the Transactions tab loads the portfolio ledger", async () => {
+    mixed();
+    render(<InvestmentsPage />);
+    await screen.findByText("Infosys");
+    fireEvent.click(screen.getByRole("tab", { name: "SIPs" }));
+    expect(await screen.findByRole("heading", { name: "Recurring investments (SIPs)" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Transactions" }));
+    await waitFor(() => expect(inv.transactions).toHaveBeenCalled());
+    expect(await screen.findByText(/No transactions match/)).toBeInTheDocument();
+  });
+
+  it("flags values that are old or undated, and the holdings still show when the portfolio summary fails", async () => {
+    inv.portfolio.mockResolvedValue(portfolioData({ counts: { ...portfolioData().counts, staleValuations: 2, legacyCostBasis: 1 }, holdings: [portfolioHolding({ freshness: "STALE" })] }));
+    render(<InvestmentsPage />);
+    expect(await screen.findByText(/2 holding values are older than 120 days/)).toBeInTheDocument();
+    expect(screen.getByText("Value is old")).toBeInTheDocument();
+  });
+
+  it("falls back gracefully when the portfolio summary is unavailable", async () => {
+    inv.portfolio.mockRejectedValue(new Error("down"));
+    render(<InvestmentsPage />);
+    expect(await screen.findByText("Nifty 50 Index Fund")).toBeInTheDocument();
+    const today = screen.getByText("Your portfolio today").closest("section") as HTMLElement;
+    expect(within(today).getAllByText("—").length).toBeGreaterThan(0);
   });
 });
