@@ -46,4 +46,10 @@ export class SipScheduleDto {
   @IsOptional()
   @IsBoolean()
   confirmBackfill?: boolean;
+
+  // When a changed amount or frequency takes effect (a step-up). Defaults to today. Contributions that
+  // fall before it keep the amount they had; only later ones use the new amount.
+  @IsOptional()
+  @IsDateString()
+  effectiveFrom?: string;
 }
