@@ -348,6 +348,8 @@ export type GoalType =
   | "FAMILY_SUPPORT"
   | "OTHER";
 
+export type GoalFundBacking = "RESERVE" | "GOAL_LEDGER";
+
 export interface InvestmentDTO {
   id: string;
   userId: string;
@@ -510,6 +512,19 @@ export interface GoalDTO {
   // NEW: the assumed annual growth rate actually used above, as a percentage string
   // ("0.00" when unset) — surfaces what assumption produced the projection.
   assumedAnnualReturnPercent: string;
+  // NEW (Money → Goals): what is still missing today — max(0, target − (currentAmount + linked
+  // investments)). Never negative, so a fully funded goal always reads "0.00".
+  // (The four fields below are always set by the API; they are optional in the type only so existing
+  // fixtures and consumers that build a GoalDTO by hand keep compiling.)
+  shortfall?: string;
+  // false for an emergency goal created from legacy reserve data that never had a date: there is no
+  // deadline to plan against, so targetDate must not be displayed.
+  hasTargetDate?: boolean;
+  // Null while active. Archived goals are read-only history.
+  archivedAt?: string | null;
+  // Where this goal's cash lives: the emergency reserve ledger (the user's primary EMERGENCY_FUND goal)
+  // or the goal's own funding ledger. currentAmount is always that ledger's balance.
+  fundingBacking?: GoalFundBacking;
 }
 
 // --- Phase 3: Tax, Retirement, Alerts, Settings -----------------------------------
@@ -2287,6 +2302,98 @@ export interface EmergencyFundOverviewDTO {
 }
 
 
+
+// --- Money → Goals: the funding experience for every goal ---------------------------------------------
+// One DTO family for the emergency fund AND every other goal. The emergency-specific parts (coverage in
+// months of expenses, a "months of expenses" target) are present only where `rules` says they apply.
+
+export type GoalSpendMode = "EXPENSE" | "OTHER_OUTFLOW";
+
+// What this kind of goal supports, and the words to use for it. Decided on the server (one table) so a
+// new goal of any type works without any per-goal frontend registration.
+export interface GoalFundRulesDTO {
+  typeLabel: string;
+  // "In your fund" / "Saved so far" — the label of the cash balance.
+  balanceLabel: string;
+  supportsCoverage: boolean;
+  supportsMonthsTarget: boolean;
+  // How money taken out can be recorded as spent. Empty = the money can only be returned to cash.
+  spendModes: GoalSpendMode[];
+  defaultSpendMode: GoalSpendMode | null;
+  addSources: string[];
+  useReasons: string[];
+}
+
+export interface GoalFundSummaryDTO {
+  id: string;
+  name: string;
+  type: GoalType;
+  backing: GoalFundBacking;
+  archived: boolean;
+  // Cash set aside for this goal (the ledger balance), the linked investments' value, and their sum.
+  cashBalance: string;
+  linkedInvestmentValue: string;
+  totalFunded: string;
+  targetAmount: string | null;
+  shortfall: string | null;
+  progressPercent: number | null;
+  reached: boolean;
+  targetDate: string | null;
+  monthlyContribution: string | null;
+  requiredMonthlyContribution: number | null;
+  probabilityOfSuccess: GoalDTO["probabilityOfSuccess"];
+  entryCount: number;
+}
+
+export interface GoalFundLedgerRowDTO extends EmergencyFundLedgerRowDTO {
+  // MANUAL | OPENING_BALANCE | REALLOCATION | GOAL_CLOSED | LEGACY_EXPENSE_MIGRATION
+  origin: string;
+}
+
+export interface GoalFundOverviewDTO extends Omit<EmergencyFundOverviewDTO, "coverage"> {
+  goal: {
+    id: string;
+    name: string;
+    type: GoalType;
+    backing: GoalFundBacking;
+    archived: boolean;
+    hasTargetDate: boolean;
+    createdAt: string;
+  };
+  rules: GoalFundRulesDTO;
+  // Months of essential expenses covered — emergency goal only (null for every other goal).
+  coverage: EmergencyFundOverviewDTO["coverage"] | null;
+  // Where the progress comes from. totalFunded = cashBalance + linkedInvestmentValue; the target and the
+  // shortfall are measured against totalFunded, exactly as on the Goals overview.
+  funding: {
+    cashBalance: string;
+    linkedInvestmentValue: string;
+    totalFunded: string;
+    linkedInvestments: Array<{ id: string; name: string; currentValue: string }>;
+  };
+  // The Goals overview's own pace read of this goal (same numbers, same wording).
+  status: {
+    probabilityOfSuccess: GoalDTO["probabilityOfSuccess"];
+    contributionPaceRatio: number;
+    isPaceHeuristic: true;
+    // Counts assumed growth on linked investments; equals plan.requiredMonthly when there is none.
+    requiredMonthlyWithGrowth: number;
+    assumedAnnualReturnPercent: string;
+  };
+}
+
+export interface GoalFundUseResultDTO {
+  entry: { id: string; type: EmergencyEntryType; amount: string };
+  expense: { id: string; amount: string; flowType: GoalSpendMode } | null;
+  replayed?: boolean;
+}
+
+export interface GoalFundReallocateResultDTO {
+  groupId: string;
+  from: { goalId: string; entryId: string };
+  to: { goalId: string; entryId: string };
+  replayed?: boolean;
+}
 
 // --- Batch 8: dashboard overview, detailed reports (all ACTUAL unless labelled) -------------------
 export interface DashboardOverviewDTO {
