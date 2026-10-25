@@ -78,6 +78,12 @@ import type {
   EmergencyFundSummaryDTO,
   EmergencyFundOverviewDTO,
   EmergencyFundLedgerRowDTO,
+  GoalFundSummaryDTO,
+  GoalFundOverviewDTO,
+  GoalFundLedgerRowDTO,
+  GoalFundUseResultDTO,
+  GoalFundReallocateResultDTO,
+  GoalSpendMode,
   InvestmentCashflowDTO,
   InvestmentCashflowType,
   InvestmentValuationDTO,
@@ -90,9 +96,6 @@ import type {
 } from "@wealthos/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-
-// Must match MAX_DOCUMENT_SIZE_BYTES in apps/api/src/documents/documents.service.ts.
-export const MAX_DOCUMENT_UPLOAD_BYTES = 100 * 1024 * 1024; // 100MB
 
 class ApiError extends Error {
   constructor(
@@ -195,6 +198,34 @@ export interface EmergencyPlanInput {
   targetMonths?: number | null;
   monthlyContribution?: number | null;
   targetDate?: string | null;
+}
+
+// Money → Goals. One request id per user action: a retry or double click with the same id writes nothing twice.
+export interface GoalFundEntryInput {
+  type: EmergencyEntryType;
+  amount: number;
+  occurredAt: string;
+  reason?: string;
+  notes?: string;
+  requestId?: string;
+}
+
+export interface UseGoalMoneyInput {
+  amount: number;
+  occurredAt: string;
+  reason?: string;
+  notes?: string;
+  // Present = the money was SPENT. EXPENSE counts as spending; OTHER_OUTFLOW (e.g. a down payment) does not.
+  spend?: { mode: GoalSpendMode; categoryId: string; merchant?: string };
+  requestId?: string;
+}
+
+export interface ReallocateGoalMoneyInput {
+  toGoalId: string;
+  amount: number;
+  occurredAt: string;
+  notes?: string;
+  requestId?: string;
 }
 
 export interface UseEmergencyMoneyInput {
@@ -366,6 +397,18 @@ export const api = {
       request<{ entry: EmergencyFundEntryDTO; expense: ExpenseDTO | null }>("/emergency-fund/use", { method: "POST", body: JSON.stringify(data) }),
     setPlan: (data: EmergencyPlanInput) => request<unknown>("/emergency-fund/plan", { method: "PUT", body: JSON.stringify(data) }),
     remove: (id: string) => request<{ deleted: true }>(`/emergency-fund/entries/${id}`, { method: "DELETE" }),
+  },
+  // Money → Goals: the detailed management of every goal. The server decides what each goal type supports.
+  goalFunds: {
+    list: (opts: { archived?: boolean } = {}) => request<GoalFundSummaryDTO[]>(`/goal-funds${opts.archived ? "?archived=true" : ""}`),
+    overview: (goalId: string) => request<GoalFundOverviewDTO>(`/goal-funds/${goalId}/overview`),
+    ledger: (goalId: string) => request<GoalFundLedgerRowDTO[]>(`/goal-funds/${goalId}/ledger`),
+    add: (goalId: string, data: GoalFundEntryInput) => request<unknown>(`/goal-funds/${goalId}/entries`, { method: "POST", body: JSON.stringify(data) }),
+    use: (goalId: string, data: UseGoalMoneyInput) => request<GoalFundUseResultDTO>(`/goal-funds/${goalId}/use`, { method: "POST", body: JSON.stringify(data) }),
+    reallocate: (goalId: string, data: ReallocateGoalMoneyInput) =>
+      request<GoalFundReallocateResultDTO>(`/goal-funds/${goalId}/reallocate`, { method: "POST", body: JSON.stringify(data) }),
+    setPlan: (goalId: string, data: EmergencyPlanInput) => request<unknown>(`/goal-funds/${goalId}/plan`, { method: "PUT", body: JSON.stringify(data) }),
+    removeEntry: (goalId: string, entryId: string) => request<{ deleted: boolean; keptExpenseId?: string }>(`/goal-funds/${goalId}/entries/${entryId}`, { method: "DELETE" }),
   },
   income: {
     list: () => request<IncomeDTO[]>("/income"),
@@ -591,7 +634,7 @@ export const api = {
     ) => request<InsurancePolicyDTO>(`/insurance/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   goals: {
-    list: () => request<GoalDTO[]>("/goals"),
+    list: (opts: { archived?: boolean } = {}) => request<GoalDTO[]>(`/goals${opts.archived ? "?archived=true" : ""}`),
     create: (data: {
       type: string;
       name: string;
@@ -601,7 +644,9 @@ export const api = {
       monthlyContribution?: number;
       assumedAnnualReturnPercent?: number;
     }) => request<GoalDTO>("/goals", { method: "POST", body: JSON.stringify(data) }),
-    remove: (id: string) => request<void>(`/goals/${id}`, { method: "DELETE" }),
+    // A goal with no history is deleted; one with history is archived (its money returns to cash) and can be restored.
+    remove: (id: string) => request<{ id: string; archived?: true; releasedAmount?: string; unlinkedInvestments?: number }>(`/goals/${id}`, { method: "DELETE" }),
+    restore: (id: string) => request<GoalDTO>(`/goals/${id}/restore`, { method: "POST" }),
     update: (
       id: string,
       data: Partial<{
@@ -735,9 +780,6 @@ export const api = {
       file: File,
       meta: { category: string; tags?: string; expiryDate?: string; entityType?: string; entityId?: string; documentType?: string },
     ) => {
-      if (file.size > MAX_DOCUMENT_UPLOAD_BYTES) {
-        throw new ApiError(413, `File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). The maximum is 100MB.`);
-      }
       const formData = new FormData();
       formData.append("file", file);
       formData.append("category", meta.category);
