@@ -17,7 +17,8 @@ describe("QuickAddMenu", () => {
     expect(screen.getByRole("menuitem", { name: "Add expense" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Add income" })).toHaveAttribute("href", "/money/income");
     expect(screen.getByRole("menuitem", { name: "Add investment" })).toHaveAttribute("href", "/money/investments");
-    expect(screen.getByRole("menuitem", { name: "Add to emergency fund" })).toHaveAttribute("href", "/money/emergency-fund");
+    expect(screen.getByRole("menuitem", { name: "Add to emergency fund" })).toHaveAttribute("href", "/money/goals?goal=emergency");
+    expect(screen.getByRole("menuitem", { name: "Add to a goal" })).toHaveAttribute("href", "/money/goals");
     expect(screen.getByRole("menuitem", { name: "Lend money (receivable)" })).toHaveAttribute("href", "/money/receivables");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
