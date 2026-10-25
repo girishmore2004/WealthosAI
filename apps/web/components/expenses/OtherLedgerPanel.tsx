@@ -39,7 +39,7 @@ type Rows =
 // Expense table. For the rest this panel reads the ledger that actually owns the data — so a loan to
 // a friend, an investment or a transfer is never displayed as if it were an expense.
 export function OtherLedgerPanel({ type }: { type: OtherLedgerType }) {
-  const version = useFinancialVersion(["receivable", "emergency", "transfer", "investment"]);
+  const version = useFinancialVersion(["receivable", "emergency", "transfer", "investment", "goal"]);
   const [rows, setRows] = useState<Rows | null>(null);
   const [error, setError] = useState<string | null>(null);
 
