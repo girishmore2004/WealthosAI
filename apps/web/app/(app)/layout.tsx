@@ -1,50 +1,30 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
+import { AppNav } from "@/components/nav/AppNav";
 
-const TABS = [
-  { label: "Income", href: "/money/income" },
-  { label: "Expenses", href: "/money/expenses" },
-  { label: "Receivables", href: "/money/receivables" },
-  { label: "Investments", href: "/money/investments" },
-  { label: "Goals", href: "/money/goals" },
-  { label: "Property", href: "/money/property" },
-  { label: "Business", href: "/money/business" },
-  { label: "Loans", href: "/money/loans" },
-  { label: "Tax", href: "/money/tax" },
-  { label: "Retirement", href: "/money/retirement" },
-  { label: "Subscriptions", href: "/money/subscriptions" },
-  { label: "Documents", href: "/money/documents" },
-  { label: "What-If", href: "/money/simulator" },
-  { label: "Household", href: "/money/household" },
-];
+export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  const router = useRouter();
 
-export default function MoneyLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  useEffect(() => {
+    if (!loading && !user) router.replace("/login");
+  }, [loading, user, router]);
+
+  if (loading || !user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-paper">
+        <p className="text-sm text-ink-faint">Loading…</p>
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <div className="mb-8 flex gap-1 overflow-x-auto border-b border-line pb-px" role="navigation" aria-label="Money sections">
-        {TABS.map((tab) => {
-          const active = pathname === tab.href;
-          return (
-            <Link
-              key={tab.href}
-              href={tab.href}
-              aria-current={active ? "page" : undefined}
-              className={`shrink-0 whitespace-nowrap rounded-t-md px-3 py-2.5 text-sm transition-colors ${
-                active
-                  ? "border-b-2 border-marigold-500 font-medium text-ink"
-                  : "border-b-2 border-transparent text-ink-faint hover:bg-surface-muted hover:text-ink"
-              }`}
-            >
-              {tab.label}
-            </Link>
-          );
-        })}
-      </div>
-      {children}
+    <div className="min-h-screen bg-paper transition-[padding] duration-200 lg:pl-[var(--sidebar-w)]">
+      <AppNav />
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">{children}</main>
     </div>
   );
 }
