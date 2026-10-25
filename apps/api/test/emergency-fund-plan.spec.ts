@@ -127,6 +127,7 @@ function build(opts: { entries?: Row[]; plan?: Row | null; avgEssential?: number
       findUnique: jest.fn(async () => plan),
       upsert: jest.fn(async ({ create, update }: any) => { plan = plan ? { ...plan, ...update } : { id: "p1", ...create }; return plan; }),
     },
+    goal: { findFirst: jest.fn(async () => ({ id: "g-ef" })), create: jest.fn(async () => ({ id: "g-ef" })), update: jest.fn(async () => ({ id: "g-ef" })) },
     category: { findUnique: jest.fn(async () => (opts.categoryType === null ? null : { type: opts.categoryType ?? "NEED", name: "Medical" })) },
     expense: { create: jest.fn(async ({ data }: any) => { const row = { id: `x${expenses.length + 1}`, ...data }; expenses.push(row); return row; }) },
     $executeRaw: jest.fn().mockResolvedValue(0),
