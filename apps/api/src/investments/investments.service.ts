@@ -147,6 +147,12 @@ export class InvestmentsService {
     if (!goal || goal.userId !== userId) {
       throw new BadRequestException("goalId does not refer to a goal you own");
     }
+    // An archived goal is read-only history that holds nothing; an investment linked to it would be
+    // invisible to every plan. One investment can fund only ONE goal (Investment.goalId is a single
+    // reference), so linking here moves its whole value from its previous goal — it is never counted twice.
+    if (goal.archivedAt) {
+      throw new BadRequestException("That goal is archived. Restore it before linking an investment to it.");
+    }
   }
 
   // Portfolio-level rollup used by the dashboard and the Investments page.
