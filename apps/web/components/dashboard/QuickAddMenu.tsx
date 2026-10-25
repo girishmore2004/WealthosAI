@@ -9,7 +9,8 @@ import { QuickExpenseDialog } from "@/components/expenses/QuickExpenseDialog";
 const LINKS: Array<{ href: string; label: string }> = [
   { href: "/money/income", label: "Add income" },
   { href: "/money/investments", label: "Add investment" },
-  { href: "/money/emergency-fund", label: "Add to emergency fund" },
+  { href: "/money/goals?goal=emergency", label: "Add to emergency fund" },
+  { href: "/money/goals", label: "Add to a goal" },
   { href: "/money/receivables", label: "Lend money (receivable)" },
 ];
 
