@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { GoalsService } from "./goals.service";
 import { CreateGoalDto } from "./dto/create-goal.dto";
 import { UpdateGoalDto } from "./dto/update-goal.dto";
@@ -12,8 +12,8 @@ export class GoalsController {
   constructor(private goalsService: GoalsService) {}
 
   @Get()
-  list(@CurrentUser() user: User) {
-    return this.goalsService.list(user.id);
+  list(@CurrentUser() user: User, @Query("archived") archived?: string) {
+    return this.goalsService.list(user.id, { includeArchived: archived === "true" });
   }
 
   @Post()
@@ -24,6 +24,11 @@ export class GoalsController {
   @Patch(":id")
   update(@CurrentUser() user: User, @Param("id") id: string, @Body() dto: UpdateGoalDto) {
     return this.goalsService.update(user.id, id, dto);
+  }
+
+  @Post(":id/restore")
+  restore(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.goalsService.restore(user.id, id);
   }
 
   @Delete(":id")
