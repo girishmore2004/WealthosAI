@@ -510,20 +510,20 @@ describe("DashboardService emergency fund via Goal + uncommitted cash (new, audi
     expect(summary.emergencyFundAmount).toBe("9000.00");
   });
 
-  it("subtracts non-investment-backed goal currentAmount from cashBalance to get uncommittedCash", async () => {
+  it("subtracts non-emergency goal earmarks (cash held in the goal ledger) from cashBalance to get uncommittedCash", async () => {
     mockIncomeService.list.mockResolvedValue([{ amount: 100000 }]);
     mockExpensesService.list.mockResolvedValue([{ amount: 20000, categoryId: "c1", category: { name: "Rent", type: "NEED" } }]);
     mockFinancialFactsService.getFinancialPosition.mockResolvedValue(makePosition({ available: "80000.00" }));
     mockPrisma.client.goal.findMany.mockResolvedValue([
-      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 15000, investments: [] }, // cash-backed, subtracted
-      { id: "g2", type: "HOUSE", currentAmount: 200000, investments: [{ id: "inv1" }] }, // investment-backed, NOT subtracted
+      { id: "g1", type: "EMERGENCY_FUND", currentAmount: 15000, investments: [] }, // primary emergency goal: its money is the reserve ledger, already out of Available Cash
+      { id: "g2", type: "HOUSE", currentAmount: 20000, investments: [{ id: "inv1" }] }, // cash earmark on another goal: subtracted
     ]);
 
     const summary = await service.getSummary("user-1");
 
-    // cashBalance (= available cash) = 80000; uncommittedCash = 80000 - 15000 (g1 only) = 65000
+    // cashBalance (= available cash) = 80000; uncommittedCash = 80000 - 20000 (g2 only) = 60000
     expect(summary.cashBalance).toBe("80000.00");
-    expect(summary.uncommittedCash).toBe("65000.00");
+    expect(summary.uncommittedCash).toBe("60000.00");
   });
 
   it("uncommittedCash equals cashBalance when the user has no goals at all", async () => {
