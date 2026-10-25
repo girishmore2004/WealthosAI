@@ -67,6 +67,12 @@ describe("EmergencyFundService", () => {
         findFirst: jest.fn().mockResolvedValue(null),
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      goal: {
+        findFirst: jest.fn().mockResolvedValue({ id: "g-ef" }),
+        create: jest.fn().mockResolvedValue({ id: "g-ef" }),
+        update: jest.fn().mockResolvedValue({ id: "g-ef" }),
+      },
+      emergencyFundPlan: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn().mockResolvedValue({}) },
       $executeRaw: jest.fn().mockResolvedValue(0),
       $transaction: jest.fn(),
     };
