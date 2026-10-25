@@ -59,6 +59,12 @@ describe("EmergencyFundService.remove — the reserve can never go negative", ()
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
         create: jest.fn(),
       },
+      goal: {
+        findFirst: jest.fn().mockResolvedValue({ id: "g-ef" }),
+        create: jest.fn().mockResolvedValue({ id: "g-ef" }),
+        update: jest.fn().mockResolvedValue({ id: "g-ef" }),
+      },
+      emergencyFundPlan: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn().mockResolvedValue({}) },
       $executeRaw: jest.fn().mockResolvedValue(0),
       $transaction: jest.fn(),
     };
