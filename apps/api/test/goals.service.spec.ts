@@ -2,6 +2,11 @@ import { Test } from "@nestjs/testing";
 import { NotFoundException } from "@nestjs/common";
 import { GoalsService } from "../src/goals/goals.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { GoalFundingService } from "../src/financial-core/goal-funding/goal-funding.service";
+
+// resolveFacts → empty map: the overview then plans from the goal row alone (the ledger-backed numbers are
+// exercised against a real database in goal-funding.integration.spec.ts).
+const mockFunding = { resolveFacts: jest.fn().mockResolvedValue(new Map()) };
 
 describe("GoalsService.list (feasibility enrichment)", () => {
   let service: GoalsService;
@@ -12,7 +17,7 @@ describe("GoalsService.list (feasibility enrichment)", () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     const moduleRef = await Test.createTestingModule({
-      providers: [GoalsService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [GoalsService, { provide: PrismaService, useValue: mockPrisma }, { provide: GoalFundingService, useValue: mockFunding }],
     }).compile();
     service = moduleRef.get(GoalsService);
   });
@@ -169,56 +174,38 @@ describe("GoalsService.list (feasibility enrichment)", () => {
 
 describe("GoalsService update/remove (atomic ownership hardening)", () => {
   let service: GoalsService;
+  const tx = {
+    $executeRaw: jest.fn().mockResolvedValue(0),
+    goal: { findFirst: jest.fn(), update: jest.fn(), delete: jest.fn() },
+    goalEntry: { count: jest.fn() },
+    emergencyFundEntry: { count: jest.fn() },
+  };
   const mockPrisma = {
-    client: { goal: { findMany: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn() } },
+    client: {
+      goal: { findMany: jest.fn(), findFirst: jest.fn() },
+      $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
+    },
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockFunding.resolveFacts.mockResolvedValue(new Map());
     const moduleRef = await Test.createTestingModule({
-      providers: [GoalsService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [GoalsService, { provide: PrismaService, useValue: mockPrisma }, { provide: GoalFundingService, useValue: mockFunding }],
     }).compile();
     service = moduleRef.get(GoalsService);
   });
 
-  describe("update", () => {
-    it("updates and returns the enriched row when it exists and is owned by the caller", async () => {
-      mockPrisma.client.goal.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.client.goal.findUnique.mockResolvedValue({
-        id: "g1", name: "Renamed goal", targetAmount: 100000, currentAmount: 0,
-        monthlyContribution: 5000, targetDate: new Date(Date.now() + 1000 * 60 * 60 * 24 * 365),
-        investments: [],
-      });
-
-      const result = await service.update("user-1", "g1", { name: "Renamed goal" } as any);
-
-      expect(mockPrisma.client.goal.updateMany).toHaveBeenCalledWith({
-        where: { id: "g1", userId: "user-1" },
-        data: { name: "Renamed goal", targetDate: undefined },
-      });
-      expect(result.name).toBe("Renamed goal");
-    });
-
-    it("throws NotFoundException without leaking whether the id exists for another user", async () => {
-      mockPrisma.client.goal.updateMany.mockResolvedValue({ count: 0 });
-      await expect(service.update("user-1", "not-mine", {} as any)).rejects.toThrow(NotFoundException);
-      expect(mockPrisma.client.goal.findUnique).not.toHaveBeenCalled();
-    });
+  it("update: a goal that doesn't exist or isn't owned by the caller is a 404 and writes nothing", async () => {
+    tx.goal.findFirst.mockResolvedValue(null);
+    await expect(service.update("user-1", "not-mine", { name: "x" } as any)).rejects.toThrow(NotFoundException);
+    expect(tx.goal.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: "not-mine", userId: "user-1" }) }));
+    expect(tx.goal.update).not.toHaveBeenCalled();
   });
 
-  describe("remove", () => {
-    it("deletes atomically scoped by owner and returns the id", async () => {
-      mockPrisma.client.goal.deleteMany.mockResolvedValue({ count: 1 });
-
-      const result = await service.remove("user-1", "g1");
-
-      expect(mockPrisma.client.goal.deleteMany).toHaveBeenCalledWith({ where: { id: "g1", userId: "user-1" } });
-      expect(result).toEqual({ id: "g1" });
-    });
-
-    it("throws NotFoundException when the id doesn't exist or isn't owned by the caller", async () => {
-      mockPrisma.client.goal.deleteMany.mockResolvedValue({ count: 0 });
-      await expect(service.remove("user-1", "not-mine")).rejects.toThrow(NotFoundException);
-    });
+  it("remove: a goal that doesn't exist or isn't owned by the caller is a 404 and deletes nothing", async () => {
+    tx.goal.findFirst.mockResolvedValue(null);
+    await expect(service.remove("user-1", "not-mine")).rejects.toThrow(NotFoundException);
+    expect(tx.goal.delete).not.toHaveBeenCalled();
   });
 });
