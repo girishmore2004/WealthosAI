@@ -1,168 +1,199 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma } from "@wealthos/db";
+import { GoalDTO } from "@wealthos/types";
 import { PrismaService } from "../prisma/prisma.service";
+import { lockKey } from "../common/utils/advisory-lock.util";
 import { CreateGoalDto } from "./dto/create-goal.dto";
 import { UpdateGoalDto } from "./dto/update-goal.dto";
-import { GoalDTO } from "@wealthos/types";
+import { enrichGoal } from "./goal-planning.util";
+import { GoalFundingService, ResolvedGoalFacts } from "../financial-core/goal-funding/goal-funding.service";
+import { goalBalance, primaryEmergencyGoalId, reserveBalance } from "../financial-core/goal-funding/goal-funding.core";
 
+// GOALS OVERVIEW (planning & tracking). A goal's money is NOT stored here: Goal.currentAmount is the
+// materialised balance of the goal's funding ledger (the emergency reserve ledger for the user's primary
+// emergency goal, the goal's own GoalEntry ledger for every other goal), and the detailed management —
+// add / use / move money, history, target & plan — lives in Money → Goals (GoalFundingService).
+// This service owns the goal RECORD (name, type, target, date, plan assumptions) and its lifecycle.
+//
+// Every write that touches funding runs in one transaction under the same per-user advisory lock the
+// funding ledgers use, so a goal can never be edited, closed or retyped while money is moving in or out.
 @Injectable()
 export class GoalsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private funding: GoalFundingService,
+  ) {}
 
-  async list(userId: string): Promise<GoalDTO[]> {
+  async list(userId: string, opts: { includeArchived?: boolean } = {}): Promise<GoalDTO[]> {
     const goals = await this.prisma.client.goal.findMany({
-      where: { userId },
+      where: { userId, ...(opts.includeArchived ? {} : { archivedAt: null }) },
       include: { investments: true },
       orderBy: { targetDate: "asc" },
     });
-    return goals.map((g) => this.enrich(g));
+    const resolved = await this.funding.resolveFacts(
+      userId,
+      goals.filter((g) => !g.archivedAt),
+    );
+    return goals.map((g) => this.enrich(g, resolved.get(g.id)));
+  }
+
+  private async get(userId: string, id: string): Promise<GoalDTO> {
+    const goal = await this.prisma.client.goal.findFirst({ where: { id, userId }, include: { investments: true } });
+    if (!goal) throw new NotFoundException("Goal not found");
+    const primaryId = goal.archivedAt ? null : await primaryEmergencyGoalId(this.prisma.client, userId);
+    const resolved = await this.funding.resolveFacts(userId, [goal], { primaryId: goal.id === primaryId ? goal.id : null });
+    return this.enrich(goal, resolved.get(goal.id));
+  }
+
+  /** The Goals overview figure for one goal, planned against the SAME resolved facts Money → Goals uses. */
+  private enrich(
+    goal: Parameters<typeof enrichGoal>[0],
+    r: ResolvedGoalFacts | undefined,
+  ): GoalDTO {
+    if (!r) return enrichGoal(goal, "GOAL_LEDGER");
+    return enrichGoal(
+      { ...goal, currentAmount: r.cash, targetAmount: r.targetAmount, targetDate: r.targetDate, monthlyContribution: r.monthlyContribution, deadlineSet: r.hasTargetDate },
+      r.backing,
+    );
   }
 
   async create(userId: string, dto: CreateGoalDto) {
-    const goal = await this.prisma.client.goal.create({
-      data: {
-        ...dto,
-        userId,
-        targetDate: new Date(dto.targetDate),
-      },
-      include: { investments: true },
+    const { currentAmount, ...rest } = dto;
+    const id = await this.prisma.client.$transaction(async (tx) => {
+      await lockKey(tx, userId);
+      const isReserve = dto.type === "EMERGENCY_FUND";
+      if (isReserve && (await primaryEmergencyGoalId(tx, userId))) {
+        throw new BadRequestException("You already have an emergency fund goal. Manage it in Money → Goals; its money is tracked in one place.");
+      }
+      const goal = await tx.goal.create({
+        data: { ...rest, userId, targetDate: new Date(dto.targetDate), deadlineSet: true, currentAmount: 0 },
+        select: { id: true, name: true, targetAmount: true, targetDate: true, monthlyContribution: true },
+      });
+      if (isReserve) await this.writeReservePlan(tx, userId, { targetAmount: goal.targetAmount, targetDate: goal.targetDate, monthlyContribution: goal.monthlyContribution });
+      // Money the user says is already set aside becomes a ledger entry, so the balance always has a history.
+      if (currentAmount && currentAmount > 0) await this.funding.recordOpeningBalance(tx, userId, goal, currentAmount, isReserve);
+      return goal.id;
     });
-    return this.enrich(goal);
+    return this.get(userId, id);
   }
 
-  // Ownership enforced atomically as part of the write (updateMany scoped by
-  // {id, userId}) instead of a separate findUnique-then-check read beforehand — same
-  // hardening already applied to every other money module this session: closes the
-  // TOCTOU gap between "check ownership" and "perform the write," and collapses a
-  // cross-user access attempt and a nonexistent id into the same 404 rather than
-  // leaking which case occurred via a 403/404 split (previously ForbiddenException vs
-  // NotFoundException).
+  /** The emergency plan is authoritative for the reserve's target; saving an amount switches it to an amount target. */
+  private async writeReservePlan(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    v: { targetAmount?: Prisma.Decimal.Value; targetDate?: Date; monthlyContribution?: Prisma.Decimal.Value },
+  ) {
+    const data: Prisma.EmergencyFundPlanUncheckedUpdateInput = {};
+    if (v.targetAmount !== undefined) {
+      data.targetAmount = v.targetAmount;
+      data.targetMonths = null;
+    }
+    if (v.targetDate !== undefined) data.targetDate = v.targetDate;
+    if (v.monthlyContribution !== undefined) data.monthlyContribution = v.monthlyContribution;
+    if (Object.keys(data).length === 0) return;
+    await tx.emergencyFundPlan.upsert({ where: { userId }, create: { ...(data as Prisma.EmergencyFundPlanUncheckedCreateInput), userId }, update: data });
+  }
+
+  private ledgerEntryCount(tx: Prisma.TransactionClient, userId: string, goalId: string, reserve: boolean) {
+    return reserve ? tx.emergencyFundEntry.count({ where: { userId } }) : tx.goalEntry.count({ where: { userId, goalId } });
+  }
+
   async update(userId: string, id: string, dto: UpdateGoalDto) {
-    const result = await this.prisma.client.goal.updateMany({
-      where: { id, userId },
-      data: { ...dto, targetDate: dto.targetDate ? new Date(dto.targetDate) : undefined },
+    await this.prisma.client.$transaction(async (tx) => {
+      await lockKey(tx, userId);
+      // Ownership enforced in the query itself: a foreign id and a missing id are the same 404.
+      const goal = await tx.goal.findFirst({ where: { id, userId } });
+      if (!goal) throw new NotFoundException("Goal not found");
+      if (goal.archivedAt) throw new BadRequestException("This goal is archived. Restore it before changing it.");
+
+      const primaryId = await primaryEmergencyGoalId(tx, userId);
+      const reserve = primaryId === id;
+
+      if (dto.currentAmount !== undefined) {
+        const cash = reserve ? await reserveBalance(tx, userId) : await goalBalance(tx, userId, id);
+        if (!cash.equals(dto.currentAmount)) {
+          throw new BadRequestException("The amount saved is the balance of this goal's funding history. Add, use or move money in Money → Goals instead of typing a new number.");
+        }
+      }
+
+      const data: Prisma.GoalUncheckedUpdateInput = {};
+      if (dto.type !== undefined && dto.type !== goal.type) {
+        if ((await this.ledgerEntryCount(tx, userId, id, reserve)) > 0) {
+          throw new BadRequestException("The type cannot be changed once money has been added to or used from this goal.");
+        }
+        if (dto.type === "EMERGENCY_FUND" && primaryId) {
+          throw new BadRequestException("You already have an emergency fund goal.");
+        }
+        data.type = dto.type;
+      }
+      if (dto.name !== undefined) data.name = dto.name;
+      if (dto.targetAmount !== undefined) data.targetAmount = dto.targetAmount;
+      if (dto.monthlyContribution !== undefined) data.monthlyContribution = dto.monthlyContribution;
+      if (dto.assumedAnnualReturnPercent !== undefined) data.assumedAnnualReturnPercent = dto.assumedAnnualReturnPercent;
+      if (dto.targetDate !== undefined) {
+        data.targetDate = new Date(dto.targetDate);
+        data.deadlineSet = true;
+      }
+      if (Object.keys(data).length > 0) await tx.goal.update({ where: { id }, data });
+
+      // Whichever way it is edited, the emergency goal and the emergency plan describe the same target.
+      const becameReserve = data.type === "EMERGENCY_FUND";
+      if (reserve || becameReserve) {
+        await this.writeReservePlan(tx, userId, {
+          targetAmount: dto.targetAmount ?? (becameReserve ? goal.targetAmount : undefined),
+          targetDate: dto.targetDate !== undefined ? new Date(dto.targetDate) : becameReserve ? goal.targetDate : undefined,
+          monthlyContribution: dto.monthlyContribution ?? (becameReserve ? goal.monthlyContribution : undefined),
+        });
+      }
     });
-
-    if (result.count === 0) {
-      throw new NotFoundException("Goal not found");
-    }
-
-    const goal = await this.prisma.client.goal.findUnique({ where: { id }, include: { investments: true } });
-    return this.enrich(goal!);
+    return this.get(userId, id);
   }
 
-  // Same atomic-ownership approach, and a genuine round-trip reduction: one
-  // deleteMany({ id, userId }) replaces the previous findUnique-then-delete pair.
-  // Returns { id } rather than the deleted row — verified against apps/web's goals
-  // page (api.goals.remove(id)'s response is never read; it always re-fetches the list
-  // afterward) before making this change.
-  async remove(userId: string, id: string) {
-    const result = await this.prisma.client.goal.deleteMany({ where: { id, userId } });
+  /**
+   * Remove a goal.
+   *  - never funded            → deleted outright (linked investments are unlinked, as before);
+   *  - has funding history     → ARCHIVED: its history is kept, whatever it still holds is released back to
+   *                              uncommitted cash (a GOAL_CLOSED entry), linked investments are unlinked
+   *                              (they stay in the portfolio), and it leaves every plan and calculation;
+   *  - the emergency fund with history cannot be removed (it backs Emergency Cash and coverage): its
+   *    entries must be removed first.
+   */
+  async remove(userId: string, id: string): Promise<{ id: string; archived?: true; releasedAmount?: string; unlinkedInvestments?: number }> {
+    return this.prisma.client.$transaction(async (tx) => {
+      await lockKey(tx, userId);
+      const goal = await tx.goal.findFirst({ where: { id, userId } });
+      if (!goal) throw new NotFoundException("Goal not found");
 
-    if (result.count === 0) {
-      throw new NotFoundException("Goal not found");
-    }
+      const reserve = (await primaryEmergencyGoalId(tx, userId)) === id;
+      const entries = await this.ledgerEntryCount(tx, userId, id, reserve);
 
-    return { id };
+      if (entries === 0) {
+        await tx.goal.deleteMany({ where: { id, userId } });
+        return { id };
+      }
+      if (reserve) {
+        throw new BadRequestException("Your emergency fund has funding history and backs your Emergency Cash and coverage, so it cannot be removed. Delete its entries first if you really want to start over.");
+      }
+      if (goal.archivedAt) return { id, archived: true as const, releasedAmount: "0.00", unlinkedInvestments: 0 };
+
+      const released = await this.funding.releaseAll(tx, userId, goal);
+      const unlinked = await tx.investment.updateMany({ where: { goalId: id, userId }, data: { goalId: null } });
+      await tx.goal.update({ where: { id }, data: { archivedAt: new Date(), currentAmount: 0 } });
+      return { id, archived: true as const, releasedAmount: released.toFixed(2), unlinkedInvestments: unlinked.count };
+    });
   }
 
-  // Feasibility is intentionally a simple, explainable heuristic (contribution pace vs.
-  // required pace) rather than a Monte Carlo simulation — the What-If Simulator module
-  // is the right place for stochastic probability-of-success modeling. This comment,
-  // and the underlying design choice, are unchanged from before this update.
-  //
-  // TWO changes from the original implementation, both additive/opt-in:
-  //
-  // 1. GROWTH-AWARE PROJECTION (new): the original calculation implicitly assumed a
-  //    goal's linked investment value would sit completely flat (zero growth) between
-  //    now and the target date when computing how much MORE needs to be contributed —
-  //    a real simplification for any goal already holding money in growth assets. If
-  //    the goal has assumedAnnualReturnPercent set, requiredMonthlyContribution and
-  //    probabilityOfSuccess are now computed against a projection of the linked
-  //    investment value compounded to the target date, not its flat current value.
-  //    Unset (the default for every existing goal) reproduces the exact original
-  //    output — verified by all 5 pre-existing tests passing unmodified.
-  //    Deliberately NOT applied to progressPercent/totalSaved, which describe today's
-  //    actual state, not a forecast — only the forward-looking figures change.
-  //
-  // 2. NAMING/CLARITY (audit-flagged): probabilityOfSuccess itself and its 3 exact
-  //    enum values are UNCHANGED — Alerts, Coach, the Agentic Coach's data gatherer,
-  //    and the frontend all match against these exact strings, so renaming it would be
-  //    a breaking change across 4+ consumers for a naming concern alone. Instead, two
-  //    new additive fields carry the honest signal: contributionPaceRatio (a real
-  //    number: monthlyContribution / requiredMonthlyContribution) and
-  //    isPaceHeuristic: true (an explicit, permanent, machine-readable disclosure that
-  //    this was never a modeled probability). A future UI update can use these to
-  //    render a precise number and/or a clarifying label without any further backend
-  //    change.
-  private enrich(
-    goal: {
-      id: string;
-      userId: string;
-      type: string;
-      name: string;
-      targetAmount: unknown;
-      targetDate: Date;
-      currentAmount: unknown;
-      monthlyContribution: unknown;
-      assumedAnnualReturnPercent: unknown;
-      investments: { currentValue: unknown }[];
-    },
-  ): GoalDTO {
-    const targetAmount = Number(goal.targetAmount);
-    const currentAmount = Number(goal.currentAmount);
-    const monthlyContribution = Number(goal.monthlyContribution);
-    const linkedInvestmentValue = goal.investments.reduce((sum, i) => sum + Number(i.currentValue), 0);
-
-    const totalSaved = currentAmount + linkedInvestmentValue;
-    const monthsRemaining = Math.max(
-      1,
-      Math.ceil((goal.targetDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 30.44)),
-    );
-    // Today's actual shortfall — used only for the "already fully funded right now"
-    // check below, and for progressPercent. Never growth-projected.
-    const remaining = Math.max(0, targetAmount - totalSaved);
-    const progressPercent = targetAmount > 0 ? Number(Math.min(100, (totalSaved / targetAmount) * 100).toFixed(1)) : 0;
-
-    const assumedAnnualReturn = Number(goal.assumedAnnualReturnPercent ?? 0) / 100;
-    const monthlyReturn = assumedAnnualReturn / 12;
-    const projectedInvestmentValueAtTarget =
-      Math.abs(monthlyReturn) < 0.0001
-        ? linkedInvestmentValue
-        : linkedInvestmentValue * Math.pow(1 + monthlyReturn, monthsRemaining);
-
-    const remainingForRequiredCalc = Math.max(0, targetAmount - currentAmount - projectedInvestmentValueAtTarget);
-    const requiredMonthlyContribution = Number((remainingForRequiredCalc / monthsRemaining).toFixed(2));
-
-    let probabilityOfSuccess: GoalDTO["probabilityOfSuccess"] = "OFF_TRACK";
-    if (remaining === 0 || monthlyContribution >= requiredMonthlyContribution * 0.95) {
-      probabilityOfSuccess = "ON_TRACK";
-    } else if (monthlyContribution >= requiredMonthlyContribution * 0.6) {
-      probabilityOfSuccess = "AT_RISK";
-    }
-
-    // Uncapped by design — a genuinely honest ratio, not a bucketed label. 1 whenever
-    // no further contribution is actually required (remainingForRequiredCalc already
-    // 0), regardless of the goal's monthlyContribution value.
-    const contributionPaceRatio =
-      requiredMonthlyContribution > 0 ? Number((monthlyContribution / requiredMonthlyContribution).toFixed(3)) : 1;
-
-    return {
-      id: goal.id,
-      userId: goal.userId,
-      type: goal.type as GoalDTO["type"],
-      name: goal.name,
-      targetAmount: targetAmount.toFixed(2),
-      targetDate: goal.targetDate.toISOString(),
-      currentAmount: currentAmount.toFixed(2),
-      monthlyContribution: monthlyContribution.toFixed(2),
-      linkedInvestmentValue: linkedInvestmentValue.toFixed(2),
-      requiredMonthlyContribution,
-      progressPercent,
-      probabilityOfSuccess,
-      contributionPaceRatio,
-      isPaceHeuristic: true,
-      projectedInvestmentValueAtTarget: projectedInvestmentValueAtTarget.toFixed(2),
-      assumedAnnualReturnPercent: (assumedAnnualReturn * 100).toFixed(2),
-    };
+  async restore(userId: string, id: string) {
+    await this.prisma.client.$transaction(async (tx) => {
+      await lockKey(tx, userId);
+      const goal = await tx.goal.findFirst({ where: { id, userId } });
+      if (!goal) throw new NotFoundException("Goal not found");
+      if (!goal.archivedAt) throw new BadRequestException("This goal is not archived.");
+      if (goal.type === "EMERGENCY_FUND" && (await primaryEmergencyGoalId(tx, userId))) {
+        throw new BadRequestException("You already have an emergency fund goal.");
+      }
+      await tx.goal.update({ where: { id }, data: { archivedAt: null } });
+    });
+    return this.get(userId, id);
   }
 }
