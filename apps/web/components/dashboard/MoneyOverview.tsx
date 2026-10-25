@@ -123,7 +123,7 @@ export function MoneyOverview({ overview }: { overview: DashboardOverviewDTO }) 
             <h2 id="emergency-heading" className="font-display text-lg text-ink">
               Emergency fund
             </h2>
-            <Link href="/money/emergency-fund" className="text-sm font-medium text-marigold-600 hover:underline">
+            <Link href="/money/goals?goal=emergency" className="text-sm font-medium text-marigold-600 hover:underline">
               View emergency fund details
             </Link>
           </div>
