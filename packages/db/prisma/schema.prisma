@@ -202,6 +202,7 @@ model User {
   documentDiscrepancies DocumentDiscrepancy[] // NEW (document entity linking)
   loanPayments         LoanPayment[]         // NEW (loan EMI split)
   emergencyFundPlan    EmergencyFundPlan?    // NEW (emergency fund target + contribution plan)
+  goalEntries          GoalEntry[]           // NEW (goal funding ledger — Money → Goals)
   receivables          Receivable[]          // NEW (money-flow: money given / receivable)
   receivableRepayments ReceivableRepayment[] // NEW (money-flow: money given / receivable)
   accountTransfers     AccountTransfer[]     // NEW (money-flow: internal transfers)
@@ -604,12 +605,59 @@ model Goal {
   // state. Unset means "assume no growth," identical to the original calculation. See
   // GoalsService.enrich()'s doc comment.
   assumedAnnualReturnPercent Decimal? @db.Decimal(5, 2)
+  // Set when a goal is closed out (Money → Goals / Goals overview "Remove goal" on a goal that has
+  // funding history). An archived goal is read-only history: it holds no money, has no linked
+  // investments, and is left out of every planning and cash calculation. Null = active.
+  archivedAt           DateTime?
+  // false ONLY for an emergency goal that was created automatically from pre-existing emergency
+  // reserve data which never had a target date. targetDate then holds a placeholder to satisfy
+  // NOT NULL and must never be shown or planned against.
+  deadlineSet          Boolean   @default(true)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
   investments Investment[]
+  // The goal's funding ledger (Money → Goals). currentAmount is the materialised balance of this
+  // ledger (or of the emergency reserve ledger for the user's primary EMERGENCY_FUND goal).
+  entries     GoalEntry[]
 
   @@index([userId])
+  @@index([userId, archivedAt])
+}
+
+// Money earmarked for ONE goal. The same six entry types as the emergency reserve ledger and the
+// same signed effect (emergencyReserveDelta), so every balance, history row, trend and total is
+// computed by the one existing set of functions. It is bookkeeping inside the user's own cash:
+// an entry never creates income, an expense or a change in net worth. Spending from a goal is a
+// WITHDRAWAL here plus (when the money was consumed) one genuine Expense, written in the same
+// transaction. The user's primary EMERGENCY_FUND goal does NOT use this table: its money lives in
+// EmergencyFundEntry (the cash-model reserve) and is mapped to the goal by GoalFundingService.
+model GoalEntry {
+  id              String                 @id @default(cuid())
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+  goal            Goal                   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  goalId          String
+  type            EmergencyFundEntryType
+  amount          Decimal                @db.Decimal(14, 2) // positive, except ADJUSTMENT (signed)
+  occurredAt      DateTime
+  // MANUAL | OPENING_BALANCE | REALLOCATION | GOAL_CLOSED
+  origin          String                 @default("MANUAL")
+  reason          String?
+  notes           String?
+  // Client-generated key for one user action; a repeat of the same key returns the first result
+  // instead of writing again (double-click, retry after a timeout).
+  idempotencyKey  String?
+  // Both legs of a move between goals share this id; they are created and deleted together.
+  transferGroupId String?
+  // The Expense written in the same transaction when money was spent (no foreign key: the expense
+  // is a genuine record in its own right and is never cascaded away with the entry).
+  expenseId       String?
+  createdAt       DateTime               @default(now())
+
+  @@unique([userId, idempotencyKey], map: "GoalEntry_userId_idempotencyKey_key")
+  @@index([goalId, occurredAt])
+  @@index([userId, transferGroupId])
 }
 
 model Investment {
@@ -1834,10 +1882,15 @@ model EmergencyFundEntry {
   // ("Medical emergency", "Job loss" …). Short free text; notes stays for longer detail.
   reason          String?
   notes           String?
+  // See GoalEntry: repeat-submission guard, and the shared id of the two legs of a move between goals.
+  idempotencyKey  String?
+  transferGroupId String?
   createdAt       DateTime               @default(now())
 
   @@unique([sourceExpenseId], map: "EmergencyFundEntry_sourceExpenseId_key")
+  @@unique([userId, idempotencyKey], map: "EmergencyFundEntry_userId_idempotencyKey_key")
   @@index([userId, occurredAt])
+  @@index([userId, transferGroupId])
 }
 
 
