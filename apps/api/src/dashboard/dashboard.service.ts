@@ -90,8 +90,9 @@ export class DashboardService {
       // linked Investment (whose value is already counted in investmentsValue, so
       // subtracting its currentAmount from cash again would double-count it).
       this.prisma.client.goal.findMany({
-        where: { userId },
+        where: { userId, archivedAt: null },
         include: { investments: { select: { id: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       }),
       // Authoritative position (cash split, investments, net worth) and this month's
       // ACTUAL cash flow — computed once in FinancialFactsService so Dashboard, Reports
@@ -136,18 +137,15 @@ export class DashboardService {
       if (coverage.coverageMonths !== null) emergencyFundMonths = Number(coverage.coverageMonths);
     }
 
-    // #18: cash already earmarked toward a savings goal that isn't backed by a linked
-    // Investment (an investment-backed goal's value is already reflected in
-    // investmentsValue, so excluding those here avoids double-subtracting it). This is
-    // explicitly an approximation — goal.currentAmount is a user-entered figure, not a
-    // ledger transfer out of the cash cashBalance is derived from — so it's surfaced as
-    // its own clearly-labeled field rather than folded into cashBalance itself.
-    // An EMERGENCY_FUND goal is excluded when the reserve ledger exists: that money was already moved out
-    // of Available Cash by the reserve allocations, so subtracting it again counts it twice and pushes
-    // uncommitted cash negative.
+    // #18: cash already earmarked toward goals. Goal.currentAmount is now the balance of each goal's funding
+    // ledger (Money → Goals), so it is real set-aside cash that still sits inside Available Cash — except
+    // for the user's PRIMARY emergency goal, whose money lives in the emergency reserve ledger and was
+    // already moved out of Available Cash by its allocations (subtracting it again would count it twice and
+    // push uncommitted cash negative). Linked investments are separate (investmentsValue) and are not part of
+    // currentAmount, so a goal that also holds investments still earmarks its own cash.
+    const primaryEmergencyGoalId = goals.find((g) => g.type === "EMERGENCY_FUND")?.id; // goals are ordered oldest first
     const cashEarmarkedForGoals = goals
-      .filter((g) => g.investments.length === 0)
-      .filter((g) => !(g.type === "EMERGENCY_FUND" && emergencyFundBasis === "LEDGER"))
+      .filter((g) => g.id !== primaryEmergencyGoalId)
       .reduce((sum, g) => sum + Number(g.currentAmount), 0);
     const uncommittedCash = cashBalance - cashEarmarkedForGoals;
 
