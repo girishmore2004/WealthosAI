@@ -80,7 +80,7 @@ describe("MoneyOverview", () => {
   it("links to the detail pages and shows emergency progress with a target", () => {
     render(<MoneyOverview overview={overview} />);
     expect(screen.getByRole("link", { name: "View expense details" })).toHaveAttribute("href", "/money/expenses");
-    expect(screen.getByRole("link", { name: "View emergency fund details" })).toHaveAttribute("href", "/money/emergency-fund");
+    expect(screen.getByRole("link", { name: "View emergency fund details" })).toHaveAttribute("href", "/money/goals?goal=emergency");
     expect(screen.getByRole("link", { name: "View receivables" })).toHaveAttribute("href", "/money/receivables");
     expect(screen.getByRole("link", { name: "View investment details" })).toHaveAttribute("href", "/money/investments");
     expect(screen.getByRole("progressbar", { name: "Emergency fund progress" })).toHaveAttribute("aria-valuenow", "5");
