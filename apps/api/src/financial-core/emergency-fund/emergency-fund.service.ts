@@ -20,6 +20,7 @@ import { currentMonthString, monthsBefore } from "../../common/utils/financial-p
 import { CreateEmergencyEntryDto } from "./dto/create-emergency-entry.dto";
 import { UpdateEmergencyPlanDto, UseEmergencyMoneyDto } from "./dto/emergency-plan.dto";
 import { buildLedger, buildTrend, summarizeLedger } from "./emergency-fund.util";
+import { mirrorPlanToGoal, syncReserveGoal } from "../goal-funding/goal-funding.core";
 
 // Average month length, used for "months until the target date" (rounded UP, so a plan never assumes
 // money arrives after its deadline).
@@ -53,10 +54,19 @@ export class EmergencyFundService {
    * Validates and writes ONE ledger entry inside an already-open, already-locked transaction. A
    * reduction may not exceed what the reserve holds (compared with Decimal, never floats).
    */
-  private async insertEntry(
+  async insertEntry(
     tx: Prisma.TransactionClient,
     userId: string,
-    e: { type: CreateEmergencyEntryDto["type"]; amount: number; occurredAt: Date; reason?: string; notes?: string },
+    e: {
+      type: CreateEmergencyEntryDto["type"];
+      amount: number;
+      occurredAt: Date;
+      reason?: string;
+      notes?: string;
+      origin?: string;
+      idempotencyKey?: string;
+      transferGroupId?: string;
+    },
   ) {
     const reducing = e.type === "RELEASE" || e.type === "WITHDRAWAL" || e.type === "TRANSFER_OUT" || (e.type === "ADJUSTMENT" && e.amount < 0);
     if (reducing) {
@@ -66,12 +76,30 @@ export class EmergencyFundService {
         throw new BadRequestException(`Cannot take ${toMoneyString(reduction)} out of the reserve; Emergency Cash is ${toMoneyString(balance)}.`);
       }
     }
-    return tx.emergencyFundEntry.create({
-      data: { userId, type: e.type, amount: e.amount, occurredAt: e.occurredAt, reason: e.reason, notes: e.notes },
+    const row = await tx.emergencyFundEntry.create({
+      data: {
+        userId,
+        type: e.type,
+        amount: e.amount,
+        occurredAt: e.occurredAt,
+        reason: e.reason,
+        notes: e.notes,
+        ...(e.origin ? { origin: e.origin } : {}),
+        ...(e.idempotencyKey ? { idempotencyKey: e.idempotencyKey } : {}),
+        ...(e.transferGroupId ? { transferGroupId: e.transferGroupId } : {}),
+      },
     });
+    // The user's primary emergency goal mirrors the reserve balance (and exists whenever reserve data does).
+    await syncReserveGoal(tx, userId);
+    return row;
   }
 
-  async create(userId: string, dto: CreateEmergencyEntryDto) {
+  /** The entry a previous submission of the same requestId already wrote, if any (checked under the user lock). */
+  private replayOf(tx: Prisma.TransactionClient, userId: string, requestId?: string) {
+    return requestId ? tx.emergencyFundEntry.findFirst({ where: { userId, idempotencyKey: requestId } }) : Promise.resolve(null);
+  }
+
+  async create(userId: string, dto: CreateEmergencyEntryDto, requestId?: string) {
     if (dto.type === "ADJUSTMENT") {
       if (dto.amount === 0) throw new BadRequestException("An adjustment cannot be zero");
     } else if (dto.amount <= 0) {
@@ -83,7 +111,9 @@ export class EmergencyFundService {
 
     return this.prisma.client.$transaction(async (tx) => {
       await this.lockUser(tx, userId);
-      return this.insertEntry(tx, userId, { type: dto.type, amount: dto.amount, occurredAt, reason: dto.reason, notes: dto.notes });
+      const replay = await this.replayOf(tx, userId, requestId);
+      if (replay) return replay;
+      return this.insertEntry(tx, userId, { type: dto.type, amount: dto.amount, occurredAt, reason: dto.reason, notes: dto.notes, idempotencyKey: requestId });
     });
   }
 
@@ -95,12 +125,15 @@ export class EmergencyFundService {
    * so a ₹10,000 medical bill paid from the fund shows ₹10,000 of medical expense once, and the fund
    * ₹10,000 lower. Without `expense` the money just leaves the reserve (e.g. moved back to savings).
    */
-  async useMoney(userId: string, dto: UseEmergencyMoneyDto) {
+  async useMoney(userId: string, dto: UseEmergencyMoneyDto, requestId?: string) {
     const occurredAt = new Date(dto.occurredAt);
     if (Number.isNaN(occurredAt.getTime())) throw new BadRequestException("Invalid occurredAt date");
 
     return this.prisma.client.$transaction(async (tx) => {
       await this.lockUser(tx, userId);
+
+      const replay = await this.replayOf(tx, userId, requestId);
+      if (replay) return { entry: replay, expense: null };
 
       if (dto.expense) {
         const category = await tx.category.findUnique({ where: { id: dto.expense.categoryId }, select: { type: true, name: true } });
@@ -110,7 +143,7 @@ export class EmergencyFundService {
         }
       }
 
-      const entry = await this.insertEntry(tx, userId, { type: "WITHDRAWAL", amount: dto.amount, occurredAt, reason: dto.reason, notes: dto.notes });
+      const entry = await this.insertEntry(tx, userId, { type: "WITHDRAWAL", amount: dto.amount, occurredAt, reason: dto.reason, notes: dto.notes, idempotencyKey: requestId });
 
       const expense = dto.expense
         ? await tx.expense.create({
@@ -123,6 +156,9 @@ export class EmergencyFundService {
               paymentMethod: "OTHER",
               notes: "Paid from emergency fund",
               flowType: "EXPENSE",
+              sourceType: "EMERGENCY_FUND_USE",
+              sourceId: entry.id,
+              sourceReference: "withdrawal",
             },
           })
         : null;
@@ -164,6 +200,12 @@ export class EmergencyFundService {
       const entry = await tx.emergencyFundEntry.findFirst({ where: { id, userId } });
       if (!entry) throw new NotFoundException("Emergency fund entry not found");
 
+      // One half of a move between goals: deleting it alone would create or destroy money. The pair is
+      // removed together from Money → Goals (GoalFundingService.removeEntry).
+      if (entry.transferGroupId) {
+        throw new BadRequestException("This entry is one half of a move between goals. Remove the move from Money → Goals so both sides stay in step.");
+      }
+
       const effect = emergencyReserveDelta({ type: entry.type, amount: entry.amount });
       if (effect.gt(0)) {
         const balance = await this.balance(tx, userId);
@@ -178,12 +220,13 @@ export class EmergencyFundService {
 
       const res = await tx.emergencyFundEntry.deleteMany({ where: { id, userId } });
       if (res.count === 0) throw new NotFoundException("Emergency fund entry not found");
+      await syncReserveGoal(tx, userId);
       return { deleted: true };
     });
   }
 
   /** Authoritative reserve balance, derived from the ledger by the shared formula. */
-  private async balance(db: Pick<Prisma.TransactionClient, "emergencyFundEntry">, userId: string): Promise<Prisma.Decimal> {
+  async balance(db: Pick<Prisma.TransactionClient, "emergencyFundEntry">, userId: string): Promise<Prisma.Decimal> {
     const rows = await db.emergencyFundEntry.groupBy({
       by: ["type"],
       where: { userId },
@@ -244,10 +287,22 @@ export class EmergencyFundService {
     }
     if (Object.keys(data).length === 0) throw new BadRequestException("Nothing to change");
 
-    return this.prisma.client.emergencyFundPlan.upsert({
-      where: { userId },
-      create: { ...(data as Prisma.EmergencyFundPlanUncheckedCreateInput), userId },
-      update: data,
+    // A months target is turned into rupees with the same essential-spending average the page uses, so
+    // the mirrored Goal.targetAmount is the number the user actually sees.
+    const monthsTarget = data.targetMonths != null ? toDecimal(data.targetMonths as Prisma.Decimal.Value) : null;
+    const avgEssential = monthsTarget ? toDecimal((await this.facts.getEmergencyCoverage(userId)).avgMonthlyEssentialExpenses) : null;
+    const computedTarget = monthsTarget && avgEssential ? emergencyTargetFromMonths(monthsTarget, avgEssential) : null;
+
+    return this.prisma.client.$transaction(async (tx) => {
+      await this.lockUser(tx, userId);
+      const plan = await tx.emergencyFundPlan.upsert({
+        where: { userId },
+        create: { ...(data as Prisma.EmergencyFundPlanUncheckedCreateInput), userId },
+        update: data,
+      });
+      const goalId = await syncReserveGoal(tx, userId, now);
+      await mirrorPlanToGoal(tx, goalId, plan, computedTarget, dto.targetDate === null);
+      return plan;
     });
   }
 
