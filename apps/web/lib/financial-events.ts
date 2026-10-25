@@ -9,7 +9,9 @@ import { useEffect, useRef, useState } from "react";
 // useFinancialVersion() and refetches when it changes. The server stays the source of truth:
 // the bus carries no numbers, only "something changed, ask again".
 
-export type FinancialChange = "expense" | "income" | "investment" | "emergency" | "receivable" | "transfer";
+// "goal" = a goal's own funding changed (money added, used or moved, a target or plan edited, a goal created,
+// archived or restored). The emergency reserve also emits "emergency" because it moves real cash.
+export type FinancialChange = "expense" | "income" | "investment" | "emergency" | "receivable" | "transfer" | "goal";
 
 type Listener = (kind: FinancialChange) => void;
 
