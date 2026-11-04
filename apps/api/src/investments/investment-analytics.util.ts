@@ -58,7 +58,19 @@ export interface InvestmentSeries {
   holdingsWithLedger: number;
 }
 
-export function buildInvestmentSeries(months: string[], cash: MonthlyCashflowRow[], valuations: MonthlyValuationRow[], currentMonth: string): InvestmentSeries {
+/** Cost basis saved on a holding = what was already invested before ledger tracking; ledger inflows add to it. */
+export interface OpeningBasisRow {
+  investmentId: string;
+  amount: Prisma.Decimal.Value;
+}
+
+export function buildInvestmentSeries(
+  months: string[],
+  cash: MonthlyCashflowRow[],
+  valuations: MonthlyValuationRow[],
+  currentMonth: string,
+  openings: OpeningBasisRow[] = [],
+): InvestmentSeries {
   const dec = (v: Prisma.Decimal.Value) => new Prisma.Decimal(v);
 
   // Per-holding, per-month net money in, and the set of holdings that have any ledger at all.
@@ -111,8 +123,10 @@ export function buildInvestmentSeries(months: string[], cash: MonthlyCashflowRow
     }
     return latest;
   };
+  const openingBy = new Map<string, Dec>(openings.map((o) => [o.investmentId, dec(o.amount)]));
+  // A holding cannot be valued before it was bought, so wherever a value exists its opening basis is in.
   const netInvestedAt = (investmentId: string, month: string): Dec => {
-    let total = ZERO;
+    let total = openingBy.get(investmentId) ?? ZERO;
     for (const [m, amount] of netByHolding.get(investmentId) ?? []) if (m <= month) total = total.plus(amount);
     return total;
   };
@@ -134,8 +148,9 @@ export function buildInvestmentSeries(months: string[], cash: MonthlyCashflowRow
       if (value === null) continue;
       total = total.plus(value);
       valued += 1;
-      // A gain is only meaningful where we know BOTH what the holding is worth and what went in.
-      if (withLedger.has(id)) {
+      // A gain is meaningful where we know what the holding is worth AND what went in: the opening cost
+      // basis saved on the holding plus every ledger inflow up to that month.
+      if (withLedger.has(id) || openingBy.has(id)) {
         gain = gain.plus(value.minus(netInvestedAt(id, month)));
         covered += 1;
       }
