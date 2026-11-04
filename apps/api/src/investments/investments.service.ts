@@ -164,8 +164,21 @@ export class InvestmentsService {
   async summary(userId: string): Promise<InvestmentSummaryDTO> {
     const investments = await this.list(userId);
 
+    // Invested = the opening cost basis saved on each holding PLUS every contribution / SIP instalment
+    // recorded since, less the cost basis already realised by sales — the same definition the Investments
+    // page and Home use, so every consumer of this summary agrees with them.
+    const [inflows, realized] = await Promise.all([
+      this.prisma.client.investmentCashflow.aggregate({
+        where: { userId, type: { in: ["CONTRIBUTION", "EMPLOYER_CONTRIBUTION", "TRANSFER_IN"] } },
+        _sum: { amount: true },
+      }),
+      this.prisma.client.realizedGainEvent.aggregate({ where: { userId }, _sum: { costBasisPortion: true } }),
+    ]);
+    const addedSinceOpening = Number(inflows._sum.amount ?? 0);
+    const realizedBasis = Number(realized._sum.costBasisPortion ?? 0);
+
     const totalCurrentValue = investments.reduce((sum, i) => sum + Number(i.currentValue), 0);
-    const totalCostBasis = investments.reduce((sum, i) => sum + Number(i.costBasis), 0);
+    const totalCostBasis = investments.reduce((sum, i) => sum + Number(i.costBasis), 0) + addedSinceOpening - realizedBasis;
     const totalGainLoss = totalCurrentValue - totalCostBasis;
     const totalGainLossPercent = totalCostBasis > 0 ? (totalGainLoss / totalCostBasis) * 100 : 0;
 
@@ -376,12 +389,18 @@ export class InvestmentsService {
   // Does NOT touch the Investment row itself: currentValue/costBasis stay exactly as
   // they are, since this is a tax-tracking side record, not a portfolio edit.
   async recordSale(userId: string, investmentId: string, dto: RecordSaleDto) {
-    const investment = await this.prisma.client.investment.findUnique({ where: { id: investmentId } });
+    const investment = await this.prisma.client.investment.findUnique({
+      where: { id: investmentId },
+      include: { cashflows: { where: { type: { in: ["CONTRIBUTION", "EMPLOYER_CONTRIBUTION", "TRANSFER_IN"] } }, select: { amount: true } } },
+    });
     if (!investment || investment.userId !== userId) {
       throw new NotFoundException("Investment not found");
     }
 
-    if (dto.costBasisPortion > Number(investment.costBasis)) {
+    // The most that can be sold is everything put in: the opening cost basis plus every contribution / SIP
+    // instalment recorded since.
+    const addedSince = (investment.cashflows ?? []).reduce((sum, c) => sum + Number(c.amount), 0);
+    if (dto.costBasisPortion > Number(investment.costBasis) + addedSince) {
       throw new BadRequestException("costBasisPortion cannot exceed the investment's total costBasis");
     }
 
