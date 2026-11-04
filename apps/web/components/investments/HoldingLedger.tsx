@@ -169,6 +169,7 @@ export function HoldingLedger({ investment, onChanged }: { investment: Investmen
                 <span>{metrics.valuationSource === "VALUATION" ? "Using your latest recorded value." : "No dated value recorded yet — using the value saved on the holding."}</span>
               </div>
               <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Kpi label="Invested before tracking" value={formatINR(metrics.openingCostBasis ?? 0)} />
                 <Kpi label="You put in" value={formatINR(metrics.grossContributions)} />
                 <Kpi label="Employer added" value={formatINR(metrics.employerContributions)} />
                 <Kpi label="Taken out" value={formatINR(metrics.withdrawals)} />
@@ -182,8 +183,8 @@ export function HoldingLedger({ investment, onChanged }: { investment: Investmen
                 <Kpi label="Total return" value={signed(metrics.totalReturn)} tone={toneOf(metrics.totalReturn)} />
                 <Kpi label="Return" value={ratioPercent(metrics.returnRatio)} tone={toneOf(metrics.totalReturn)} />
               </dl>
-              {Number(metrics.grossContributions) === 0 && (
-                <p className="text-xs text-ink-faint">No contributions are recorded for this holding yet, so the return above is not meaningful. Add the money you put in as transactions.</p>
+              {Number(metrics.grossContributions) === 0 && Number(metrics.openingCostBasis ?? 0) === 0 && (
+                <p className="text-xs text-ink-faint">Nothing is recorded as invested for this holding yet, so the return above is not meaningful. Set the amount invested so far, or add transactions.</p>
               )}
             </div>
           ))}
