@@ -46,6 +46,17 @@ describe("buildInvestmentSeries", () => {
     expect(s.contributionsThisMonth.toNumber()).toBe(0);
   });
 
+  it("opening cost basis is part of what went in: gain = value - (opening + ledger inflows)", () => {
+    const s = buildInvestmentSeries(
+      ["2026-10"],
+      [{ investmentId: "uti", month: "2026-10", type: "CONTRIBUTION", total: 200 }],
+      [val("uti", "2026-10", 11_517)],
+      "2026-10",
+      [{ investmentId: "uti", amount: 10_526 }],
+    );
+    expect(s.gainTrend[0].gain!.toString()).toBe("791"); // 11517 - (10526 + 200), not 11317
+  });
+
   it("a holding with a valuation but NO ledger shows in the value trend but never fakes a gain", () => {
     const s = buildInvestmentSeries(months, [], [val("legacy", "2026-08", 50000)], "2026-10");
     expect(s.valueTrend.map((r) => r.value?.toNumber())).toEqual([50000, 50000, 50000]);
