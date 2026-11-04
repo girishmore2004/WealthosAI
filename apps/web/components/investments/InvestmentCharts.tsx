@@ -1,7 +1,7 @@
 "use client";
 
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { InvestmentAnalyticsDTO, InvestmentDTO } from "@wealthos/types";
+import type { InvestmentAnalyticsDTO, InvestmentDTO, PortfolioHoldingDTO } from "@wealthos/types";
 import { formatINR, formatPercent } from "@/lib/format";
 import { formatMonth } from "@/lib/dates";
 import { CHART, axisTick, legendStyle, tooltipStyle } from "@/lib/chart-theme";
@@ -19,10 +19,18 @@ function Frame({ height = 220, ariaLabel, children }: { height?: number; ariaLab
   );
 }
 
-/** Invested vs current value, one pair of bars per holding (values straight from the holdings). */
-export function InvestedVsCurrentChart({ items }: { items: InvestmentDTO[] }) {
+/**
+ * Invested vs current value, one pair of bars per holding. "Invested" is the canonical figure from the portfolio
+ * summary: the opening cost basis PLUS every SIP instalment / contribution recorded since (less cost sold). It
+ * falls back to the cost basis saved on the holding only while the portfolio summary has not loaded.
+ */
+export function InvestedVsCurrentChart({ items, holdings = [] }: { items: InvestmentDTO[]; holdings?: PortfolioHoldingDTO[] }) {
   if (items.length === 0) return <p className="py-8 text-center text-sm text-ink-faint">Add a holding to see this chart.</p>;
-  const data = items.map((i) => ({ name: i.name.length > 14 ? `${i.name.slice(0, 13)}…` : i.name, invested: Number(i.costBasis), current: Number(i.currentValue) }));
+  const byId = new Map(holdings.map((h) => [h.id, h]));
+  const data = items.map((i) => {
+    const p = byId.get(i.id);
+    return { name: i.name.length > 14 ? `${i.name.slice(0, 13)}…` : i.name, invested: Number(p?.invested ?? i.costBasis), current: Number(p?.currentValue ?? i.currentValue) };
+  });
   return (
     <Frame ariaLabel="Invested versus current value by holding">
       <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
