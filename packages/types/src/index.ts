@@ -2127,6 +2127,8 @@ export interface InvestmentMetricsDTO {
   asOfDate: string;
   // Where currentValue came from: a dated VALUATION, or the legacy currentValue field.
   valuationSource: "VALUATION" | "LEGACY_CURRENT_VALUE";
+  // Invested before ledger tracking began (saved on the holding). SIP / contributions are added on top.
+  openingCostBasis?: string;
   grossContributions: string;
   employerContributions: string;
   withdrawals: string;
@@ -2558,6 +2560,10 @@ export interface PortfolioHoldingDTO {
   // Net capital still invested: contributions in, less the cost basis already realised by sales.
   // For a holding with no ledger this is the legacy cost basis saved on the holding.
   invested: string;
+  // What was already invested before tracking (the cost basis saved on the holding), and the money added on
+  // top of it since (SIP instalments, contributions, transfers in). invested = opening + added − realised cost.
+  openingCostBasis?: string;
+  addedSinceOpening?: string;
   costBasisSource: CostBasisSource;
   currentValue: string;
   valuedAt: string | null;
