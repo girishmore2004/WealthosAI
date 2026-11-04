@@ -81,6 +81,29 @@ describe("buildPortfolio", () => {
     expect(p.holdings.find((h) => h.id === "paused")!.plannedMonthly).toBeNull();
   });
 
+  it("opening cost basis + SIP: invested = what was put in before tracking PLUS each recorded instalment", () => {
+    const sip = { sipActive: true, monthlyContribution: 200, contributionFrequency: "MONTHLY", contributionStartDate: d("2026-10-26") };
+    const h = holding({ id: "uti", costBasis: 10_526, currentValue: 11_517, purchaseDate: d("2026-10-23"), ...sip });
+    const one = buildPortfolio([h], [cf("uti", "CONTRIBUTION", 200, "2026-10-26")], [], d("2026-11-04"));
+    expect(one.holdings[0].invested).toBe("10726.00"); // not 200
+    expect(one.holdings[0].openingCostBasis).toBe("10526.00");
+    expect(one.holdings[0].addedSinceOpening).toBe("200.00");
+    expect(one.holdings[0].unrealizedGain).toBe("791.00");
+    expect(one.holdings[0].returnRatio).toBe("0.073746"); // not 5658%
+    const two = buildPortfolio([h], [cf("uti", "CONTRIBUTION", 200, "2026-10-26"), cf("uti", "CONTRIBUTION", 200, "2026-11-26")], [], d("2026-11-27"));
+    expect(two.totals.totalInvested).toBe("10926.00"); // each new instalment is added
+  });
+
+  it("opening cost basis survives a partial sale: realised cost comes off the combined figure", () => {
+    const p = buildPortfolio(
+      [holding({ id: "a", costBasis: 50_000, latestValuation: { value: 60_000, valuedAt: d("2026-10-20") } })],
+      [cf("a", "CONTRIBUTION", 10_000, "2026-09-01")],
+      [{ investmentId: "a", costBasisPortion: 20_000, gainAmount: 3_000 }],
+      NOW,
+    );
+    expect(p.totals.totalInvested).toBe("40000.00"); // 50k + 10k - 20k
+  });
+
   it("a scheduled-but-unrecorded SIP is NOT invested (only ledger rows are)", () => {
     const p = buildPortfolio(
       [holding({ id: "s", sipActive: true, monthlyContribution: 5000, contributionFrequency: "MONTHLY", contributionStartDate: d("2025-01-05") })],
