@@ -801,7 +801,7 @@ export class FinancialFactsService {
   async getInvestmentSummary(userId: string, investmentId: string) {
     const inv = await this.prisma.client.investment.findFirst({
       where: { id: investmentId, userId }, // ownership enforced in the query itself
-      select: { id: true, name: true, type: true, currentValue: true },
+      select: { id: true, name: true, type: true, currentValue: true, costBasis: true },
     });
     if (!inv) return null;
 
@@ -826,6 +826,7 @@ export class FinancialFactsService {
       currentValue: toDecimal(latest?.value ?? inv.currentValue),
       realizedCostBasisSold: toDecimal(realized._sum.costBasisPortion),
       realizedGain: toDecimal(realized._sum.gainAmount),
+      openingCostBasis: toDecimal(inv.costBasis),
     });
 
     return {
@@ -836,6 +837,7 @@ export class FinancialFactsService {
       period: "LIFETIME" as const,
       asOfDate: (latest?.valuedAt ?? new Date()).toISOString(),
       valuationSource: latest ? ("VALUATION" as const) : ("LEGACY_CURRENT_VALUE" as const),
+      openingCostBasis: toMoneyString(m.openingCostBasis),
       grossContributions: toMoneyString(m.grossContributions),
       employerContributions: toMoneyString(m.employerContributions),
       withdrawals: toMoneyString(m.withdrawals),
