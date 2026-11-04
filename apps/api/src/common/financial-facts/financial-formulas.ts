@@ -122,9 +122,15 @@ export interface InvestmentMetricsInput {
   realizedCostBasisSold: Dec;
   /** Sum of RealizedGainEvent.gainAmount for this investment. */
   realizedGain: Dec;
+  /**
+   * What the user had ALREADY put in before ledger tracking began (Investment.costBasis, typed when the
+   * holding was added). Every later contribution / SIP instalment is added ON TOP of it. Defaults to 0.
+   */
+  openingCostBasis?: Dec;
 }
 
 export interface InvestmentMetrics {
+  openingCostBasis: Dec;
   grossContributions: Dec;
   employerContributions: Dec;
   withdrawals: Dec;
@@ -142,7 +148,7 @@ export interface InvestmentMetrics {
 /**
  * Keeps the concepts separate, per spec:
  *
- *   invested  = contributions + employer contributions + transfers in   (external money in)
+ *   invested  = opening cost basis + contributions + employer contributions + transfers in   (external money in)
  *   returned  = withdrawals + sale proceeds + transfers out             (external money out)
  *   costBasis = invested - cost basis already realized by sales
  *   unrealized= currentValue - costBasis
@@ -154,11 +160,13 @@ export interface InvestmentMetrics {
  */
 export function deriveInvestmentMetrics(i: InvestmentMetricsInput): InvestmentMetrics {
   const t = i.totals;
-  const invested = t.contributions.plus(t.employerContributions).plus(t.transfersIn);
+  const opening = i.openingCostBasis ?? new Prisma.Decimal(0);
+  const invested = opening.plus(t.contributions).plus(t.employerContributions).plus(t.transfersIn);
   const returned = t.withdrawals.plus(t.saleProceeds).plus(t.transfersOut);
   const costBasis = invested.minus(i.realizedCostBasisSold);
   const totalReturn = i.currentValue.plus(returned).plus(t.dividends).minus(t.fees).minus(invested);
   return {
+    openingCostBasis: opening,
     grossContributions: t.contributions,
     employerContributions: t.employerContributions,
     withdrawals: t.withdrawals,
@@ -478,4 +486,3 @@ export function periodsToReach(remaining: Dec, perPeriod: Dec): number | null {
   if (remaining.lte(0)) return 0;
   return perPeriod.lte(0) ? null : remaining.div(perPeriod).ceil().toNumber();
 }
-
