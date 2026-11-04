@@ -5,10 +5,19 @@ import { PrismaService } from "../src/prisma/prisma.service";
 
 describe("InvestmentsService.summary", () => {
   let service: InvestmentsService;
-  const mockPrisma = { client: { investment: { findMany: jest.fn() }, goal: { findUnique: jest.fn() } } };
+  const mockPrisma = {
+    client: {
+      investment: { findMany: jest.fn() },
+      goal: { findUnique: jest.fn() },
+      investmentCashflow: { aggregate: jest.fn() },
+      realizedGainEvent: { aggregate: jest.fn() },
+    },
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPrisma.client.investmentCashflow.aggregate.mockResolvedValue({ _sum: { amount: null } });
+    mockPrisma.client.realizedGainEvent.aggregate.mockResolvedValue({ _sum: { costBasisPortion: null } });
     const moduleRef = await Test.createTestingModule({
       providers: [InvestmentsService, { provide: PrismaService, useValue: mockPrisma }],
     }).compile();
@@ -27,6 +36,17 @@ describe("InvestmentsService.summary", () => {
     expect(summary.totalCostBasis).toBe("200000.00");
     expect(summary.totalGainLoss).toBe("0.00"); // gains and losses cancel out
     expect(summary.totalGainLossPercent).toBe(0);
+  });
+
+  it("adds SIP / contribution inflows on top of the opening cost basis and removes cost already sold", async () => {
+    mockPrisma.client.investment.findMany.mockResolvedValue([{ type: "MUTUAL_FUND", currentValue: 11517, costBasis: 10526 }]);
+    mockPrisma.client.investmentCashflow.aggregate.mockResolvedValue({ _sum: { amount: 200 } });
+    const summary = await service.summary("user-1");
+    expect(summary.totalCostBasis).toBe("10726.00");
+    expect(summary.totalGainLoss).toBe("791.00");
+
+    mockPrisma.client.realizedGainEvent.aggregate.mockResolvedValue({ _sum: { costBasisPortion: 726 } });
+    expect((await service.summary("user-1")).totalCostBasis).toBe("10000.00");
   });
 
   it("groups allocation by type and sorts descending by value", async () => {
