@@ -62,7 +62,7 @@ const EDIT_FIELDS: EditField[] = [
   { key: "type", label: "Type", type: "select", options: INVESTMENT_TYPES.map((t) => ({ value: t, label: t })) },
   { key: "name", label: "Name" },
   { key: "currentValue", label: "Current value (₹)", type: "number", money: true },
-  { key: "costBasis", label: "Cost basis (₹)", type: "number", money: true },
+  { key: "costBasis", label: "Invested before tracking (₹) — SIPs add on top", type: "number", money: true },
   { key: "purchaseDate", label: "Purchase date", type: "date" },
   { key: "riskLevel", label: "Risk level", type: "select", options: RISK_LEVELS.map((r) => ({ value: r, label: r })) },
   { key: "liquidity", label: "Liquidity", type: "select", options: LIQUIDITY_LEVELS.map((l) => ({ value: l, label: l })) },
@@ -198,7 +198,7 @@ export default function InvestmentsPage() {
         <div role="tabpanel" className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-2">
           <Card eyebrow="Actual" title="Invested vs current value">
-            <InvestedVsCurrentChart items={items} />
+            <InvestedVsCurrentChart items={items} holdings={portfolio?.holdings ?? []} />
           </Card>
           <Card eyebrow="Actual" title="Where your money is">
             {analytics ? <AllocationPanel analytics={analytics} /> : <p className="text-sm text-ink-faint">{loading ? "Loading…" : "Allocation is unavailable right now."}</p>}
@@ -216,9 +216,9 @@ export default function InvestmentsPage() {
             {analytics ? (
               <>
                 <GainTrendChart analytics={analytics} />
-                {analytics.overview.holdings > analytics.overview.holdingsWithLedger && (
+                {analytics.overview.holdings > (analytics.gainTrend[analytics.gainTrend.length - 1]?.coveredHoldings ?? 0) && (
                   <p className="mt-2 text-[11px] text-ink-faint">
-                    Based on {analytics.overview.holdingsWithLedger} of {analytics.overview.holdings} holdings — only those with recorded transactions can show a gain trend.
+                    Based on {analytics.gainTrend[analytics.gainTrend.length - 1]?.coveredHoldings ?? 0} of {analytics.overview.holdings} holdings — only those with a recorded value can show a gain trend.
                   </p>
                 )}
               </>
@@ -326,6 +326,11 @@ export default function InvestmentsPage() {
                         <div className="text-right">
                           <p className="money text-ink">{formatINR(item.currentValue)}</p>
                           <p className="text-xs text-ink-faint">invested {formatINR(byId.get(item.id)?.invested ?? item.costBasis)}</p>
+                          {Number(byId.get(item.id)?.addedSinceOpening ?? 0) > 0 && (
+                            <p className="text-[11px] text-ink-faint">
+                              {formatINR(byId.get(item.id)?.openingCostBasis ?? item.costBasis)} before + {formatINR(byId.get(item.id)?.addedSinceOpening ?? 0)} added since
+                            </p>
+                          )}
                         </div>
                         {confirmDeleteId === item.id ? (
                           <span className="flex flex-wrap items-center gap-2 text-xs" role="group" aria-label="Confirm delete">
