@@ -7,6 +7,7 @@ import {
   IsString,
   Max,
   MaxLength,
+  Min,
   ValidationArguments,
   ValidationOptions,
   registerDecorator,
@@ -68,8 +69,9 @@ export class CreateInvestmentDto {
   @Max(MAX_INVESTMENT_AMOUNT, { message: `currentValue cannot exceed ${MAX_INVESTMENT_AMOUNT}` })
   currentValue!: number;
 
+  // Zero is valid: a SIP started from nothing has no money in before tracking, and every instalment is added on top.
   @IsNumber()
-  @IsPositive()
+  @Min(0, { message: "costBasis cannot be negative" })
   @Max(MAX_INVESTMENT_AMOUNT, { message: `costBasis cannot exceed ${MAX_INVESTMENT_AMOUNT}` })
   costBasis!: number;
 
