@@ -46,11 +46,11 @@ export class InvestmentAnalyticsService {
       `),
       this.prisma.client.investment.findMany({
         where: { userId },
-        select: { id: true, type: true, riskLevel: true, liquidity: true, currentValue: true, sipActive: true, monthlyContribution: true, contributionFrequency: true, contributionStartDate: true, contributionEndDate: true },
+        select: { id: true, type: true, riskLevel: true, liquidity: true, currentValue: true, costBasis: true, sipActive: true, monthlyContribution: true, contributionFrequency: true, contributionStartDate: true, contributionEndDate: true },
       }),
     ]);
 
-    const series = buildInvestmentSeries(months, cashRows, valuationRows as MonthlyValuationRow[], currentMonth);
+    const series = buildInvestmentSeries(months, cashRows, valuationRows as MonthlyValuationRow[], currentMonth, holdings.filter((h) => Number(h.costBasis ?? 0) > 0).map((h) => ({ investmentId: h.id, amount: h.costBasis })));
 
     // PLANNED contributions: only schedules that are active and have not already ended.
     let plannedMonthly = ZERO;
