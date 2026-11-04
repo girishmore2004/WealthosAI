@@ -74,7 +74,6 @@ export class DataHealthService {
           name: true,
           costBasis: true,
           valuations: { orderBy: { valuedAt: "desc" }, take: 1, select: { valuedAt: true } },
-          cashflows: { select: { type: true, amount: true } },
         },
       }),
       db.investmentCashflow.findMany({ where: { userId, sourceExpenseId: { not: null } }, select: { sourceExpenseId: true } }),
@@ -103,21 +102,15 @@ export class DataHealthService {
     }));
     const contributionRows: ContributionRow[] = contributions.map((c) => ({ ...c, amount: c.amount.toString() }));
     const investmentRows: InvestmentRow[] = investments.map((i) => {
-      let invested = 0;
-      let returned = 0;
-      for (const c of i.cashflows) {
-        const a = Number(c.amount);
-        if (c.type === "CONTRIBUTION" || c.type === "EMPLOYER_CONTRIBUTION" || c.type === "TRANSFER_IN") invested += a;
-        if (c.type === "WITHDRAWAL" || c.type === "SALE" || c.type === "TRANSFER_OUT") returned += a;
-      }
       return {
         id: i.id,
         name: i.name,
         costBasis: i.costBasis.toString(),
         latestValuationAt: i.valuations[0]?.valuedAt ?? null,
-        // Only comparable when the user has actually recorded cashflows for it, and only
-        // for holdings with no withdrawals/sales (otherwise cost basis legitimately differs).
-        netCostFromCashflows: i.cashflows.length > 0 && returned === 0 ? invested.toFixed(2) : null,
+        // The saved cost basis is the OPENING amount (what was in before tracking); recorded SIP
+        // instalments and contributions are added on top of it, so the two legitimately differ and
+        // there is nothing to compare. Kept null so the detector never raises a false alarm.
+        netCostFromCashflows: null,
       };
     });
 
