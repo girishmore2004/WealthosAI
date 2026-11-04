@@ -184,7 +184,7 @@ export function HoldingLedger({ investment, onChanged }: { investment: Investmen
                 <Kpi label="Return" value={ratioPercent(metrics.returnRatio)} tone={toneOf(metrics.totalReturn)} />
               </dl>
               {Number(metrics.grossContributions) === 0 && Number(metrics.openingCostBasis ?? 0) === 0 && (
-                <p className="text-xs text-ink-faint">Nothing is recorded as invested for this holding yet, so the return above is not meaningful. Set the amount invested so far, or add transactions.</p>
+                <p className="text-xs text-ink-faint">No contributions are recorded for this holding yet, so the return above is not meaningful. Set the amount invested so far, or add the money you put in as transactions.</p>
               )}
             </div>
           ))}
