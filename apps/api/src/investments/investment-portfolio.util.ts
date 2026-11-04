@@ -3,12 +3,14 @@
 // dashboard both read the service that calls this, so they can never disagree.
 //
 // Definitions (kept deliberately explicit):
-//   invested (cost basis) = contributions + employer contributions + transfers in  − cost basis realised by sales
+//   invested (cost basis) = opening cost basis (what was in before tracking) + contributions + employer
+//                           contributions + transfers in  − cost basis realised by sales
 //   unrealised gain       = current value − invested
 //   total return          = current value + money taken out + dividends − fees − all money put in
 //   return ratio          = total return ÷ all money put in (null when nothing was put in)
-// A holding with NO inflow rows in the ledger has no history to derive any of this from, so its saved
-// legacy cost basis is used instead and it is flagged (costBasisSource = "LEGACY"); it has no XIRR.
+// The opening cost basis is the figure saved on the holding. Every SIP instalment / contribution recorded
+// afterwards is ADDED to it. A holding with NO inflow rows is flagged (costBasisSource = "LEGACY"): its
+// invested amount is just the opening figure and it has no XIRR.
 
 import { Prisma } from "@wealthos/db";
 import type { InvestmentPortfolioDTO, PortfolioHoldingDTO } from "@wealthos/types";
@@ -123,35 +125,24 @@ export function buildPortfolio(
 
     const rz = realizedBy.get(h.id) ?? { basis: ZERO, gain: ZERO };
 
-    let invested: Dec;
-    let allIn: Dec;
-    let unreal: Dec;
-    let ret: Dec;
-    let ratio: Dec | null;
-    let taken: Dec;
-    if (hasLedger) {
-      const m = deriveInvestmentMetrics({ totals, currentValue: value, realizedCostBasisSold: rz.basis, realizedGain: rz.gain });
-      allIn = totals.contributions.plus(totals.employerContributions).plus(totals.transfersIn);
-      invested = m.costBasis;
-      unreal = m.unrealizedGain;
-      ret = m.totalReturn;
-      ratio = m.returnPercentage;
-      taken = totals.withdrawals.plus(totals.saleProceeds).plus(totals.transfersOut);
-    } else {
-      counts.legacyCostBasis += 1;
-      allIn = toDecimal(h.costBasis);
-      invested = allIn;
-      unreal = value.minus(invested);
-      ret = unreal.plus(totals.dividends).minus(totals.fees);
-      ratio = allIn.isZero() ? null : ret.div(allIn);
-      taken = ZERO;
-    }
+    // Opening cost basis (money in before tracking) + everything recorded since. Same formula whether or not
+    // the holding has ledger rows, so the first SIP never makes the past amount disappear.
+    const opening = toDecimal(h.costBasis);
+    const m = deriveInvestmentMetrics({ totals, currentValue: value, realizedCostBasisSold: rz.basis, realizedGain: rz.gain, openingCostBasis: opening });
+    const addedSince = totals.contributions.plus(totals.employerContributions).plus(totals.transfersIn);
+    const allIn = opening.plus(addedSince);
+    const invested = m.costBasis;
+    const unreal = m.unrealizedGain;
+    const taken = totals.withdrawals.plus(totals.saleProceeds).plus(totals.transfersOut);
+    const ret: Dec = m.totalReturn;
+    const ratio: Dec | null = m.returnPercentage;
+    if (!hasLedger) counts.legacyCostBasis += 1;
 
-    // XIRR needs dated flows; a legacy holding with nothing recorded has none.
+    // XIRR needs dated flows; a holding with nothing recorded has none.
     let holdingXirr: { rate: number | null; reason: XirrReason } = { rate: null, reason: "NO_FLOWS" };
     if (hasLedger) {
       const ledgerRows: LedgerRow[] = rows.map((r) => ({ type: r.type, amount: toDecimal(r.amount).toNumber(), date: r.occurredAt }));
-      const flows = ledgerToFlows(ledgerRows, value.toNumber(), asOf);
+      const flows = ledgerToFlows(ledgerRows, value.toNumber(), asOf, { amount: opening.toNumber(), date: h.purchaseDate });
       holdingXirr = xirr(flows);
       allFlows.push(...flows);
       xirrCovered += 1;
@@ -208,6 +199,8 @@ export function buildPortfolio(
       name: h.name,
       type: h.type as PortfolioHoldingDTO["type"],
       invested: toMoneyString(invested),
+      openingCostBasis: toMoneyString(opening),
+      addedSinceOpening: toMoneyString(addedSince),
       costBasisSource: hasLedger ? "LEDGER" : "LEGACY",
       currentValue: toMoneyString(value),
       valuedAt: valued ? valued.valuedAt.toISOString() : null,
