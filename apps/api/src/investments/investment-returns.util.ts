@@ -105,8 +105,10 @@ export interface LedgerRow {
  *   INTEREST is already inside the value, so it is not a flow.
  * The closing value is appended as a final inflow at `asOf`.
  */
-export function ledgerToFlows(rows: LedgerRow[], closingValue: number, asOf: Date): DatedFlow[] {
+export function ledgerToFlows(rows: LedgerRow[], closingValue: number, asOf: Date, opening?: { amount: number; date: Date } | null): DatedFlow[] {
   const out: DatedFlow[] = [];
+  // Money already invested before the ledger started is an outflow on the purchase date.
+  if (opening && opening.amount > 0) out.push({ date: opening.date, amount: -opening.amount });
   for (const r of rows) {
     switch (r.type) {
       case "CONTRIBUTION":
