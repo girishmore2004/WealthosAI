@@ -62,7 +62,7 @@ const EDIT_FIELDS: EditField[] = [
   { key: "type", label: "Type", type: "select", options: INVESTMENT_TYPES.map((t) => ({ value: t, label: t })) },
   { key: "name", label: "Name" },
   { key: "currentValue", label: "Current value (₹)", type: "number", money: true },
-  { key: "costBasis", label: "Invested before tracking (₹) — SIPs add on top", type: "number", money: true },
+  { key: "costBasis", label: "Invested before tracking (₹, 0 if none)", type: "number", money: true },
   { key: "purchaseDate", label: "Purchase date", type: "date" },
   { key: "riskLevel", label: "Risk level", type: "select", options: RISK_LEVELS.map((r) => ({ value: r, label: r })) },
   { key: "liquidity", label: "Liquidity", type: "select", options: LIQUIDITY_LEVELS.map((l) => ({ value: l, label: l })) },
@@ -141,7 +141,8 @@ export default function InvestmentsPage() {
       type: values.type as string,
       name: values.name as string,
       currentValue: parseFloat(values.currentValue as string),
-      costBasis: parseFloat(values.costBasis as string),
+      // Blank means nothing was invested before tracking (a SIP started from zero), so it is saved as 0.
+      costBasis: Number.isFinite(parseFloat(values.costBasis as string)) ? parseFloat(values.costBasis as string) : 0,
       purchaseDate: new Date(values.purchaseDate as string).toISOString(),
       riskLevel: values.riskLevel as string,
       liquidity: values.liquidity as string,
