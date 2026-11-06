@@ -7,6 +7,29 @@ import { ExpenseAnomaly } from "../models/anomaly-detection.model";
 
 const explainSchema = z.object({ explanation: z.string() });
 
+// The AI gateway can retry across models, so one slow provider could hold the whole ML summary (and the
+// dashboard panel waiting on it) for tens of seconds. The explanation is a nice-to-have on top of
+// deterministic facts, so past this budget we use the rule-based narrative instead of waiting.
+const EXPLANATION_TIMEOUT_MS = 4000;
+
+class ExplanationTimeoutError extends Error {}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ExplanationTimeoutError(`no answer within ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 export interface AnomalyExplanationResult {
   narrative: string;
   confidence: number;
@@ -45,7 +68,8 @@ export class AnomalyExplanationService {
     const factsText = this.buildFactsText(anomalies);
 
     try {
-      const result = await this.gateway.extract(
+      const result = await withTimeout(
+        this.gateway.extract(
         `Facts about flagged unusual expense transactions, including their deterministic likely cause(s) (use ONLY these numbers and causes):\n${factsText}\n\n` +
           "In 2-4 sentences, explain the most likely reasons these transactions were flagged as unusual, grounded only in " +
           "the listed causes and figures. Do not invent a cause, merchant, or number not given above.",
@@ -62,6 +86,8 @@ export class AnomalyExplanationService {
           groundingContext: factsText,
           rejectOnLowGrounding: false,
         },
+        ),
+        EXPLANATION_TIMEOUT_MS,
       );
 
       const verification = this.verifier.verify(result.data.explanation, factsText);
@@ -74,6 +100,10 @@ export class AnomalyExplanationService {
       );
       return { narrative: this.fallbackNarrative(anomalies), confidence: 0.5, verificationPassed: false, usedFallback: true };
     } catch (err) {
+      if (err instanceof ExplanationTimeoutError) {
+        this.logger.warn(`Anomaly explanation timed out (${err.message}) - using deterministic causes.`);
+        return { narrative: this.fallbackNarrative(anomalies), confidence: 0.5, verificationPassed: false, usedFallback: true };
+      }
       if (err instanceof AiUnavailableException) {
         this.logger.warn(`Anomaly explanation unavailable: ${err.message}`);
         return { narrative: this.fallbackNarrative(anomalies), confidence: 0.5, verificationPassed: false, usedFallback: true };
