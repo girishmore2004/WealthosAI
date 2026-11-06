@@ -12,6 +12,10 @@ import { DashboardSummaryDTO, FinancialHealthScoreDTO, InsightDTO } from "@wealt
 import { Prisma } from "@wealthos/db";
 import { investmentRate as investmentRateRatio, toDecimal } from "../common/financial-facts/financial-formulas";
 
+// Alerts were recomputed from scratch on every dashboard load (and again by the alerts bell). A refresh
+// that finished within this window is reused; see AlertsService.refresh().
+const ALERTS_REFRESH_MAX_AGE_MS = 60_000;
+
 // NOTE ON "AI": this is a deterministic rules engine, not an LLM call. It is intentionally
 // explainable (every number below traces to a concrete calculation) and every output is
 // clearly labeled as a projection, never as guaranteed financial advice. A grounded LLM
@@ -81,7 +85,7 @@ export class DashboardService {
       this.investmentsService.totalCurrentValue(userId),
       this.loansService.totalOutstanding(userId),
       this.loansService.debtSummary(userId),
-      this.alertsService.refresh(userId),
+      this.alertsService.refresh(userId, { maxAgeMs: ALERTS_REFRESH_MAX_AGE_MS }),
       this.propertyService.totalCurrentValue(userId),
       this.prisma.client.budget.findMany({ where: { userId } }),
       // Used by both the goal-based emergency-fund fix (#2) and the uncommitted-cash
