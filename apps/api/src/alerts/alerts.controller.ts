@@ -4,6 +4,10 @@ import { SessionAuthGuard } from "../common/guards/session-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { User } from "@wealthos/db";
 
+// The bell calls this on every page load; recomputing every rule each time is wasteful, so a refresh
+// that finished within this window is reused (stored alerts are returned instead).
+const ALERTS_REFRESH_MAX_AGE_MS = 60_000;
+
 @UseGuards(SessionAuthGuard)
 @Controller("alerts")
 export class AlertsController {
@@ -16,7 +20,7 @@ export class AlertsController {
 
   @Post("refresh")
   refresh(@CurrentUser() user: User) {
-    return this.alertsService.refresh(user.id);
+    return this.alertsService.refresh(user.id, { maxAgeMs: ALERTS_REFRESH_MAX_AGE_MS });
   }
 
   @Patch(":id/read")
