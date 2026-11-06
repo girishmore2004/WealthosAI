@@ -149,6 +149,24 @@ export class FinancialFactsService {
     private expensesService: ExpensesService,
   ) {}
 
+  // PERFORMANCE: the dashboard summary, the dashboard overview and the data-health card are separate
+  // requests that all need the same lifetime position / monthly cash flow within milliseconds of each
+  // other. Each of those is ~10 aggregate queries, so computing them 2-3x per page load was a large part
+  // of the wait. Single-flight coalescing (same idea as IncomeService.list): while one computation for a
+  // key is running, every concurrent caller shares it. It is NOT a TTL cache - the entry is dropped the
+  // moment the computation settles, so nothing is ever stale.
+  private readonly inFlight = new Map<string, Promise<unknown>>();
+
+  private coalesce<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const existing = this.inFlight.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
+    const promise: Promise<T> = run().finally(() => {
+      if (this.inFlight.get(key) === promise) this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
   // basis: FORECAST. Every non-ONE_TIME Income row normalized to its monthly-equivalent
   // and summed, regardless of whether a matching transaction was actually logged this
   // month — i.e. exactly what Dashboard has always shown as "monthly income". Wraps
@@ -375,11 +393,14 @@ export class FinancialFactsService {
   // data-health warning instead. A row is "migrated" once a cashflow/entry points at it
   // via sourceExpenseId (the original Expense is preserved, never deleted).
   private async loadUnmigratedSavingsExpenses(userId: string, range?: { gte?: Date; lt?: Date; lte?: Date }) {
-    const [rows, cashflowRefs, entryRefs] = await Promise.all([
-      this.prisma.client.expense.findMany({
-        where: { userId, category: { type: "SAVINGS" }, ...(range ? { spentAt: range } : {}) },
-        select: { id: true, amount: true, category: { select: { name: true } } },
-      }),
+    const rows = await this.prisma.client.expense.findMany({
+      where: { userId, category: { type: "SAVINGS" }, ...(range ? { spentAt: range } : {}) },
+      select: { id: true, amount: true, category: { select: { name: true } } },
+    });
+    // Nothing recorded as a legacy savings expense (the normal case) means there is nothing to
+    // reconcile, so the two "already migrated" lookups below are skipped entirely.
+    if (rows.length === 0) return rows;
+    const [cashflowRefs, entryRefs] = await Promise.all([
       this.prisma.client.investmentCashflow.findMany({
         where: { userId, sourceExpenseId: { not: null } },
         select: { sourceExpenseId: true },
@@ -435,6 +456,17 @@ export class FinancialFactsService {
   // caller supply a known starting balance (the schema has no opening-balance field, so
   // by default the cash model is built purely from recorded history).
   async getFinancialPosition(
+    userId: string,
+    opts: { asOf?: Date; openingAvailableCash?: Prisma.Decimal.Value } = {},
+  ): Promise<FinancialPosition> {
+    // Only the plain "right now" call is shared; an explicit asOf / opening balance is its own question.
+    if (opts.asOf !== undefined || opts.openingAvailableCash !== undefined) {
+      return this.computeFinancialPosition(userId, opts);
+    }
+    return this.coalesce(`position:${userId}`, () => this.computeFinancialPosition(userId, opts));
+  }
+
+  private async computeFinancialPosition(
     userId: string,
     opts: { asOf?: Date; openingAvailableCash?: Prisma.Decimal.Value } = {},
   ): Promise<FinancialPosition> {
@@ -614,6 +646,10 @@ export class FinancialFactsService {
   async getMonthlyCashFlow(userId: string, month?: string): Promise<MonthlyCashFlow> {
     validateMonthFormat(month);
     const targetMonth = month ?? currentMonthString();
+    return this.coalesce(`cashflow:${userId}:${targetMonth}`, () => this.computeMonthlyCashFlow(userId, targetMonth));
+  }
+
+  private async computeMonthlyCashFlow(userId: string, targetMonth: string): Promise<MonthlyCashFlow> {
     const { start, end } = monthRange(targetMonth);
 
     const [incomeAgg, expenseAgg, unmigrated, cashflowRows, emergencyRows, receivableGivenAgg, receivableReturnedAgg, transferAgg, otherOutflowAgg] = await Promise.all([
