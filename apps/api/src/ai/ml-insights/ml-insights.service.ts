@@ -16,7 +16,7 @@ import { BehavioralFeaturesModel, BehavioralFeatureResult } from "./models/behav
 import { AnomalyExplanationService, AnomalyExplanationResult } from "./explanation/anomaly-explanation.service";
 import { GoalsService } from "../../goals/goals.service";
 import { LoansService } from "../../loans/loans.service";
-import { DashboardService } from "../../dashboard/dashboard.service";
+import { IncomeService } from "../../income/income.service";
 import { ModelOutput } from "./model-output.types";
 
 export interface MlInsightsSummary {
@@ -47,8 +47,16 @@ export interface MlInsightsSummary {
   behavioralFeatures: ModelOutput<BehavioralFeatureResult>;
 }
 
+// The models only move when the underlying data moves, yet this summary used to be recomputed (and a row
+// written) on every dashboard load. Reuse a result computed in the last couple of minutes; concurrent
+// requests for one user always share a single computation.
+const SUMMARY_TTL_MS = 120_000;
+
 @Injectable()
 export class MlInsightsService {
+  private readonly cache = new Map<string, { at: number; value: MlInsightsSummary }>();
+  private readonly inFlight = new Map<string, Promise<MlInsightsSummary>>();
+
   constructor(
     private prisma: PrismaService,
     private features: FeatureExtractionService,
@@ -65,17 +73,39 @@ export class MlInsightsService {
     private anomalyExplanation: AnomalyExplanationService,
     private goals: GoalsService,
     private loans: LoansService,
-    private dashboard: DashboardService,
+    private income: IncomeService,
   ) {}
 
   async summary(userId: string): Promise<MlInsightsSummary> {
-    const [transactions, monthlySeries, categorySeries, goals, debtSummary, dashboardSummary, priorRuns] = await Promise.all([
+    const cached = this.cache.get(userId);
+    if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+
+    const running = this.inFlight.get(userId);
+    if (running) return running;
+
+    const promise = this.compute(userId)
+      .then((value) => {
+        if (this.cache.size > 2000) this.cache.clear();
+        this.cache.set(userId, { at: Date.now(), value });
+        return value;
+      })
+      .finally(() => {
+        this.inFlight.delete(userId);
+      });
+    this.inFlight.set(userId, promise);
+    return promise;
+  }
+
+  private async compute(userId: string): Promise<MlInsightsSummary> {
+    // monthlyIncome is the forecast income. It used to come from DashboardService.getSummary(), which
+    // re-ran the whole dashboard (alerts engine included) just to read this one figure.
+    const [transactions, monthlySeries, categorySeries, goals, debtSummary, monthlyIncome, priorRuns] = await Promise.all([
       this.features.transactionPoints(userId),
       this.features.monthlySeries(userId),
       this.features.categoryMonthlySeries(userId),
       this.goals.list(userId),
       this.loans.debtSummary(userId),
-      this.dashboard.getSummary(userId),
+      this.income.monthlyForecast(userId),
       this.priorForecastRuns(userId),
     ]);
 
@@ -100,7 +130,7 @@ export class MlInsightsService {
       debtRisk: this.debtRiskModel.score({
         totalOutstanding: Number(debtSummary.totalOutstanding),
         totalMonthlyEmi: Number(debtSummary.totalMonthlyEmi),
-        monthlyIncome: Number(dashboardSummary.monthlyIncome),
+        monthlyIncome: Number(monthlyIncome.toFixed(2)),
         loans: debtSummary.loans.map((l) => ({ outstandingPrincipal: Number(l.outstandingPrincipal), interestRateAnnual: Number(l.interestRateAnnual) })),
       }),
       goalSuccess: this.goalSuccessModel.score(goals),
@@ -111,7 +141,8 @@ export class MlInsightsService {
       behavioralFeatures: this.behavioralFeaturesModel.extract({ monthlySeries, transactions, categorySeries }),
     };
 
-    await this.logRun(userId, result);
+    // Best-effort history write (logRun never rejects); the caller does not need to wait for it.
+    void this.logRun(userId, result);
     return result;
   }
 
