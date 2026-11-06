@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { ExpensesService } from "../../../expenses/expenses.service";
+import { PrismaService } from "../../../prisma/prisma.service";
 import { IncomeService } from "../../../income/income.service";
 
 export interface MonthlyPoint {
@@ -36,27 +36,63 @@ export interface ExpenseTransactionPoint {
 
 const TRAILING_MONTHS_DEFAULT = 12;
 
+interface ExpenseFeatureRow {
+  id: string;
+  categoryId: string;
+  category: { name: string };
+  amount: unknown;
+  spentAt: Date;
+  merchant: string | null;
+  isRecurring: boolean;
+}
+
 @Injectable()
 export class FeatureExtractionService {
   constructor(
-    private expenses: ExpensesService,
+    private prisma: PrismaService,
     private income: IncomeService,
   ) {}
+
+  // PERFORMANCE: transactionPoints(), monthlySeries() and categoryMonthlySeries() each used to call
+  // ExpensesService.list() - the user's ENTIRE expense history with every column and the full category row
+  // - so one ML summary loaded all expenses three times over. They now share ONE lean query (only the
+  // columns the models read). Single-flight, not a cache: concurrent callers for the same user share the
+  // in-flight query, and the entry is dropped the instant it settles, so nothing is ever stale. The
+  // filter and ordering are identical to ExpensesService.list(userId) (spending rows, newest first), so
+  // every number the models compute is unchanged.
+  private readonly inFlightExpenses = new Map<string, Promise<ExpenseFeatureRow[]>>();
+
+  private loadExpenses(userId: string): Promise<ExpenseFeatureRow[]> {
+    const existing = this.inFlightExpenses.get(userId);
+    if (existing) return existing;
+
+    const promise: Promise<ExpenseFeatureRow[]> = this.prisma.client.expense
+      .findMany({
+        where: { userId, flowType: "EXPENSE" },
+        select: {
+          id: true,
+          categoryId: true,
+          amount: true,
+          spentAt: true,
+          merchant: true,
+          isRecurring: true,
+          category: { select: { name: true } },
+        },
+        orderBy: { spentAt: "desc" },
+      })
+      .finally(() => {
+        if (this.inFlightExpenses.get(userId) === promise) this.inFlightExpenses.delete(userId);
+      });
+    this.inFlightExpenses.set(userId, promise);
+    return promise;
+  }
 
   /** All expense transactions with their category name attached, for anomaly
    * detection at the individual-transaction level. */
   async transactionPoints(userId: string): Promise<ExpenseTransactionPoint[]> {
-    const expenses = await this.expenses.list(userId);
+    const expenses = await this.loadExpenses(userId);
     return expenses.map(
-      (e: {
-        id: string;
-        categoryId: string;
-        category: { name: string };
-        amount: unknown;
-        spentAt: Date;
-        merchant?: string | null;
-        isRecurring?: boolean;
-      }) => ({
+      (e: ExpenseFeatureRow) => ({
         id: e.id,
         categoryId: e.categoryId,
         categoryName: e.category.name,
@@ -72,7 +108,7 @@ export class FeatureExtractionService {
    * regression/drift/segmentation models — all of which reason about a trend over
    * time, not a single snapshot. */
   async monthlySeries(userId: string, trailingMonths: number = TRAILING_MONTHS_DEFAULT): Promise<MonthlyPoint[]> {
-    const [expenses, incomes] = await Promise.all([this.expenses.list(userId), this.income.list(userId)]);
+    const [expenses, incomes] = await Promise.all([this.loadExpenses(userId), this.income.list(userId)]);
 
     const months = this.trailingMonthKeys(trailingMonths);
     const expenseByMonth = new Map<string, number>();
@@ -104,7 +140,7 @@ export class FeatureExtractionService {
   /** Per-category monthly totals, for category-level anomaly baselines (this
    * category's own history, not the household total). */
   async categoryMonthlySeries(userId: string, trailingMonths: number = TRAILING_MONTHS_DEFAULT): Promise<CategoryExpensePoint[]> {
-    const expenses = await this.expenses.list(userId);
+    const expenses = await this.loadExpenses(userId);
     const months = new Set(this.trailingMonthKeys(trailingMonths));
 
     const totals = new Map<string, CategoryExpensePoint>();
