@@ -93,10 +93,42 @@ export class AlertsService {
     return fallback;
   }
 
+  // PERFORMANCE: a full refresh runs ~9 queries plus an upsert per alert. The alerts bell (every page)
+  // and the dashboard both trigger it on load, so with years of data it was the slowest part of
+  // opening the app. Two guards, neither of which changes the rules themselves:
+  //   1. single-flight: concurrent callers for one user share ONE run instead of racing duplicates;
+  //   2. optional `maxAgeMs`: callers that only need "reasonably fresh" alerts (page loads) skip the
+  //      recompute when the last run finished recently and just read the stored alerts.
+  // `refresh(userId)` with no options always recomputes, exactly as before.
+  private readonly lastRefreshAt = new Map<string, number>();
+  private readonly inFlightRefresh = new Map<string, Promise<Awaited<ReturnType<AlertsService["list"]>>>>();
+
   // Re-runs every rule and upserts alerts by dedupeKey, so calling this repeatedly
   // (e.g. on dashboard load) never creates duplicates and naturally clears alerts whose
   // underlying condition no longer holds (those rows are pruned at the end).
-  async refresh(userId: string) {
+  async refresh(userId: string, opts: { maxAgeMs?: number } = {}) {
+    const running = this.inFlightRefresh.get(userId);
+    if (running) return running;
+
+    const last = this.lastRefreshAt.get(userId);
+    if (opts.maxAgeMs && last !== undefined && Date.now() - last < opts.maxAgeMs) {
+      return this.list(userId);
+    }
+
+    const run = this.runRefresh(userId)
+      .then((result) => {
+        if (this.lastRefreshAt.size > 5000) this.lastRefreshAt.clear();
+        this.lastRefreshAt.set(userId, Date.now());
+        return result;
+      })
+      .finally(() => {
+        this.inFlightRefresh.delete(userId);
+      });
+    this.inFlightRefresh.set(userId, run);
+    return run;
+  }
+
+  private async runRefresh(userId: string) {
     const candidates: AlertCandidate[] = [];
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
