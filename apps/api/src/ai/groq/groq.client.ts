@@ -91,8 +91,7 @@ export class GroqClient {
           body: JSON.stringify({
             model: params.model,
             messages: params.messages,
-            temperature: params.temperature,
-            max_tokens: params.maxTokens,
+            ...openAiParamStyle(this.baseUrl, params.model, params.temperature, params.maxTokens),
             ...(params.jsonMode ? { response_format: { type: "json_object" } } : {}),
             // gpt-oss models "think" before answering and the thinking counts towards max_tokens.
             // Low effort keeps replies fast and leaves room for the JSON answer.
@@ -175,4 +174,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** The gateway speaks the OpenAI chat-completions protocol, so it works against OpenAI itself (GROQ_API_BASE_URL=https://api.openai.com/v1).
+ * OpenAI's reasoning-era models (gpt-5*, o1/o3/o4*) reject `max_tokens` and any non-default `temperature`; they take
+ * `max_completion_tokens` instead. Every other provider/model keeps the original parameters unchanged. */
+export function openAiParamStyle(baseUrl: string, model: string, temperature: number | undefined, maxTokens: number | undefined): Record<string, unknown> {
+  const isOpenAi = /(^|\/\/)api\.openai\.com/i.test(baseUrl);
+  const reasoningModel = /^(gpt-5|o[134])/i.test(model);
+  if (isOpenAi && reasoningModel) return { ...(maxTokens !== undefined ? { max_completion_tokens: maxTokens } : {}) };
+  return { temperature, max_tokens: maxTokens };
 }
