@@ -32,6 +32,7 @@ const REQUIRED_FIELDS: Record<ScenarioType, string[]> = {
   // NEW (audit item #8). "purpose" deliberately omitted — optional, free-text,
   // narrative-only, never validated as a number.
   NEW_LOAN: ["loanAmount", "annualRatePercent", "tenureMonths"],
+  EXPENSE_REDUCTION: ["percentDecrease"],
 };
 
 @Injectable()
@@ -55,6 +56,12 @@ export class SimulatorService {
     for (const field of required) {
       if (field !== "loanId" && field !== "goalId" && typeof params[field] !== "number") {
         throw new BadRequestException(`Field "${field}" for ${scenarioType} must be a number`);
+      }
+    }
+    if (scenarioType === "EXPENSE_REDUCTION") {
+      const pct = params.percentDecrease as number;
+      if (!Number.isFinite(pct) || pct < 0) {
+        throw new BadRequestException('Field "percentDecrease" for EXPENSE_REDUCTION must be a non-negative number');
       }
     }
     return params as ScenarioParamsByType[T];
