@@ -102,6 +102,7 @@ function humanDimensionLabel(scenarioType: ScenarioType): string {
     EMERGENCY_EXPENSE: "Emergency expense size",
     GOAL_DELAY: "Goal delay length",
     NEW_LOAN: "New loan amount",
+    EXPENSE_REDUCTION: "Expense reduction size",
   };
   return labels[scenarioType];
 }
