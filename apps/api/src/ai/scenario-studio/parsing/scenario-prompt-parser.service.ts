@@ -23,6 +23,7 @@ const SCENARIO_TYPES: [ScenarioType, ...ScenarioType[]] = [
   "EMERGENCY_EXPENSE",
   "GOAL_DELAY",
   "NEW_LOAN",
+  "EXPENSE_REDUCTION",
 ];
 
 // Below this self-reported confidence, an AI-only classification (the deterministic
@@ -48,6 +49,7 @@ const SCENARIO_FIELD_HINTS: Record<ScenarioType, string> = {
   GOAL_DELAY: "delayMonths (number) — goalId cannot be guessed from text, leave it out",
   NEW_LOAN:
     "loanAmount (number, ₹), annualRatePercent (number), tenureMonths (number), purpose (string, optional) — use this for a NEW loan not tied to buying a house (business expansion, equipment, a personal loan, etc.); do not use LOAN_PREPAYMENT (that's for paying down an EXISTING loan) or HOUSE_PURCHASE (that's specifically for buying property) for these",
+  EXPENSE_REDUCTION: "percentDecrease (number, % reduction in total monthly expenses) — use this for cutting spending, NOT SALARY_DROP (that's an income decrease)",
 };
 
 // `scenarioType` is nullable ON PURPOSE. The model is told to answer null when the prompt
