@@ -333,6 +333,27 @@ export interface RecordRepaymentInput {
   idempotencyKey?: string;
 }
 
+// --- Unified AI agent (POST /ai/agent/chat) -------------------------------------------------------------------------
+export interface AgentApprovalDTO { approvalId: string; tool: string; risk: "LOW" | "MEDIUM" | "HIGH"; summary: string; expiresAt: string; status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "EXECUTED" | "FAILED" }
+export interface AgentResponseDTO {
+  conversationId: string;
+  messageId: string;
+  response: string;
+  intent: string;
+  answerType: "answer" | "approval_request" | "clarification" | "action_result" | "refusal";
+  sections: { verifiedFacts: string[]; documentEvidence: string[]; historicalMemory: string[]; calculatedEstimates: string[]; assumptions: string[]; recommendations: string[] };
+  evidence: { kind: string; label: string; source: string; detail?: string }[];
+  calculations: unknown[];
+  actionsProposed: { approvalId: string; tool: string; risk: string; summary: string; input: Record<string, unknown>; preview?: { label: string; value: string }[] }[];
+  approvals: AgentApprovalDTO[];
+  execution: { status: string; toolCalls: { tool: string; status: string }[] };
+  followUps: string[];
+  warnings: string[];
+  confidence: number;
+  verification: { passed: boolean; issues: string[] };
+}
+export interface AgentMemoryDTO { id: string; category: "EPISODIC" | "SEMANTIC" | "GOAL" | "PROCEDURAL"; content: string; source: string; verification: string; confidence: number; createdAt: string }
+
 export const api = {
   auth: {
     requestOtp: (email: string) =>
@@ -835,6 +856,18 @@ export const api = {
     reindex: () => request<{ jobId: string; status: string; reused?: boolean }>("/ai/search/reindex", { method: "POST" }),
     jobStatus: (jobId: string) => request<AiJobStatusDTO>(`/ai/jobs/${jobId}`),
     history: (take?: number) => request<AiSearchLogDTO[]>(`/ai/search/history${take ? `?take=${take}` : ""}`),
+  },
+  agent: {
+    chat: (message: string, opts: { conversationId?: string; attachments?: { documentId: string }[] } = {}) =>
+      request<AgentResponseDTO>("/ai/agent/chat", { method: "POST", body: JSON.stringify({ message, ...opts }) }),
+    decide: (approvalId: string, decision: "approve" | "reject") =>
+      request<AgentResponseDTO>(`/ai/agent/approvals/${approvalId}/decision`, { method: "POST", body: JSON.stringify({ decision }) }),
+    approvals: (status?: string) => request<AgentApprovalDTO[]>(`/ai/agent/approvals${status ? `?status=${status}` : ""}`),
+    conversations: () => request<{ id: string; title: string; status: string; lastMessageAt: string }[]>("/ai/agent/conversations"),
+    messages: (conversationId: string) => request<{ id: string; role: string; content: string; payload?: unknown; createdAt: string }[]>(`/ai/agent/conversations/${conversationId}/messages`),
+    memory: (category?: string) => request<AgentMemoryDTO[]>(`/ai/agent/memory${category ? `?category=${category}` : ""}`),
+    correctMemory: (id: string, body: { content?: string; confirm?: boolean }) => request<void>(`/ai/agent/memory/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deleteMemory: (id: string) => request<void>(`/ai/agent/memory/${id}`, { method: "DELETE" }),
   },
   coach2: {
     ask: (question: string) => request<AgenticCoachResultDTO>("/coach/v2/ask", { method: "POST", body: JSON.stringify({ question }) }),
