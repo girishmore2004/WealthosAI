@@ -38,6 +38,6 @@ import { FinancialEngineModule } from "../financial-engine/financial-engine.modu
     RagIndexingService,
     RagService,
   ],
-  exports: [RagService, RagIndexingService],
+  exports: [RagService, RagIndexingService, EmbeddingService],
 })
 export class RagModule {}
