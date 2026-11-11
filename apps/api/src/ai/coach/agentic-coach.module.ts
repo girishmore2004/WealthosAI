@@ -99,6 +99,8 @@ import { AgenticCoachController } from "./agentic-coach.controller";
     CoachContextService,
     CoachOrchestratorService,
   ],
-  exports: [AgenticCoachService, CoachPlanService],
+  // FinancialPlanAgentService, TaskAgentService and FinanceCalculatorService are exported so the unified agent
+  // (ai/agent) can expose them as tools without re-implementing them.
+  exports: [AgenticCoachService, CoachPlanService, FinancialPlanAgentService, TaskAgentService, FinanceCalculatorService],
 })
 export class AgenticCoachModule {}
