@@ -184,6 +184,12 @@ model User {
   sentHouseholdInvites HouseholdInvite[] @relation("HouseholdInviteSentBy")   // NEW
   budgets Budget[]   // NEW
   aiSourceIndexStates AiSourceIndexState[]
+  // --- Unified AI agent (additive back-relations) ---
+  agentConversations   AgentConversation[]
+  agentMemories        AgentMemory[]
+  agentMemorySnapshots AgentMemorySnapshot[]
+  agentApprovals       AgentApproval[]
+  agentToolExecutions  AgentToolExecution[]
  // --- Add inside model User, alongside its other relation fields ---
   coachFinancialMemory CoachFinancialMemory? // NEW — Phase 20
   coachPlans           CoachPlan[]           // NEW — Phase 20
@@ -2116,4 +2122,259 @@ model InvestmentSipChange {
   createdAt       DateTime   @default(now())
 
   @@index([userId, investmentId, effectiveFrom])
+}
+
+
+// =====================================================================================
+// Unified AI agent (apps/api/src/ai/agent)
+//
+// Additive only: nothing below alters an existing table. The agent REUSES CoachPlan /
+// CoachPlanStep / CoachTask (plans), CoachFinancialMemory (distilled constraints and
+// preferences), AgenticCoachRun and AiInteractionLog (existing run / call logs) and
+// AiEmbeddingChunk (documents). These tables add only what did not exist: conversations,
+// graph checkpoints, categorised long-term memory with an audit trail, dated financial
+// snapshots, tool-execution records and human approvals.
+// =====================================================================================
+
+enum AgentConversationStatus {
+  ACTIVE
+  AWAITING_APPROVAL
+  ARCHIVED
+}
+
+enum AgentMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum AgentMemoryCategory {
+  EPISODIC
+  SEMANTIC
+  GOAL
+  PROCEDURAL
+}
+
+// Where a memory came from. Only USER_CONFIRMED and SYSTEM_VERIFIED are ever presented as facts.
+enum AgentMemorySource {
+  USER_CONFIRMED
+  SYSTEM_VERIFIED
+  AI_INFERRED
+  CONVERSATION_CONTEXT
+}
+
+enum AgentMemoryVerification {
+  UNVERIFIED
+  USER_CONFIRMED
+  SYSTEM_VERIFIED
+  SUPERSEDED
+  REJECTED
+}
+
+enum AgentPrivacyClass {
+  NORMAL
+  SENSITIVE
+}
+
+enum AgentToolRisk {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AgentExecutionStatus {
+  SUCCEEDED
+  FAILED
+  DENIED
+  AWAITING_APPROVAL
+}
+
+enum AgentApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  EXECUTED
+  FAILED
+}
+
+model AgentConversation {
+  id            String                  @id @default(cuid())
+  user          User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  title         String
+  status        AgentConversationStatus @default(ACTIVE)
+  lastMessageAt DateTime                @default(now())
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  messages AgentMessage[]
+
+  @@index([userId, lastMessageAt])
+}
+
+model AgentMessage {
+  id             String            @id @default(cuid())
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId String
+  // Denormalised so every read can filter on the owner without joining.
+  userId         String
+  role           AgentMessageRole
+  content        String
+  intent         String?
+  answerType     String?
+  // The structured response (evidence, calculations, proposed actions...) for ASSISTANT rows.
+  payload        Json?
+  createdAt      DateTime          @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([userId, createdAt])
+}
+
+// LangGraph checkpoints (state after each super-step) so a run survives a restart and an
+// approval can be resumed hours later. `userId` is stored so a checkpoint can never be read
+// for another user's thread and so a user's checkpoints can be purged.
+model AgentCheckpoint {
+  threadId           String
+  checkpointNs       String   @default("")
+  checkpointId       String
+  parentCheckpointId String?
+  userId             String
+  type               String?
+  checkpoint         Bytes
+  metadata           Bytes
+  createdAt          DateTime @default(now())
+
+  @@id([threadId, checkpointNs, checkpointId])
+  @@index([userId, createdAt])
+}
+
+model AgentCheckpointWrite {
+  threadId     String
+  checkpointNs String @default("")
+  checkpointId String
+  taskId       String
+  idx          Int
+  channel      String
+  type         String?
+  value        Bytes
+  taskPath     String @default("")
+  userId       String
+
+  @@id([threadId, checkpointNs, checkpointId, taskId, idx])
+  @@index([userId])
+}
+
+model AgentMemory {
+  id               String                  @id @default(cuid())
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           String
+  category         AgentMemoryCategory
+  // Stable subject key used for conflict resolution, e.g. "preference.risk_tolerance".
+  subjectKey       String?
+  // Plain text, or an "enc:v1:..." envelope when privacy = SENSITIVE and a key is configured.
+  content          String
+  // Keyed hash of the normalised content, for de-duplication without reading ciphertext.
+  contentHash      String
+  payload          Json?
+  source           AgentMemorySource
+  evidence         Json                    @default("[]")
+  confidence       Decimal                 @db.Decimal(4, 3)
+  verification     AgentMemoryVerification @default(UNVERIFIED)
+  privacy          AgentPrivacyClass       @default(NORMAL)
+  embedding        Float[]
+  embeddingVersion Int?
+  supersededById   String?
+  accessCount      Int                     @default(0)
+  lastAccessedAt   DateTime?
+  expiresAt        DateTime?
+  reviewAt         DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@unique([userId, contentHash])
+  @@index([userId, category, verification])
+  @@index([userId, subjectKey])
+  @@index([expiresAt])
+}
+
+// Append-only history of what happened to a memory. Deliberately has no foreign key to
+// AgentMemory and never stores memory text, so a deleted memory leaves a trace of THAT it
+// existed and was deleted, but not what it said.
+model AgentMemoryAudit {
+  id        String   @id @default(cuid())
+  userId    String
+  memoryId  String
+  action    String   // CREATED | REINFORCED | CORRECTED | CONFIRMED | SUPERSEDED | CONFLICT_REJECTED | DELETED | EXPIRED | CONSOLIDATED
+  actor     String   // USER | AGENT | SYSTEM
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([memoryId])
+}
+
+// Dated snapshots of the user's computed financial position (financial-state memory). Built
+// from the deterministic services, never from conversation text.
+model AgentMemorySnapshot {
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  snapshotDate DateTime @db.Date
+  // Plain JSON, or { "enc": "enc:v1:..." } when an encryption key is configured.
+  payload      Json
+  source       String   @default("SYSTEM_VERIFIED")
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, snapshotDate])
+  @@index([userId, snapshotDate])
+}
+
+model AgentApproval {
+  id             String              @id @default(cuid())
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  conversationId String
+  // LangGraph thread to resume when the user decides.
+  threadId       String
+  toolName       String
+  riskLevel      AgentToolRisk
+  summary        String
+  proposedInput  Json
+  status         AgentApprovalStatus @default(PENDING)
+  idempotencyKey String
+  result         Json?
+  error          String?
+  decidedAt      DateTime?
+  executedAt     DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime            @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, status])
+  @@index([conversationId])
+}
+
+model AgentToolExecution {
+  id             String               @id @default(cuid())
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  conversationId String?
+  runId          String
+  toolName       String
+  riskLevel      AgentToolRisk
+  // Inputs are PII-scrubbed before being written here.
+  inputRedacted  Json
+  outputSummary  Json?
+  status         AgentExecutionStatus
+  error          String?
+  durationMs     Int
+  approvalId     String?
+  idempotencyKey String?
+  createdAt      DateTime             @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([conversationId])
+  @@index([runId])
 }
