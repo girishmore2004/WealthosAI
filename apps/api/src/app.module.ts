@@ -27,6 +27,7 @@ import { SimulatorModule } from "./simulator/simulator.module";
 import { AiModule } from "./ai/ai.module";
 import { RagModule } from "./ai/rag/rag.module";
 import { AgenticCoachModule } from "./ai/coach/agentic-coach.module";
+import { AgentModule } from "./ai/agent/agent.module";
 import { ScenarioStudioModule } from "./ai/scenario-studio/scenario-studio.module";
 import { MlInsightsModule } from "./ai/ml-insights/ml-insights.module";
 import { CopilotIngestionModule } from "./ai/copilot-ingestion/copilot-ingestion.module";
@@ -64,6 +65,7 @@ import { TransfersModule } from "./transfers/transfers.module";
     AiModule,
     RagModule,
     AgenticCoachModule,
+    AgentModule,
     ScenarioStudioModule,
     MlInsightsModule,
     CopilotIngestionModule,
