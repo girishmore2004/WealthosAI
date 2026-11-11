@@ -518,6 +518,30 @@ export function runScenario<T extends ScenarioType>(
       );
     }
 
+    // Mirrors SALARY_HIKE/SALARY_DROP's shape on the expense side. Modeling choice, stated
+    // explicitly: the monthly amount saved is NOT auto-invested — it accumulates as idle
+    // cash, exactly like the surplus from a salary hike. To model investing it, combine
+    // with SIP_INCREASE (compound scenarios allocate that cash flow explicitly).
+    case "EXPENSE_REDUCTION": {
+      const p = params as ScenarioParamsByType["EXPENSE_REDUCTION"];
+      const effectivePercent = Math.min(100, Math.max(0, p.percentDecrease));
+      const newExpenses = baseline.monthlyExpenses * (1 - effectivePercent / 100);
+      const monthlySaving = baseline.monthlyExpenses - newExpenses;
+      return buildResult(
+        scenarioType,
+        baseline,
+        months,
+        { monthlyExpenses: newExpenses },
+        `A ${p.percentDecrease}% expense reduction lowers monthly expenses from roughly ₹${baseline.monthlyExpenses.toFixed(0)} to ₹${newExpenses.toFixed(0)}, freeing about ₹${monthlySaving.toFixed(0)}/month.`,
+        "The freed monthly cash improves headroom for goals, but it is not automatically redirected toward them.",
+        [
+          "The monthly saving is assumed to accumulate as idle cash, not to be invested — pair this with a SIP increase to model investing it",
+          "The reduction is applied to your current month's recorded expenses and then grows with the same inflation assumption as the baseline",
+          ...(p.percentDecrease > 100 ? ["A reduction above 100% is treated as 100% (expenses cannot go below zero)"] : []),
+        ],
+      );
+    }
+
     default: {
       const _exhaustive: never = scenarioType;
       throw new Error(`Unsupported scenario type: ${_exhaustive}`);
