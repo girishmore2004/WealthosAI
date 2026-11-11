@@ -282,6 +282,12 @@ export class MonteCarloSimulationService {
         };
         return { ...base, loans: [...loans, newLoan] };
       }
+      case "EXPENSE_REDUCTION": {
+        // Same modeling choice as simulator.engine.ts: the saving accumulates as idle cash.
+        const p = params as ScenarioParamsByType["EXPENSE_REDUCTION"];
+        const effectivePercent = Math.min(100, Math.max(0, p.percentDecrease));
+        return { ...base, monthlyExpenses: baseline.monthlyExpenses * (1 - effectivePercent / 100) };
+      }
       default: {
         const _exhaustive: never = scenarioType;
         throw new BadRequestException(`Unsupported scenario type for Monte Carlo simulation: ${String(_exhaustive)}`);
