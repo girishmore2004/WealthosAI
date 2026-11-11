@@ -1,51 +1,50 @@
+
 import { Injectable } from "@nestjs/common";
 import { matchIntent, CoachIntent } from "../../../coach/coach.intents";
 import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { AiUnavailableException } from "../../exceptions/ai.exceptions";
-import { ADVANCED_INTENT_DESCRIPTIONS, ADVANCED_INTENT_LABELS, AdvancedCoachIntent } from "../coach2.constants";
+import {
+  ADVANCED_INTENT_DESCRIPTIONS,
+  ADVANCED_INTENT_LABELS,
+  AdvancedCoachIntent,
+} from "../coach2.constants";
 
 export type ClassificationResult =
   | { path: "deterministic"; intent: CoachIntent }
   | { path: "advanced"; intent: AdvancedCoachIntent; confidence: number }
-  | { path: "advanced"; intent: "general_search"; confidence: number }; // fallback when classification itself is unavailable
+  | { path: "advanced"; intent: "general_search"; confidence: number };
 
-// This is the "explanation layer over the existing deterministic router, not a
-// replacement" the roadmap called for, made concrete: matchIntent() (the original
-// Phase 5 keyword router) is tried FIRST and wins if it matches anything — the model
-// is only ever consulted for questions the deterministic router doesn't recognize at
-// all. A known question about net worth, goals, tax, etc. always takes the
-// deterministic path, unchanged from before this phase existed.
-// Phrasings that signal the question needs cross-domain reasoning (weighing goals
-// against affordability, trading off risk, prioritizing across categories, comparing
-// periods) rather than a single-topic data lookup. These can still contain a
-// deterministic keyword (e.g. "afford all these goals" contains "goal"), so they must
-// be checked BEFORE matchIntent() to keep such questions on the advanced path.
+const PRIORITIZATION_PATTERN =
+  /\bprioriti[sz](?:e|ed|ing|ation)\b/i;
+
+const PRIORITIZATION_CONTEXT_PATTERN =
+  /\b(financial|finance|money|improvement|action|actions|recommendation|recommendations|goal|goals|task|tasks|expense|expenses|debt|debts|investment|investments|plan|plans)\b/i;
+
+const PRIORITIZED_PLAN_PATTERN =
+  /\b(?:create|make|build|prepare|generate|develop|give me)\b.{0,100}\b(?:prioritized|prioritised|priority-based)\b.{0,100}\b(?:financial|finance|money|improvement|action|recommendation|plan)\b/i;
+
+const GENERAL_FINANCIAL_PLAN_PATTERN =
+  /\b(?:financial|finance|money)\s+(?:health\s+)?improvement\s+plan\b/i;
+
 const ADVANCED_ONLY_PATTERNS: RegExp[] = [
   /\bafford\b/i,
   /overcommitted/i,
   /\bconflict/i,
   /trade-?off/i,
-  /prioriti[sz]e/i,
-  /compare.*(month|year|period|quarter)/i,
-  // Plan-creation phrasing — e.g. "pay off my loan in 18 months", "save X for a house
-  // in 3 years" — would otherwise match matchIntent()'s DEBT/GOALS/SAVINGS_RATE
-  // keywords and be wrongly routed to the fixed-template v1 answer instead of the
-  // Planner Agent, which is what can actually create a tracked, multi-step plan.
+  PRIORITIZATION_PATTERN,
+  /\bcompare.*(?:month|year|period|quarter)/i,
+
   /\b(set up|create|start|build|make)\b.*\bplan\b/i,
   /\bplan\b.*\b(to|for)\b.*(pay off|save|retire|invest|buy)/i,
   /(pay off|payoff).{0,40}\bin\b\s*\d+\s*(month|year)/i,
   /\bsave\b.{0,40}\b(in|by|within)\b\s*\d+\s*(month|year)/i,
   /help me (pay off|save (up|for)|reach|hit)\b/i,
-  // Plan-progress phrasing — "on track" alone would slip past matchIntent (no
-  // keyword collision), but "how's my loan plan going" or "check my savings goal
-  // progress" would otherwise hit DEBT/GOALS first.
+
   /\bon track\b/i,
   /progress.*(plan|goal)/i,
   /how.?s my (plan|goal)/i,
   /(check|update).*(plan|goal).*(status|progress)/i,
-  // Calculation/what-if phrasing — a standalone hypothetical number, not a question
-  // about the user's actual stored data, even though it may mention "loan"/"EMI"/
-  // "invest"/"save".
+
   /what (would|will) my emi/i,
   /what if i (pay|prepay|invest|save|borrow)/i,
   /how much (do i need|should i|would i) (save|invest|pay)/i,
@@ -56,32 +55,83 @@ const ADVANCED_ONLY_PATTERNS: RegExp[] = [
 export class IntentClassifierService {
   constructor(private gateway: AiGatewayService) {}
 
-  async classify(userId: string, question: string): Promise<ClassificationResult> {
-    const needsAdvancedReasoning = ADVANCED_ONLY_PATTERNS.some((p) => p.test(question));
-    const deterministic = needsAdvancedReasoning ? null : matchIntent(question);
+  async classify(
+    userId: string,
+    question: string,
+  ): Promise<ClassificationResult> {
+    const text = (question ?? "").trim();
+
+    if (!text) {
+      return {
+        path: "advanced",
+        intent: "general_search",
+        confidence: 0,
+      };
+    }
+
+    const isPrioritizationRequest =
+      (PRIORITIZATION_PATTERN.test(text) &&
+        PRIORITIZATION_CONTEXT_PATTERN.test(text)) ||
+      PRIORITIZED_PLAN_PATTERN.test(text) ||
+      GENERAL_FINANCIAL_PLAN_PATTERN.test(text);
+
+    if (isPrioritizationRequest) {
+      return {
+        path: "advanced",
+        intent: "prioritize_actions",
+        confidence: 1,
+      };
+    }
+
+    const needsAdvancedReasoning = ADVANCED_ONLY_PATTERNS.some((pattern) =>
+      pattern.test(text),
+    );
+
+    const deterministic = needsAdvancedReasoning
+      ? null
+      : matchIntent(text);
+
     if (deterministic) {
-      return { path: "deterministic", intent: deterministic };
+      return {
+        path: "deterministic",
+        intent: deterministic,
+      };
     }
 
     try {
-      const descriptions = ADVANCED_INTENT_LABELS.map((label) => `- ${label}: ${ADVANCED_INTENT_DESCRIPTIONS[label]}`).join("\n");
-      const result = await this.gateway.classify(`${question}\n\nCategories:\n${descriptions}`, ADVANCED_INTENT_LABELS, {
-        feature: "coach2.classify_advanced",
-        promptName: "coach2.classify_advanced",
-        userId,
-        cacheable: false, // same question phrasing could plausibly need re-evaluation as the user's own data changes; not worth the staleness risk to cache
-      });
-      return { path: "advanced", intent: result.data.label, confidence: result.confidence };
+      const descriptions = ADVANCED_INTENT_LABELS.map(
+        (label) =>
+          `- ${label}: ${ADVANCED_INTENT_DESCRIPTIONS[label]}`,
+      ).join("\n");
+
+      const result = await this.gateway.classify(
+        `${text}\n\nCategories:\n${descriptions}`,
+        ADVANCED_INTENT_LABELS,
+        {
+          feature: "coach2.classify_advanced",
+          promptName: "coach2.classify_advanced",
+          userId,
+          cacheable: false,
+        },
+      );
+
+      return {
+        path: "advanced",
+        intent: result.data.label,
+        confidence: result.confidence,
+      };
     } catch (err) {
-      // Classification is a real dependency for the advanced path (unlike query
-      // rewriting/reranking in RAG, there's no cheap deterministic substitute for
-      // "which of five categories is this") — but rather than fail the whole request,
-      // fall back to treating it as a general search, which itself degrades
-      // gracefully (RagService returns a clear "no evidence" answer if it can't find
-      // anything either).
-      if (err instanceof AiUnavailableException || err instanceof Error) {
-        return { path: "advanced", intent: "general_search", confidence: 0 };
+      if (
+        err instanceof AiUnavailableException ||
+        err instanceof Error
+      ) {
+        return {
+          path: "advanced",
+          intent: "general_search",
+          confidence: 0,
+        };
       }
+
       throw err;
     }
   }
