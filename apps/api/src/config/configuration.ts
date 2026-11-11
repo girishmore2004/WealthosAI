@@ -1,115 +1,177 @@
 // Comma-separated list support so a single env var can carry the primary Vercel
-// production URL plus any extra origins (a custom domain, a staging site, etc.)
-// without needing a code change per origin. Empty/whitespace entries are dropped.
+// production URL plus any extra origins.
 function parseOriginList(value: string | undefined): string[] {
   if (!value) return [];
+
   return value
     .split(",")
-    .map((o) => o.trim())
+    .map((origin) => origin.trim())
     .filter(Boolean);
 }
 
 interface ModelPricing {
-  /** USD per 1,000,000 prompt (input) tokens. */
   promptPer1M: number;
-  /** USD per 1,000,000 completion (output) tokens. */
   completionPer1M: number;
 }
 
-// Approximate list-price figures as of this writing, NOT pulled live from Groq — used
-// by TokenAccountingService for exact post-call cost accounting, and as a rough
-// per-call estimate by ModelRouterService's budget-aware routing decisions
-// pre-call. Override/extend via AI_MODEL_PRICING_JSON (a JSON object merged over these
-// defaults) if Groq's actual pricing has changed, or if GROQ_SMALL_MODEL /
-// GROQ_LARGE_MODEL / GROQ_FALLBACK_MODEL is pointed at a model string not listed here
-// — an unpriced model isn't billed as $0, TokenAccountingService.estimateCostUsd
-// returns null for it instead (see that class).
 const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
-  // Current Groq models. The two Llama models below were shut down on 16 Aug 2026 (HTTP 404
-  // model_not_found); they stay listed so old logs still price correctly.
-  "openai/gpt-oss-20b": { promptPer1M: 0.075, completionPer1M: 0.3 },
-  "openai/gpt-oss-120b": { promptPer1M: 0.15, completionPer1M: 0.6 },
-  "llama-3.1-8b-instant": { promptPer1M: 0.05, completionPer1M: 0.08 },
-  "llama-3.3-70b-versatile": { promptPer1M: 0.59, completionPer1M: 0.79 },
+  "openai/gpt-oss-20b": {
+    promptPer1M: 0.075,
+    completionPer1M: 0.3,
+  },
+  "openai/gpt-oss-120b": {
+    promptPer1M: 0.15,
+    completionPer1M: 0.6,
+  },
+  "llama-3.1-8b-instant": {
+    promptPer1M: 0.05,
+    completionPer1M: 0.08,
+  },
+  "llama-3.3-70b-versatile": {
+    promptPer1M: 0.59,
+    completionPer1M: 0.79,
+  },
 };
 
 function loadModelPricing(): Record<string, ModelPricing> {
-  if (!process.env.AI_MODEL_PRICING_JSON) return DEFAULT_MODEL_PRICING;
+  const raw = process.env.AI_MODEL_PRICING_JSON;
+
+  if (!raw) {
+    return DEFAULT_MODEL_PRICING;
+  }
+
   try {
-    const overrides = JSON.parse(process.env.AI_MODEL_PRICING_JSON);
-    return { ...DEFAULT_MODEL_PRICING, ...overrides };
+    const overrides = JSON.parse(raw);
+
+    return {
+      ...DEFAULT_MODEL_PRICING,
+      ...overrides,
+    };
   } catch {
-    // Malformed override must never crash boot — fall back to the safe defaults and
-    // let GET /ai/health's byModel breakdown make a $0/null-cost model obvious enough
-    // to notice and fix the env var.
     return DEFAULT_MODEL_PRICING;
   }
 }
 
 export default () => ({
   port: parseInt(process.env.API_PORT ?? "4000", 10),
+
   databaseUrl: process.env.DATABASE_URL,
+
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
-  sessionTtlSeconds: parseInt(process.env.SESSION_TTL_SECONDS ?? "2592000", 10),
+
+  sessionTtlSeconds: parseInt(
+    process.env.SESSION_TTL_SECONDS ?? "2592000",
+    10,
+  ),
+
   webUrl: process.env.WEB_URL ?? "http://localhost:3000",
-  // Extra allowed CORS origins beyond WEB_URL — e.g. a custom domain, comma-separated.
-  corsExtraOrigins: parseOriginList(process.env.CORS_EXTRA_ORIGINS),
-  // When true, also allow any https://*.vercel.app origin whose subdomain starts with
-  // this prefix (Vercel's per-branch/PR preview deployments get a random suffix on the
-  // project name, e.g. wealthos-ai-git-feature-x-yourteam.vercel.app). Leave unset to
-  // disable preview-origin matching entirely (the safer default for production).
-  vercelPreviewPrefix: process.env.VERCEL_PREVIEW_PREFIX ?? "",
-  // Cross-site cookies (backend on Render, frontend on Vercel — two different eTLD+1
-  // domains) require `SameSite=None; Secure`, which only works over HTTPS. Same-site
-  // deployments (or plain local dev over http) should stay on `SameSite=Lax` since
-  // `None` needs `Secure` and local http will silently drop the cookie otherwise.
-  // Defaults to true whenever NODE_ENV=production, since that's the common case for
-  // this stack; override explicitly for a same-domain production deployment.
+
+  corsExtraOrigins: parseOriginList(
+    process.env.CORS_EXTRA_ORIGINS,
+  ),
+
+  vercelPreviewPrefix:
+    process.env.VERCEL_PREVIEW_PREFIX ?? "",
+
   crossSiteCookies: process.env.CROSS_SITE_COOKIES
     ? process.env.CROSS_SITE_COOKIES === "true"
     : process.env.NODE_ENV === "production",
+
   otpAdapter: process.env.OTP_ADAPTER ?? "mock",
-  // Emails that sign in WITHOUT an OTP (public demo account). Comma-separated; blank
-  // falls back to demo@wealthos.ai. Keep these accounts demo-data only.
-  demoLoginEmails: (process.env.DEMO_LOGIN_EMAILS ?? "demo@wealthos.ai")
+
+  demoLoginEmails: (
+    process.env.DEMO_LOGIN_EMAILS ?? "demo@wealthos.ai"
+  )
     .split(",")
-    .map((e) => e.trim().toLowerCase())
+    .map((email) => email.trim().toLowerCase())
     .filter(Boolean),
-  // NEW: selects the OCR implementation Documents uses — see
-  // documents/adapters/ocr-adapter.factory.ts. "tesseract" (default) is the real,
-  // free/OSS OCR engine; "mock" keeps the deterministic zero-dependency placeholder
-  // (useful for tests/CI or an environment that wants to skip real OCR processing).
+
   ocrAdapter: process.env.OCR_ADAPTER ?? "tesseract",
-    resend: {
+
+  resend: {
     apiKey: process.env.RESEND_API_KEY ?? "",
-    fromEmail: process.env.OTP_FROM_EMAIL ?? "WealthOS AI <onboarding@resend.dev>",
+    fromEmail:
+      process.env.OTP_FROM_EMAIL ??
+      "WealthOS AI <onboarding@resend.dev>",
   },
-  // Brevo (OTP_ADAPTER=brevo) needs only a verified *sender email address* rather than
-  // a verified domain — see brevo-email-otp.adapter.ts for why that matters here.
+
   brevo: {
     apiKey: process.env.BREVO_API_KEY ?? "",
     senderEmail: process.env.BREVO_SENDER_EMAIL ?? "",
-    senderName: process.env.BREVO_SENDER_NAME ?? "WealthOS AI",
+    senderName:
+      process.env.BREVO_SENDER_NAME ?? "WealthOS AI",
   },
+
   ai: {
-    groqApiKey: process.env.GROQ_API_KEY ?? "",
-    groqApiBaseUrl: process.env.GROQ_API_BASE_URL ?? "https://api.groq.com/openai/v1",
-    smallModel: process.env.GROQ_SMALL_MODEL ?? "openai/gpt-oss-20b",
-    largeModel: process.env.GROQ_LARGE_MODEL ?? "openai/gpt-oss-120b",
-    // A distinct third model string, tried only after BOTH the small and large models
-    // have failed for a given call — see model-router.service.ts's
-    // RoutingDecision.chain and AiGatewayService's fallback loop. Point this at a
-    // different provider-hosted model as a last resort if desired. Left unset by
-    // default, in which case the chain falls back to the small model a second time
-    // rather than producing an empty/undefined final candidate.
-    fallbackModel: process.env.GROQ_FALLBACK_MODEL ?? "",
-    requestTimeoutMs: parseInt(process.env.AI_REQUEST_TIMEOUT_MS ?? "20000", 10),
-    maxRetries: parseInt(process.env.AI_MAX_RETRIES ?? "2", 10),
-    cacheTtlSeconds: parseInt(process.env.AI_CACHE_TTL_SECONDS ?? "900", 10),
-    // Cosine-similarity floor (0-1) for AiCacheService.getSemantic's fuzzy cache
-    // lookups — see semantic-similarity.util.ts. Kept high by default: a semantic
-    // cache serving a wrong answer is worse than a cache miss.
-    semanticCacheThreshold: parseFloat(process.env.AI_SEMANTIC_CACHE_THRESHOLD ?? "0.94"),
+    // Provider selection.
+    // OpenAI is primary when configured.
+    // Groq remains an independent fallback.
+
+    primaryProvider: (
+      process.env.AI_PRIMARY_PROVIDER ??
+      (process.env.OPENAI_API_KEY ? "openai" : "groq")
+    ).toLowerCase(),
+
+    // OPENAI CONFIGURATION
+
+    openAiApiKey:
+      process.env.OPENAI_API_KEY ?? "",
+
+    openAiApiBaseUrl:
+      process.env.OPENAI_API_BASE_URL ??
+      "https://api.openai.com/v1",
+
+    openAiSmallModel:
+      process.env.OPENAI_SMALL_MODEL ??
+      "gpt-4o-mini",
+
+    openAiLargeModel:
+      process.env.OPENAI_LARGE_MODEL ??
+      "gpt-4o",
+
+    // GROQ CONFIGURATION
+
+    groqApiKey:
+      process.env.GROQ_API_KEY ?? "",
+
+    groqApiBaseUrl:
+      process.env.GROQ_API_BASE_URL ??
+      "https://api.groq.com/openai/v1",
+
+    smallModel:
+      process.env.GROQ_SMALL_MODEL ??
+      "openai/gpt-oss-20b",
+
+    largeModel:
+      process.env.GROQ_LARGE_MODEL ??
+      "openai/gpt-oss-120b",
+
+    fallbackModel:
+      process.env.GROQ_FALLBACK_MODEL ?? "",
+
+    // PERFORMANCE
+
+    requestTimeoutMs: parseInt(
+      process.env.AI_REQUEST_TIMEOUT_MS ?? "20000",
+      10,
+    ),
+
+    maxRetries: parseInt(
+      process.env.AI_MAX_RETRIES ?? "2",
+      10,
+    ),
+
+    cacheTtlSeconds: parseInt(
+      process.env.AI_CACHE_TTL_SECONDS ?? "900",
+      10,
+    ),
+
+    semanticCacheThreshold: parseFloat(
+      process.env.AI_SEMANTIC_CACHE_THRESHOLD ?? "0.94",
+    ),
+
+    // TOKEN COST ACCOUNTING
+
     modelPricing: loadModelPricing(),
   },
 });
