@@ -41,6 +41,9 @@ export const SCENARIO_FIELD_CONFIG: Record<ScenarioType, FieldConfig> = {
   // EMI-affordability cap (see ScenarioExpanderService.applyAffordabilityCap()) rather
   // than just echoing the base value.
   NEW_LOAN: { field: "loanAmount", direction: "pessimistic", isDiscretionarySpend: true },
+  // A bigger expense cut is the optimistic direction. Not discretionary spend: it frees cash
+  // rather than committing it, so the "constrained" variant stays at the base value.
+  EXPENSE_REDUCTION: { field: "percentDecrease", direction: "optimistic", isDiscretionarySpend: false },
 };
 
 // best/worst multipliers applied to the primary field's magnitude, direction-aware —
