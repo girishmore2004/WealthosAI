@@ -23,10 +23,11 @@ const SCENARIO_LABELS: Record<ScenarioType, string> = {
   EMERGENCY_EXPENSE: "an emergency expense",
   GOAL_DELAY: "a goal delay",
   NEW_LOAN: "a new loan",
+  EXPENSE_REDUCTION: "an expense reduction",
 };
 
 const SUPPORTED_SCENARIOS_TEXT =
-  "salary increase or drop, SIP increase or decrease, house purchase, loan prepayment, retirement age change, emergency expense, goal delay, or a new loan";
+  "salary increase or drop, SIP increase or decrease, house purchase, loan prepayment, retirement age change, emergency expense, goal delay, a new loan, or an expense reduction";
 
 /** The controlled clarification shown when a prompt did not resolve to exactly one runnable
  * scenario. It never names a guessed scenario: an ambiguous prompt lists what it matched and
