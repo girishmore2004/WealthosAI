@@ -355,6 +355,7 @@ const SCENARIO_FIELDS: Record<ScenarioType, FieldDef[]> = {
     { key: "tenureMonths", label: "Loan tenure (months)" },
     { key: "purpose", label: "Purpose (optional)" },
   ],
+  EXPENSE_REDUCTION: [{ key: "percentDecrease", label: "Expense reduction (%)" }],
 };
 
 const SCENARIO_LABELS: Record<ScenarioType, string> = {
@@ -368,6 +369,7 @@ const SCENARIO_LABELS: Record<ScenarioType, string> = {
   EMERGENCY_EXPENSE: "Emergency expense",
   GOAL_DELAY: "Delay a goal",
   NEW_LOAN: "Take a new loan",
+  EXPENSE_REDUCTION: "Reduce expenses",
 };
 
 export default function SimulatorPage() {
