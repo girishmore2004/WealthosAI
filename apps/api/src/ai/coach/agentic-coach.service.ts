@@ -45,14 +45,47 @@ export interface AgenticCoachResult {
 
 const FALLBACK_CONFIDENCE_ON_VERIFICATION_FAILURE = 0.5;
 
+
 const planRequestSchema = z.object({
-  type: z.enum(["DEBT_PAYOFF", "SAVINGS_TARGET", "RETIREMENT", "INVESTMENT_ALLOCATION", "CUSTOM"]),
-  title: z.string(),
-  targetAmount: z.number().optional().describe("Only if the user stated a concrete target amount"),
-  months: z.number().optional().describe("Only if the user stated a concrete timeline in months (convert years to months)"),
-  loanNameHint: z.string().optional().describe("Free text the user used to refer to a specific loan, if type is DEBT_PAYOFF"),
-  goalNameHint: z.string().optional().describe("Free text the user used to refer to an existing goal, if any"),
+  type: z.enum([
+    "DEBT_PAYOFF",
+    "SAVINGS_TARGET",
+    "RETIREMENT",
+    "INVESTMENT_ALLOCATION",
+    "CUSTOM",
+  ]),
+
+  title: z.string().min(3).max(120),
+
+  targetAmount: z
+    .number()
+    .positive()
+    .nullable()
+    .optional()
+    .describe("Only when the user explicitly states a positive target amount; otherwise null"),
+
+  months: z
+    .number()
+    .int()
+    .positive()
+    .max(600)
+    .nullable()
+    .optional()
+    .describe("Only when the user explicitly states a timeline in months; otherwise null"),
+
+  loanNameHint: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Specific loan name when the user refers to one; otherwise null"),
+
+  goalNameHint: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Specific existing goal name when the user refers to one; otherwise null"),
 });
+
 
 @Injectable()
 export class AgenticCoachService {
@@ -389,7 +422,7 @@ export class AgenticCoachService {
     let calculatorFacts = "";
 
     if (parsed.type === "DEBT_PAYOFF") {
-      const { match, candidates } = await this.gatherer.findLoanByHint(userId, parsed.loanNameHint);
+      const { match, candidates } = await this.gatherer.findLoanByHint(userId, parsed.loanNameHint ?? undefined,);
       if (!match) {
         return this.clarificationNeededResult(
           question,
@@ -422,7 +455,7 @@ export class AgenticCoachService {
       // (goalNameHint is parsed but not resolved to a Goal.id) — GoalsService has no
       // fuzzy-name lookup today, and guessing wrong would silently mislink a plan to
       // the wrong goal. linkedGoalId stays null; targetMetricType stays custom_amount.
-      if (!parsed.targetAmount) {
+      if (parsed.targetAmount == null || parsed.targetAmount <= 0) {
         return this.clarificationNeededResult(question, "create_plan", planSteps, "How much would you like this plan's target to be?");
       }
       targetMetricType = "custom_amount";
