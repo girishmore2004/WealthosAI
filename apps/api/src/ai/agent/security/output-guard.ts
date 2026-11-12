@@ -123,7 +123,8 @@ function splitSentences(text: string): string[] {
 export function applyPolicy(text: string): { text: string; flags: GuardFlag[]; warnings: string[] } {
   const flags = new Set<GuardFlag>();
   const warnings: string[] = [];
-  const kept = splitSentences(text).filter((s) => {
+  // Policy is applied per sentence, but line structure (headings, tables, lists) is preserved so formatted reports survive.
+  const keepSentence = (s: string): boolean => {
     for (const r of POLICY_RULES) {
       if (r.re.test(s)) {
         flags.add(r.flag);
@@ -132,8 +133,15 @@ export function applyPolicy(text: string): { text: string; flags: GuardFlag[]; w
       }
     }
     return true;
+  };
+  const lines = text.split("\n").map((line) => {
+    if (line.trim().length === 0) return line;
+    if (/^\s*\|/.test(line)) return keepSentence(line) ? line : null; // table row: kept or dropped whole
+    const parts = line.split(/(?<=[.!?])\s+/).filter((p) => p.trim().length > 0);
+    const kept = parts.filter(keepSentence);
+    return kept.length === 0 ? null : kept.join(" ");
   });
-  return { text: kept.join(" "), flags: [...flags], warnings };
+  return { text: lines.filter((l): l is string => l !== null).join("\n"), flags: [...flags], warnings };
 }
 
 // --- whole-response guard -------------------------------------------------------------------------------------------
