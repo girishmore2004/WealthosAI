@@ -124,6 +124,7 @@ export class BuiltinToolsService implements OnModuleInit {
           return {
             text: r.answer,
             handled: true,
+            facts: r.results ?? [],
             evidence: r.tools.map((t) => ({ kind: "platform_data" as const, label: t.tool, source: "financial_engine", detail: `${t.basis.toLowerCase()} · ${t.period.toLowerCase()}`, asOf: t.asOfDate })),
             warnings: [...r.dataHealth.filter((w) => w.severity !== "INFO").map((w) => w.message), ...(r.usedFallback ? ["The figures are shown plainly because the worded answer did not pass verification."] : [])],
             data: { intent: r.intent, verification: r.verification },
