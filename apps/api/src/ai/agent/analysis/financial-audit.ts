@@ -67,7 +67,25 @@ export interface InsuranceReconciliation {
   note: string;
 }
 
+/** When this month has no income recorded yet, the average of up to the last three COMPLETE months is a fairer yardstick than zero. Returns null when there is no earlier income. */
+export function referenceIncome(rows: readonly { receivedAt: Date; amount: number }[], thisMonthIncome: number | null, now: Date): { amount: number; basis: string } | null {
+  if (thisMonthIncome !== null && thisMonthIncome > 0) return null;
+  const current = monthKey(now);
+  const byMonth = new Map<string, number>();
+  for (const r of rows) {
+    const k = monthKey(r.receivedAt);
+    if (k !== current) byMonth.set(k, round2((byMonth.get(k) ?? 0) + r.amount));
+  }
+  const recent = [...byMonth.entries()].sort((x, y) => (x[0] < y[0] ? 1 : -1)).slice(0, 3).map((e) => e[1]);
+  if (recent.length === 0) return null;
+  const amount = round2(recent.reduce((x, y) => x + y, 0) / recent.length);
+  if (amount <= 0) return null;
+  return { amount, basis: `average income of the last ${recent.length} complete month${recent.length === 1 ? "" : "s"} (no income is recorded for this month yet)` };
+}
+
 export interface AuditSnapshot {
+  /** Set only when this month's income is missing; used by recommendations instead of treating income as zero. */
+  referenceIncome?: { amount: number; basis: string } | null;
   monthlyIncome: number | null;
   monthlyExpenses: number | null;
   savingsRatePercent: number | null;
@@ -297,6 +315,7 @@ export function buildFinancialAudit(inputs: AuditInputs): FinancialAudit {
   if (sips.length === 0 && cf && cf.netCashFlow > 0 && inputs.investments.ok) opportunities.push(`You have a positive net cash flow of ${formatMoney(cf.netCashFlow)} this month and no active SIP.`);
 
   const snapshot: AuditSnapshot = {
+    referenceIncome: referenceIncome(incomeRows, monthlyIncome, now),
     monthlyIncome,
     monthlyExpenses: cf?.expenses ?? null,
     savingsRatePercent: savingsRate,
