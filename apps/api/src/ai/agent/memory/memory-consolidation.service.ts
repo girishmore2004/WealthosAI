@@ -59,10 +59,10 @@ export class MemoryConsolidationService implements OnModuleInit {
     });
   }
 
-  /** At most one consolidation job per user per hour. */
-  async schedule(userId: string, conversationId: string): Promise<void> {
-    const hour = new Date().toISOString().slice(0, 13);
-    await this.queue.enqueue(MEMORY_CONSOLIDATION_JOB, { userId, conversationId }, { userId, idempotencyKey: `memcons:${userId}:${hour}` });
+  /** Idempotent per unit of work: the key names the conversation and the run (or, absent one, the minute), so a retry of the same work dedupes but new conversations or turns are not dropped. */
+  async schedule(userId: string, conversationId: string, workKey?: string): Promise<void> {
+    const work = workKey ?? new Date().toISOString().slice(0, 16);
+    await this.queue.enqueue(MEMORY_CONSOLIDATION_JOB, { userId, conversationId }, { userId, idempotencyKey: `memcons:${userId}:${conversationId}:${work}` });
   }
 
   async consolidate(userId: string, conversationId: string | null): Promise<ConsolidationReport> {
