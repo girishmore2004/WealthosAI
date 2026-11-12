@@ -40,7 +40,8 @@ const AGGREGATE_RULES: AggregateRule[] = [
 
 export const formatMoney = (n: number): string => {
   const v = round2(n);
-  return `₹${new Intl.NumberFormat("en-IN", { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }).format(v)}`;
+  const body = new Intl.NumberFormat("en-IN", { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }).format(Math.abs(v));
+  return `${v < 0 ? "−" : ""}₹${body}`;
 };
 
 export function reconcileToolResultAggregates(results: readonly ToolResult[], toleranceRupees = 1): AggregateDiscrepancy[] {
