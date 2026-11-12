@@ -8,6 +8,8 @@ export interface HistoryTurn {
   content: string;
 }
 
+// A message that names its own financial topic is a new question, not a follow-up, even when it is short ("Check my insurance premiums").
+const OWN_TOPIC = /\b(insurance|premiums?|polic(?:y|ies)|loans?|emis?|spending|expenses?|income|salary|savings?|invest\w*|sips?|goals?|net worth|audit|budget|tax\w*)\b/i;
 const FOLLOW_UP = /^\s*(and|what about|how about|also|then|same (?:for|with)|but|ok(?:ay)?,? (?:and|what about)|why|how come|compare (?:it|that|this))\b/i;
 
 /** Rewrites a short follow-up ("what about last month?") into a self-contained question using the previous user turn, so tools that
@@ -17,6 +19,7 @@ export function resolveFollowUp(message: string, history: HistoryTurn[]): string
   const text = message.trim();
   const words = text.split(/\s+/).length;
   if (words > 8 && !FOLLOW_UP.test(text)) return text;
+  if (!FOLLOW_UP.test(text) && OWN_TOPIC.test(text)) return text;
   if (!FOLLOW_UP.test(text) && words > 4) return text;
   const prev = [...history].reverse().find((h) => h.role === "USER");
   if (!prev) return text;
@@ -42,6 +45,8 @@ export class AgentIntentService {
         userId,
         cacheable: false,
       });
+      // A model may not turn an unclear message into a write: without a rule-matched action tool it is treated as a read-only question.
+      if (res.data.label === "action_request" && !ruled.actionTool) return { ...ruled, intent: "financial_analysis", source: "model", reasons: [...ruled.reasons, "model suggested an action but no action wording matched; treated as a question"] };
       return { intent: res.data.label as IntentResult["intent"], confidence: Math.min(0.8, res.confidence), reasons: ["model classification after unclear rules"], source: "model", ...(res.data.label === "action_request" ? { actionTool: ruled.actionTool } : {}) };
     } catch (err) {
       this.logger.warn(`intent model unavailable: ${(err as Error).name}`);
