@@ -18,6 +18,7 @@ import { containsSensitive, guardResponse } from "../security/output-guard";
 import { sanitizeUntrusted } from "../security/untrusted-content";
 import { ToolRegistryService } from "../tools/tool-registry.service";
 import { verifyAgentText } from "../verification/agent-verifier";
+import { reconcileToolResultAggregates } from "../analysis/financial-verification";
 import { AgentGraphState, AgentState, ApprovalDecisionPayload } from "./agent-state";
 import { PrismaCheckpointSaver } from "./prisma-checkpoint-saver";
 
@@ -249,20 +250,35 @@ export class AgentGraphService implements OnModuleInit {
     return { autoCalls: auto, approvalCall, toolOutcomes: denied, stepCount: s.stepCount + 1 };
   }
 
-  // 8-9. EXECUTE TOOL CALLS (sequential, bounded) and COLLECT RESULTS.
+  // 8-9. EXECUTE TOOL CALLS and COLLECT RESULTS. Independent read-only calls run in parallel (bounded by AGENT_MAX_TOOL_CALLS);
+  // a call with runIf depends on the call before it and waits for that one only. Outcomes keep the planned order.
   private async executeTools(s: AgentGraphState): Promise<Partial<AgentGraphState>> {
     const ctx = { userId: s.userId, conversationId: s.conversationId, runId: s.runId };
-    const outcomes: ToolOutcome[] = [];
-    let prev: ToolOutcome | undefined = s.toolOutcomes.find((o) => o.callId === s.autoCalls[0]?.callId);
-    for (const call of s.autoCalls.slice(0, AGENT_MAX_TOOL_CALLS)) {
-      if (call.runIf === "previous_unhandled" && prev && prev.handled && prev.status === "ok") {
-        outcomes.push({ callId: call.callId, tool: call.tool, status: "skipped", text: "", handled: true, evidence: [], calculations: [], warnings: [], assumptions: [], recommendations: [], followUps: [], proposedActions: [], untrusted: false, durationMs: 0 });
-        continue;
+    const calls = s.autoCalls.slice(0, AGENT_MAX_TOOL_CALLS);
+    const skipped = (call: PlannedCall): ToolOutcome => ({ callId: call.callId, tool: call.tool, status: "skipped", text: "", handled: true, evidence: [], calculations: [], warnings: [], assumptions: [], recommendations: [], followUps: [], proposedActions: [], untrusted: false, durationMs: 0 });
+    const failed = (call: PlannedCall, err: unknown, started: number): ToolOutcome => ({ callId: call.callId, tool: call.tool, status: "error", text: "", handled: false, evidence: [], calculations: [], warnings: [], assumptions: [], recommendations: [], followUps: [], proposedActions: [], untrusted: false, durationMs: Date.now() - started, errorCode: "UNEXPECTED", transient: false });
+    const seed: ToolOutcome | undefined = s.toolOutcomes.find((o) => o.callId === s.autoCalls[0]?.callId);
+    const promises: Promise<ToolOutcome>[] = [];
+    calls.forEach((call, i) => {
+      const run = async (): Promise<ToolOutcome> => {
+        const started = Date.now();
+        try {
+          return await this.registry.invoke(ctx, call.tool, call.args, { callId: call.callId });
+        } catch (err) {
+          this.logger.warn(`tool ${call.tool} threw: ${(err as Error).name}`);
+          return failed(call, err, started);
+        }
+      };
+      if (call.runIf === "previous_unhandled") {
+        const before = i > 0 ? promises[i - 1] : Promise.resolve(seed);
+        promises.push(before.then((prev) => (prev && prev.handled && prev.status === "ok" ? skipped(call) : run())));
+      } else {
+        promises.push(run());
       }
-      const outcome = await this.registry.invoke(ctx, call.tool, call.args, { callId: call.callId });
-      outcomes.push(outcome);
-      prev = outcome;
-    }
+    });
+    const outcomes = await Promise.all(promises);
+    // Per-tool trace: name, status, duration, handled. Never logs arguments or results.
+    this.logger.log(`tool trace run=${s.runId} ${outcomes.map((o) => `${o.tool}:${o.status}:${o.durationMs}ms${o.handled ? "" : ":unhandled"}`).join(" ")}`);
     return { toolOutcomes: outcomes, stepCount: s.stepCount + 1 };
   }
 
@@ -354,6 +370,8 @@ export class AgentGraphService implements OnModuleInit {
   private composeUnguarded(s: AgentGraphState): Partial<AgentGraphState> {
     const pendingOnly = s.pendingApproval && !s.approvalDecision;
     const approvals = pendingOnly ? s.approvals : s.approvals;
+    // Deterministic cross-check of any reported total against its listed components. Reported, never silently corrected.
+    const aggregateNotes = reconcileToolResultAggregates(s.toolOutcomes.flatMap((o) => (o.status === "ok" ? (o.facts ?? []) : []))).map((d) => d.message);
     const base = composeResponse({
       conversationId: s.conversationId,
       intent: s.intent?.intent ?? "clarification",
@@ -363,7 +381,7 @@ export class AgentGraphService implements OnModuleInit {
       approvals,
       override: s.override ?? undefined,
       verification: { passed: true, issues: [] },
-      extraWarnings: s.warnings,
+      extraWarnings: [...s.warnings, ...aggregateNotes],
     });
     const sources = [s.message, ...s.memories.map(describeMemory), ...s.memories.map((m) => m.createdAt)];
     const verification = base.answerType === "refusal" || base.answerType === "clarification" ? { passed: true, issues: [] } : verifyAgentText(this.numeric, base.response, s.toolOutcomes, sources);
@@ -378,6 +396,15 @@ export class AgentGraphService implements OnModuleInit {
 
   // 13-14. EXTRACT + PERSIST MEMORY. Best effort: a failure here never changes or loses the answer.
   private extractMemory(s: AgentGraphState): Partial<AgentGraphState> {
+    try {
+      return this.extractMemoryUnsafe(s);
+    } catch (err) {
+      this.logger.warn(`memory extraction failed: ${(err as Error).name}`);
+      return { memoryCandidates: [] };
+    }
+  }
+
+  private extractMemoryUnsafe(s: AgentGraphState): Partial<AgentGraphState> {
     if (!s.intent) return { memoryCandidates: [] };
     const decision = s.pendingApproval && s.approvalDecision ? { decision: s.approvalDecision, tool: s.pendingApproval.tool, summary: s.pendingApproval.summary } : null;
     const candidates = extractMemoryCandidates({ message: s.message, intent: s.intent, outcomes: s.toolOutcomes, runId: s.runId, approvalDecision: decision });
@@ -401,7 +428,11 @@ export class AgentGraphService implements OnModuleInit {
       }
     }
     // Asynchronous consolidation (BullMQ): dedupe, digest old episodes, daily financial snapshot.
-    await this.consolidation.schedule(s.userId, s.conversationId).catch(() => undefined);
+    try {
+      await this.consolidation.schedule(s.userId, s.conversationId, s.runId);
+    } catch (err) {
+      this.logger.warn(`memory consolidation scheduling failed: ${(err as Error).name}`);
+    }
     return {};
   }
 }
