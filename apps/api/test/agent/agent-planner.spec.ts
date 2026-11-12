@@ -13,8 +13,11 @@ describe("deterministic execution planner", () => {
   it("adds ml insights and history only when the user's wording asks for them", () => {
     const p = buildExecutionPlan(intent("financial_analysis"), "Any unusual spending and how has it changed over time?");
     const tools = p.map((c) => c.tool);
-    expect(tools).toContain("ml_insights");
+    // Anomaly wording is answered by the evidence-backed spending analysis (robust z-score with expected vs actual), not the generic insight tool.
+    expect(tools).toContain("spending_intelligence");
     expect(tools).toContain("financial_history");
+    const forecast = buildExecutionPlan(intent("financial_analysis"), "Forecast my savings over time").map((c) => c.tool);
+    expect(forecast).toContain("ml_insights");
   });
   it("routes documents to RAG and never plans a write for a question", () => {
     const p = buildExecutionPlan(intent("document_question"), "what does my policy cover", { attachmentCount: 1 });
