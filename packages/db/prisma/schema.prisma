@@ -1762,6 +1762,7 @@ enum ScenarioType {
   LOAN_PREPAYMENT
   RETIREMENT_AGE_SHIFT
   EMERGENCY_EXPENSE
+  EXPENSE_REDUCTION
   GOAL_DELAY
   // NEW (audit item #8): "what if I take a ₹10L business-expansion loan" previously had
   // no matching scenario type and was forced into the nearest available bucket
