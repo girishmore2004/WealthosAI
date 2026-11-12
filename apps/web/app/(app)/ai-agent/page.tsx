@@ -26,7 +26,7 @@ import type {
 } from "@wealthos/types";
 
 import { formatINR } from "@/lib/format";
-
+import { AgentMarkdown } from "@/components/ai/agent-markdown";
 type ConversationSummary = {
   id: string;
   title: string;
@@ -544,9 +544,13 @@ export default function AiAgentPage() {
                     </span>
                   </div>
 
-                  <div className="whitespace-pre-wrap break-words text-sm leading-6">
-                    {turn.content}
-                  </div>
+                  {turn.role === "ASSISTANT" ? (
+                    <AgentMarkdown text={turn.content} />
+                  ) : (
+                    <div className="whitespace-pre-wrap break-words text-sm leading-6">
+                      {turn.content}
+                    </div>
+                  )}
 
                   {turn.role === "ASSISTANT" && turn.result && (
                     <AgentResultDetails
