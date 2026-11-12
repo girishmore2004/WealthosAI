@@ -21,6 +21,8 @@ export interface EngineResponse {
   answer: string | null;
   handoff: { to: HandoffTarget; reason: string } | null;
   tools: Array<{ tool: string; basis: FactBasis; period: FactPeriod; asOfDate: string }>;
+  // The full tool results behind the answer, so callers can re-verify aggregates (e.g. a total against its listed rows).
+  results?: ToolResult[];
   dataHealth: ToolWarning[];
   verification: VerificationResult;
   // true when the composed text failed verification and a plain facts rendering was returned.
@@ -91,6 +93,7 @@ export class FinancialEngineService {
       answer,
       handoff: null,
       tools: results.map((t) => ({ tool: t.tool, basis: t.basis, period: t.period, asOfDate: t.asOfDate })),
+      results,
       dataHealth: dedupeWarnings(results),
       verification,
       usedFallback,
