@@ -140,21 +140,32 @@ export class AgentGraphService implements OnModuleInit {
 
   // --- graph --------------------------------------------------------------------------------------------------
 
+  /** Logs any node slower than 500ms so a slow turn can be traced to a stage without a profiler. */
+  private async timed<S extends { runId?: string }, R>(name: string, s: S, fn: (s: S) => Promise<R> | R): Promise<R> {
+    const t0 = Date.now();
+    try {
+      return await fn(s);
+    } finally {
+      const ms = Date.now() - t0;
+      if (ms >= 500) this.logger.log(`node ${name} ${ms}ms run=${s.runId ?? "?"}`);
+    }
+  }
+
   private buildGraph() {
     return new StateGraph(AgentState)
-      .addNode("loadContext", (s) => this.loadContext(s))
-      .addNode("retrieveMemory", (s) => this.retrieveMemory(s))
-      .addNode("understandIntent", (s) => this.understandIntent(s))
-      .addNode("createPlan", (s) => this.createPlan(s))
-      .addNode("authorize", (s) => this.authorize(s))
-      .addNode("executeTools", (s) => this.executeTools(s))
-      .addNode("verify", (s) => this.verify(s))
-      .addNode("prepareApproval", (s) => this.prepareApproval(s))
-      .addNode("awaitApproval", (s) => this.awaitApproval(s))
-      .addNode("applyDecision", (s) => this.applyDecision(s))
-      .addNode("compose", (s) => this.compose(s))
-      .addNode("extractMemory", (s) => this.extractMemory(s))
-      .addNode("persistMemory", (s) => this.persistMemory(s))
+      .addNode("loadContext", (s) => this.timed("loadContext", s, (x) => this.loadContext(x)))
+      .addNode("retrieveMemory", (s) => this.timed("retrieveMemory", s, (x) => this.retrieveMemory(x)))
+      .addNode("understandIntent", (s) => this.timed("understandIntent", s, (x) => this.understandIntent(x)))
+      .addNode("createPlan", (s) => this.timed("createPlan", s, (x) => this.createPlan(x)))
+      .addNode("authorize", (s) => this.timed("authorize", s, (x) => this.authorize(x)))
+      .addNode("executeTools", (s) => this.timed("executeTools", s, (x) => this.executeTools(x)))
+      .addNode("verify", (s) => this.timed("verify", s, (x) => this.verify(x)))
+      .addNode("prepareApproval", (s) => this.timed("prepareApproval", s, (x) => this.prepareApproval(x)))
+      .addNode("awaitApproval", (s) => this.timed("awaitApproval", s, (x) => this.awaitApproval(x)))
+      .addNode("applyDecision", (s) => this.timed("applyDecision", s, (x) => this.applyDecision(x)))
+      .addNode("compose", (s) => this.timed("compose", s, (x) => this.compose(x)))
+      .addNode("extractMemory", (s) => this.timed("extractMemory", s, (x) => this.extractMemory(x)))
+      .addNode("persistMemory", (s) => this.timed("persistMemory", s, (x) => this.persistMemory(x)))
       .addEdge(START, "loadContext")
       .addEdge("loadContext", "retrieveMemory")
       .addEdge("retrieveMemory", "understandIntent")
