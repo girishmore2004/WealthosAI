@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { FinancialToolsService } from "../../financial-engine/financial-tools.service";
 import { ToolResult } from "../../financial-engine/financial-types";
-import { AuditInputs, DiscrepancyRow, ExpenseRow, Fetched, FinancialAudit, buildFinancialAudit } from "./financial-audit";
+import { AuditInputs, DiscrepancyRow, ExpenseRow, Fetched, FinancialAudit, buildFinancialAudit, referenceIncome } from "./financial-audit";
 import { monthlyEquivalent, round2 } from "./financial-math";
 import { SpendingReport, analyzeSpending } from "./spending-intelligence";
 
@@ -42,7 +42,16 @@ export class FinancialAuditService {
   async spending(userId: string, now: Date = new Date()): Promise<{ report: SpendingReport | null; error: string | null; duplicates: number }> {
     const [rows, cf] = await Promise.all([this.settle("expenses", () => this.expenseRows(userId, now)), this.settle("cashFlow", () => this.cashFlow(userId))]);
     if (!rows.ok) return { report: null, error: rows.error, duplicates: 0 };
-    return { report: analyzeSpending(rows.data, { now, monthlyIncome: cf.ok ? cf.data.income : null }), error: null, duplicates: 0 };
+    let income = cf.ok ? cf.data.income : null;
+    let incomeNote: string | null = null;
+    if (income === null || income <= 0) {
+      const inc = await this.settle("income", () => this.incomeRows(userId, now));
+      const ref = inc.ok ? referenceIncome(inc.data, income, now) : null;
+      if (ref) { income = ref.amount; incomeNote = `Income comparisons use the ${ref.basis}.`; }
+    }
+    const report = analyzeSpending(rows.data, { now, monthlyIncome: income });
+    if (incomeNote) report.limitations.push(incomeNote);
+    return { report, error: null, duplicates: 0 };
   }
 
   async documentConflicts(userId: string): Promise<Fetched<DiscrepancyRow[]>> {
