@@ -17,6 +17,8 @@ import { FinancialSnapshotService } from "./memory/financial-snapshot.service";
 import { MemoryConsolidationService } from "./memory/memory-consolidation.service";
 import { ActionExtractorService } from "./planning/action-extractor.service";
 import { MemoryCryptoService } from "./security/memory-crypto.service";
+import { FinancialAuditService } from "./analysis/financial-audit.service";
+import { AnalysisToolsService } from "./tools/analysis-tools.service";
 import { BuiltinToolsService } from "./tools/builtin-tools.service";
 import { ToolRegistryService } from "./tools/tool-registry.service";
 
@@ -33,6 +35,8 @@ import { ToolRegistryService } from "./tools/tool-registry.service";
     MemoryConsolidationService,
     ToolRegistryService,
     BuiltinToolsService,
+    FinancialAuditService,
+    AnalysisToolsService,
     AgentIntentService,
     ActionExtractorService,
     AgentApprovalService,
