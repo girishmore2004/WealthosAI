@@ -5,6 +5,7 @@ import { AiGatewayService } from "../../gateway/ai-gateway.service";
 import { stripForbiddenArgs } from "../security/untrusted-content";
 import { ToolRegistryService } from "../tools/tool-registry.service";
 import { createGoalSchema, createPlanSchema, createTaskSchema, updateGoalSchema } from "../tools/builtin-tools.service";
+
 /** Models routinely return null for fields the user never mentioned. Accept null for every field, then drop the nulls so the strict tool schema sees them as absent (and asks the user) instead of the whole extraction failing validation. */
 export function nullTolerant(schema: z.ZodObject<z.ZodRawShape>): z.ZodObject<z.ZodRawShape> {
   const shape: z.ZodRawShape = {};
@@ -17,6 +18,7 @@ export function dropNulls(data: unknown): Record<string, unknown> {
   for (const [k, v] of Object.entries((data ?? {}) as Record<string, unknown>)) if (v !== null && v !== undefined) out[k] = v;
   return out;
 }
+
 export type ActionTool = "create_goal" | "update_goal" | "create_plan" | "create_task";
 
 export type PreparedAction = { ok: true; tool: ActionTool; input: Record<string, unknown> } | { ok: false; tool: ActionTool; question: string };
