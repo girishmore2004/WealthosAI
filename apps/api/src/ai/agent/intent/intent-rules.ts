@@ -22,7 +22,7 @@ const ACTION_NOUN: { tool: NonNullable<IntentResult["actionTool"]>; pattern: Reg
 ];
 
 const PLAN_REQUEST = /\b(plan|roadmap|strategy|steps? to|how (?:do|can|should) i (?:pay off|save|retire|build|reach|get out of)|help me (?:save|retire|pay|reach|build|plan))\b/i;
-const SCENARIO = /\b(what (?:happens|would happen|will happen)|what if|if i (?:increase|decrease|raise|cut|reduce|take|buy|prepay|stop|lose|change|get)|simulate|scenario|can i afford|afford (?:a|an|the|to)|prepay|stress[- ]test|salary (?:hike|cut|increase|decrease)|job loss)\b/i;
+const SCENARIO = /\b(what (?:happens|would happen|will happen)|what[- ]if|simulations?|if i (?:increase|decrease|raise|cut|reduce|take|buy|prepay|stop|lose|change|get)|simulate|scenario|can i afford|afford (?:a|an|the|to)|prepay|stress[- ]test|salary (?:hike|cut|increase|decrease)|job loss)\b/i;
 const DOCUMENT = /\b(policy document|my (?:insurance )?polic(?:y|ies)|this (?:policy|document|statement|agreement|contract|pdf|report)|(?:uploaded|attached) (?:document|file|statement|pdf)|bank statement|loan agreement|form ?16|payslip|clause|terms and conditions|what does (?:my|the|this) [a-z ]{0,25}(?:say|state|cover|mention)|explain (?:this|my) [a-z ]{0,25}(?:policy|document|statement|agreement))\b/i;
 const OWN_DATA = /\b(my|mine|i (?:spent|spend|earn|earned|paid|owe|have|saved|invested)|we spent|our)\b/i;
 const FINANCE_WORDS = /\b(spen[dt]|spending|expenses?|income|salary|net worth|savings?|savings rate|cash ?flow|invest(?:ment|ments|ed)?|sips?|portfolio|loans?|emis?|insurance|premiums?|tax(?:es)?|goals?|emergency fund|balance|budget|categories|category|receivables?|assets?|liabilit(?:y|ies)|compare|anomal(?:y|ies)|forecast|risk|retirement|epf|ppf|nps|dashboard|report)\b/i;
