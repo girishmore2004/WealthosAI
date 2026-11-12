@@ -45,12 +45,14 @@ export function composeResponse(input: ComposeInput): Omit<AgentResponse, "messa
     else if (ESTIMATE_TOOLS.has(o.tool)) estimates.push(o.text);
     else verifiedFacts.push(o.text);
   }
-  const memoryLines = input.memories.map(describeMemory);
+  // Logs of earlier questions ("Asked (planning): …") are not answers; they are only shown when the user asks what we discussed.
+  const shownMemories = input.intent === "memory_recall" ? input.memories : input.memories.filter((m) => !(m.category === "EPISODIC" && /^Asked \(/.test(m.content)));
+  const memoryLines = shownMemories.map(describeMemory);
   const assumptions = uniq(input.outcomes.flatMap((o) => o.assumptions));
   const recommendations = uniq(input.outcomes.flatMap((o) => o.recommendations));
   const evidence: EvidenceRef[] = [
     ...input.outcomes.flatMap((o) => o.evidence),
-    ...input.memories.map<EvidenceRef>((m) => ({ kind: "memory", label: m.category.toLowerCase(), source: m.source.toLowerCase(), detail: m.content.slice(0, 120), asOf: m.createdAt })),
+    ...shownMemories.map<EvidenceRef>((m) => ({ kind: "memory", label: m.category.toLowerCase(), source: m.source.toLowerCase(), detail: m.content.slice(0, 120), asOf: m.createdAt })),
   ];
   const calculations: CalculationRef[] = input.outcomes.flatMap((o) => o.calculations);
   const warnings = uniq([...input.outcomes.flatMap((o) => o.warnings), ...(input.extraWarnings ?? [])]);
