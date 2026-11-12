@@ -44,8 +44,11 @@ export function buildImprovementPlan(s: AuditSnapshot, now: Date = new Date()): 
   const assumptions: string[] = [`Benchmarks used where noted: save ${BENCHMARKS.savingsRatePercent}% of income, hold ${BENCHMARKS.emergencyFundMonths} months of essential expenses, keep EMIs under ${BENCHMARKS.maxDebtToIncomePercent}% of income, ${BENCHMARKS.termCoverIncomeMultiple}× yearly income in term cover. These are common rules of thumb, not requirements.`];
   const missing: string[] = [];
 
-  const income = s.monthlyIncome;
-  const expenses = s.monthlyExpenses;
+  const useReference = (s.monthlyIncome === null || s.monthlyIncome <= 0) && !!s.referenceIncome;
+  const income = useReference ? s.referenceIncome!.amount : s.monthlyIncome;
+  const refExpenses = useReference ? s.spending?.averageMonthly ?? null : null;
+  const expenses = refExpenses ?? s.monthlyExpenses;
+  if (useReference) assumptions.push(`Income is the ${s.referenceIncome!.basis}${refExpenses !== null ? "; spending is the average of complete months, so the two are comparable" : ""}.`);
   if (income === null || income <= 0) missing.push("This month's income (needed for savings-rate and debt-ratio targets).");
   if (expenses === null) missing.push("This month's expenses.");
   const surplus = income !== null && expenses !== null ? round2(income - expenses) : null;
@@ -71,7 +74,7 @@ export function buildImprovementPlan(s: AuditSnapshot, now: Date = new Date()): 
       const gap = round2(targetSaving - currentSaving);
       recs.push({
         key: "savings_rate",
-        problem: `Savings rate is ${s.savingsRatePercent ?? "n/a"}% (${formatMoney(currentSaving)} left of ${formatMoney(income)}).`,
+        problem: `Savings rate is ${s.savingsRatePercent ?? Math.round(((income - expenses) / income) * 100)}% (${formatMoney(currentSaving)} left of ${formatMoney(income)}).`,
         action: `Raise monthly saving by ${formatMoney(gap)}, in steps of about ${formatMoney(round2(gap / 3))} a month over three months.`,
         target: `Save ${formatMoney(targetSaving)}/month (${BENCHMARKS.savingsRatePercent}% of income)`,
         timeline: "3 months",
@@ -176,7 +179,10 @@ function renderPlan(p: ImprovementPlan, s: AuditSnapshot): string {
     out.push("| Priority | Problem | Recommended action | Measurable target | Timeline | Expected impact | Basis |", "|---:|---|---|---|---|---|---|");
     for (const r of p.recommendations) out.push(`| ${r.priority} | ${r.problem} | ${r.action} | ${r.target} | ${r.timeline} | ${r.expectedImpact} | ${r.basis === "data" ? "Your data" : "Benchmark"} |`);
   }
-  if (s.monthlyIncome !== null && s.monthlyExpenses !== null) out.push(`\nStarting point: income ${formatMoney(s.monthlyIncome)}, spending ${formatMoney(s.monthlyExpenses)}, savings rate ${s.savingsRatePercent ?? "n/a"}%.`);
+  if (s.monthlyIncome !== null && s.monthlyExpenses !== null) {
+    const rate = s.savingsRatePercent !== null ? `${s.savingsRatePercent}%` : "not computable (no income recorded this month)";
+    out.push(`\nStarting point (this month): income ${formatMoney(s.monthlyIncome)}, spending ${formatMoney(s.monthlyExpenses)}, savings rate ${rate}.`);
+  }
   if (p.missingInputs.length > 0) out.push(`\nNot assessed (missing data): ${p.missingInputs.join(" ")}`);
   out.push("\nAssumptions:\n" + p.assumptions.map((a) => `- ${a}`).join("\n"));
   out.push("\nTo track any of these as a saved plan, ask me to create it — I will confirm the target with you and ask for your approval before saving anything.");
