@@ -18,7 +18,7 @@ const inferredSchema = z.object({
       z.object({
         category: z.enum(["SEMANTIC", "GOAL", "PROCEDURAL"]),
         content: z.string().min(5).max(300),
-        subjectKey: z.string().max(60).optional(),
+        subjectKey: z.string().max(60).nullish(),
         confidence: z.number().min(0).max(1),
       }),
     )
