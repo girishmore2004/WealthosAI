@@ -3,7 +3,7 @@ jest.mock("../../src/prisma/prisma.service", () => ({ PrismaService: class {} })
 import { z } from "zod";
 import { classifyIntentRules } from "../../src/ai/agent/intent/intent-rules";
 import { AgentIntentService, resolveFollowUp } from "../../src/ai/agent/intent/agent-intent.service";
-import { dropNulls, nullTolerant } from "../../src/ai/agent/planning/action-extractor.service";
+import { dropNulls, inferGoalType, nullTolerant } from "../../src/ai/agent/planning/action-extractor.service";
 import { formatMoney } from "../../src/ai/agent/analysis/financial-verification";
 import { referenceIncome } from "../../src/ai/agent/analysis/financial-audit";
 
@@ -49,6 +49,23 @@ describe("live-deployment regression fixes", () => {
       const parsed = nullTolerant(schema).safeParse({ type: null, name: "New Car", monthlyContribution: null });
       expect(parsed.success).toBe(true);
       expect(dropNulls(parsed.success ? parsed.data : {})).toEqual({ name: "New Car" });
+    });
+  });
+
+  describe("improvement plan routing", () => {
+    it("sends 'create an improvement plan' to planning, not to a goal/plan write", () => {
+      const r = classifyIntentRules("Create an improvement plan for my finances.", { hasAttachments: false });
+      expect(r.intent).toBe("planning");
+      expect(r.actionTool).toBeUndefined();
+    });
+  });
+
+  describe("goal type inference", () => {
+    it("reads the type from the user's own words only when exactly one type is named", () => {
+      expect(inferGoalType("Create a goal called New Car for ₹8 lakh by 2028-03-31.")).toBe("CAR");
+      expect(inferGoalType("goal for a house down payment")).toBe("HOUSE");
+      expect(inferGoalType("goal for a car and a house")).toBeNull();
+      expect(inferGoalType("goal called Something")).toBeNull();
     });
   });
 
