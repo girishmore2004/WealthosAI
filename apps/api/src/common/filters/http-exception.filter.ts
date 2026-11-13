@@ -31,7 +31,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
       typeof code === "string" && /^P\d{4}$/.test(code)
         ? ` code=${code}${meta && typeof meta.table === "string" ? ` table=${meta.table}` : ""}${meta && typeof meta.column === "string" ? ` column=${meta.column}` : ""}${meta && typeof meta.modelName === "string" ? ` model=${meta.modelName}` : ""}`
         : "";
-    console.error(`Unhandled error: ${exception instanceof Error ? exception.name : "UnknownError"}${detail}`);
+    // Where it happened: the route PATTERN (so no ids or query strings) and the first stack frame inside our own code.
+    // File and line numbers carry no user data; the message and the rest of the stack stay out of the logs.
+    const req = host.switchToHttp().getRequest<{ method?: string; route?: { path?: string } }>();
+    const route = req?.route?.path ? ` route=${req.method ?? "?"} ${req.route.path}` : "";
+    const frame = exception instanceof Error ? exception.stack?.split("\n").find((l) => /[\\/](src|dist)[\\/]/.test(l) && !l.includes("node_modules")) : undefined;
+    const at = frame ? ` at=${frame.trim().replace(/^at\s+/, "").replace(/^.*?([\\/](?:src|dist)[\\/])/, "$1")}` : "";
+    console.error(`Unhandled error: ${exception instanceof Error ? exception.name : "UnknownError"}${detail}${route}${at}`);
     return res
       .status(HttpStatus.INTERNAL_SERVER_ERROR)
       .json({ statusCode: HttpStatus.INTERNAL_SERVER_ERROR, message: "Internal server error" });
