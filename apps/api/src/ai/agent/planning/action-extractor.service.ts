@@ -19,6 +19,26 @@ export function dropNulls(data: unknown): Record<string, unknown> {
   return out;
 }
 
+const GOAL_TYPE_WORDS: [RegExp, string][] = [
+  [/\b(emergency fund|rainy day)\b/i, "EMERGENCY_FUND"],
+  [/\b(early retirement|retire early|fire)\b/i, "EARLY_RETIREMENT"],
+  [/\b(retirement|retire)\b/i, "RETIREMENT"],
+  [/\b(child'?s? (?:education|college|school)|kids? education|education fund)\b/i, "CHILD_EDUCATION"],
+  [/\b(house|home|flat|apartment)\b/i, "HOUSE"],
+  [/\b(land|plot)\b/i, "LAND"],
+  [/\b(car|bike|vehicle|scooter)\b/i, "CAR"],
+  [/\b(marriage|wedding)\b/i, "MARRIAGE"],
+  [/\b(vacation|holiday|trip|travel)\b/i, "VACATION"],
+  [/\b(business|startup|shop)\b/i, "BUSINESS_EXPANSION"],
+  [/\b(health|medical|hospital)\b/i, "HEALTHCARE_RESERVE"],
+];
+
+/** The goal type named by the user's own words ("New Car", "house down payment"), or null when no single type is clearly named. Used only when the model left the type empty. */
+export function inferGoalType(message: string): string | null {
+  const hits = GOAL_TYPE_WORDS.filter(([re]) => re.test(message)).map(([, t]) => t);
+  return hits.length === 1 ? hits[0] : null;
+}
+
 export type ActionTool = "create_goal" | "update_goal" | "create_plan" | "create_task";
 
 export type PreparedAction = { ok: true; tool: ActionTool; input: Record<string, unknown> } | { ok: false; tool: ActionTool; question: string };
@@ -66,6 +86,10 @@ export class ActionExtractorService {
       return { ok: false, tool, question: "I couldn't read the details of that right now. Please say it like: “Create a goal called New Car, ₹8 lakh, by 2028-03-31.”" };
     }
     delete extracted.confidence;
+    if (tool === "create_goal" && extracted.type === undefined) {
+      const inferred = inferGoalType(typeof extracted.name === "string" ? `${extracted.name} ${message}` : message);
+      if (inferred) extracted.type = inferred; // shown on the approval card, so the user can still reject it
+    }
 
     if (tool === "update_goal") {
       const goalName = typeof extracted.goalName === "string" ? extracted.goalName : null;
