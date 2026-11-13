@@ -45,8 +45,8 @@ export function composeResponse(input: ComposeInput): Omit<AgentResponse, "messa
     else if (ESTIMATE_TOOLS.has(o.tool)) estimates.push(o.text);
     else verifiedFacts.push(o.text);
   }
-  // Logs of earlier questions ("Asked (planning): …") are not answers; they are only shown when the user asks what we discussed.
-  const shownMemories = input.intent === "memory_recall" ? input.memories : input.memories.filter((m) => !(m.category === "EPISODIC" && /^Asked \(/.test(m.content)));
+  // Logs of earlier questions and recommendations ("Asked (planning): …", "Recommendation given: …") and unconfirmed inferred goals are not answers; they are only shown when the user asks what we discussed.
+  const shownMemories = input.intent === "memory_recall" ? input.memories : input.memories.filter((m) => !(m.category === "EPISODIC" && /^(Asked \(|Recommendation given:)/.test(m.content)) && !(m.source === "AI_INFERRED" && m.category === "GOAL"));
   const memoryLines = shownMemories.map(describeMemory);
   const assumptions = uniq(input.outcomes.flatMap((o) => o.assumptions));
   const recommendations = uniq(input.outcomes.flatMap((o) => o.recommendations));
