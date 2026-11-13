@@ -33,7 +33,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
         : "";
     // Where it happened: the route PATTERN (so no ids or query strings) and the first stack frame inside our own code.
     // File and line numbers carry no user data; the message and the rest of the stack stay out of the logs.
-    const req = host.switchToHttp().getRequest<{ method?: string; route?: { path?: string } }>();
+    const http = host.switchToHttp();
+    const req = typeof http.getRequest === "function" ? http.getRequest<{ method?: string; route?: { path?: string } }>() : undefined;
     const route = req?.route?.path ? ` route=${req.method ?? "?"} ${req.route.path}` : "";
     const frame = exception instanceof Error ? exception.stack?.split("\n").find((l) => /[\\/](src|dist)[\\/]/.test(l) && !l.includes("node_modules")) : undefined;
     const at = frame ? ` at=${frame.trim().replace(/^at\s+/, "").replace(/^.*?([\\/](?:src|dist)[\\/])/, "$1")}` : "";
